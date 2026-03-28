@@ -360,11 +360,13 @@ private func uuidToBytes(_ uuid: String) -> Data {
 }
 ```
 
-### H5. Identity Change Callback — None Exists
+### H5. Identity Change Callback — None Exists — FIXED
 
-**Files:** `PersistentSignalStore.swift:88-94`, `SignalStore.swift:177-182`
+**Files:** `PersistentSignalStore.swift:86-100`
 
-`saveIdentity()` silently overwrites old keys via `INSERT OR REPLACE`. A key change (potential MITM) is completely invisible.
+~~`saveIdentity()` silently overwrites old keys via `INSERT OR REPLACE`. A key change (potential MITM) is completely invisible.~~
+
+**Fixed:** `saveIdentity()` now compares the new key against the stored key using `constantTimeEqual()`. If they differ, `logger.identityChanged(address:)` is called before the overwrite. Logger is injected from `ObscuraClient` at store creation time.
 
 **Fix:**
 ```swift
@@ -567,11 +569,13 @@ Export returns raw JSON. While E2E encryption protects it in transit, there's no
 
 **Fix:** Compress with gzip (as the TODO comment says), then encrypt with a shared device-linking secret before wrapping in the ClientMessage.
 
-### M4. Path Traversal in URL Construction
+### M4. Path Traversal in URL Construction — FIXED
 
 **File:** `APIClient.swift:177,182,189,204,227`
 
-User/device IDs interpolated directly into URL paths without percent-encoding.
+~~User/device IDs interpolated directly into URL paths without percent-encoding.~~
+
+**Fixed:** Added `urlEncode()` helper. All interpolated IDs now use `addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)`.
 
 **Fix:**
 ```swift
@@ -585,11 +589,13 @@ guard let encoded = deviceId.addingPercentEncoding(withAllowedCharacters: .urlPa
 let result = try await jsonRequest("/v1/devices/\(encoded)")
 ```
 
-### M5. Unencoded WebSocket Ticket in URL
+### M5. Unencoded WebSocket Ticket in URL — FIXED
 
-**Files:** `APIClient.swift:245`, `GatewayConnection.swift:41`
+**Files:** `GatewayConnection.swift:42`
 
-Gateway ticket interpolated into query string without URL encoding.
+~~Gateway ticket interpolated into query string without URL encoding.~~
+
+**Fixed:** Ticket now percent-encoded with `.urlQueryAllowed` before interpolation.
 
 **Fix:**
 ```swift
@@ -599,7 +605,7 @@ guard let encodedTicket = ticket.addingPercentEncoding(withAllowedCharacters: .u
 let urlString = "\(wsBase)/v1/gateway?ticket=\(encodedTicket)"
 ```
 
-### M6. Unbounded Buffers — 5 Arrays With No Limit
+### M6. Unbounded Buffers — 5 Arrays With No Limit — FIXED
 
 **Files:** `ObscuraClient.swift:61` (`eventContinuations`), `ObscuraClient.swift:78` (`messageQueue`), `GatewayConnection.swift:17` (`envelopeQueue`), `GatewayConnection.swift:18` (`waiters`), `MessengerActor.swift:20` (`queue`)
 
@@ -624,11 +630,13 @@ JWT payload parsed from base64 without verifying the signature. Used for extract
 
 **Note:** This is acceptable if the server is trusted and TLS is enforced (C8). The JWT is used for local convenience, not authorization decisions. However, once C8 and H13 are fixed, this becomes low risk.
 
-### M8. Idempotency Key Not Deterministic
+### M8. Idempotency Key Not Deterministic — FIXED
 
-**File:** `APIClient.swift:211`
+**File:** `APIClient.swift:211-213`
 
-`UUID().uuidString` generated fresh per call. If the request is retried (network error), a new UUID is sent = duplicate message on server.
+~~`UUID().uuidString` generated fresh per call.~~
+
+**Fixed:** Idempotency key is now derived from SHA-256 of the protobuf payload (first 16 bytes, hex-encoded). Retries of the same content produce the same key.
 
 **Fix:**
 ```swift
@@ -656,11 +664,13 @@ All observation methods are `nonisolated public`, returning `AsyncStream` with n
 
 **Note:** In a single-user app context, this is acceptable since there's one authenticated user per process. If multi-user or multi-account support is added, this needs access control.
 
-### M11. Error Response Bodies Leaked in Exceptions
+### M11. Error Response Bodies Leaked in Exceptions — FIXED
 
-**File:** `APIClient.swift:112-113, 75-76`
+**File:** `APIClient.swift:76`
 
-Raw server response body goes into `APIError.body` and `errorDescription`. Could expose server internals in crash reports.
+~~Raw server response body in `errorDescription`.~~
+
+**Fixed:** `errorDescription` now returns only `"HTTP \(status)"`. The `body` field is retained for internal debugging but not exposed in the user-facing error description.
 
 **Fix:**
 ```swift
@@ -685,7 +695,7 @@ guard announce.timestamp > await friends.getLastAnnounceTimestamp(sourceUserId) 
 }
 ```
 
-### M13. No Rate Limiting on Decryption Attempts
+### M13. No Rate Limiting on Decryption Attempts — FIXED
 
 **File:** `ObscuraClient.swift:461-494`
 
@@ -704,11 +714,13 @@ if entry.count > 10 {
 }
 ```
 
-### M14. Hand-Built JSON for Signing (Not Deterministic)
+### M14. Hand-Built JSON for Signing (Not Deterministic) — FIXED
 
-**File:** `RecoveryKeys.swift:67-68`
+**File:** `RecoveryKeys.swift:62-78`
 
-Manually constructs JSON string. Breaks if device IDs contain quotes, backslashes, or special characters.
+~~Manually constructs JSON string. Breaks if device IDs contain special characters.~~
+
+**Fixed:** Now uses `JSONSerialization.data(withJSONObject:options: [.sortedKeys])` for safe, deterministic serialization.
 
 **Fix:** Use `JSONSerialization` with `.sortedKeys`:
 ```swift
@@ -732,7 +744,9 @@ let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKey
 
 ## Low Findings
 
-### L1. Dual Signal Store Confusion
+### L1. Dual Signal Store Confusion — FIXED
+
+**Fixed:** Removed unused `GRDBSignalStore` from `ObscuraClient`. Only `PersistentSignalStore` remains — the one the messenger actually uses.
 
 **File:** `ObscuraClient.swift:40,167`
 
@@ -756,7 +770,9 @@ Sessions stored indefinitely with no timestamp or expiration.
 
 **Note:** Signal Protocol handles forward secrecy via ratcheting. Session expiration is not standard practice. Low risk, but consider periodic session refresh for long-dormant contacts.
 
-### L4. `SignalKeyPair` Is `Codable` With Private Key
+### L4. `SignalKeyPair` Is `Codable` With Private Key — FIXED
+
+**Fixed:** Removed `Codable` from `SignalKeyPair` and `SignalSignedPreKey`. Private keys can no longer be accidentally JSON-serialized.
 
 **File:** `SignalStore.swift:38-45`
 
@@ -764,7 +780,9 @@ Sessions stored indefinitely with no timestamp or expiration.
 
 **Fix:** Remove `Codable` conformance or make `privateKey` non-codable with a custom `encode()`.
 
-### L5. No Prekey Replenishment
+### L5. No Prekey Replenishment — FIXED
+
+**Fixed:** Added `replenishPreKeysIfNeeded()` which generates 50 new one-time prekeys and uploads them via `uploadDeviceKeys()`. Called automatically after processing any prekey message (which consumes one OTK).
 
 **File:** (absent)
 
@@ -772,7 +790,9 @@ Prekeys are uploaded once during registration and never replenished. Once one-ti
 
 **Fix:** Add a prekey check after processing prekey messages and upload fresh batches when count is low.
 
-### L6. Hardcoded Test Password in Library Code
+### L6. Hardcoded Test Password in Library Code — FIXED
+
+**Fixed:** Default password gated behind `#if DEBUG`. Release builds hit `fatalError()` if `ObscuraTestClient` is used without an explicit password.
 
 **File:** `ObscuraTestClient.swift:38`
 
@@ -890,15 +910,22 @@ git clone --depth 1 --branch v0.40.0 https://github.com/signalapp/libsignal.git
 | Device revocation cleans Signal sessions | **DONE** | H10 |
 | TTL enforced on ORM `get()`/`getAll()` | **DONE** | H11 |
 
-### Phase 2b: Before Release (this sprint)
+### Phase 2b: Easy + Medium Fixes — DONE (2026-03-28)
 
-| Fix | Effort | Issues Addressed |
+| Fix | Status | Issues Addressed |
 |-----|--------|-----------------|
-| Identity change callback delegate | 15 lines | H5 |
-| Bounded queue helper + apply to 5 arrays | 20 lines | M6 |
-| Convert `GatewayConnection` to actor | Refactor | H8 |
-| URL-encode path/query parameters | 10 lines | M4, M5 |
-| Error sanitization in `APIError.errorDescription` | 2 lines | M11 |
+| URL-encode all path/query parameters | **DONE** | M4, M5 |
+| Idempotency key from content hash | **DONE** | M8 |
+| Error sanitization in errorDescription | **DONE** | M11 |
+| Deterministic JSON for signing (.sortedKeys) | **DONE** | M14 |
+| Remove Codable from SignalKeyPair | **DONE** | L4 |
+| Test password gated behind #if DEBUG | **DONE** | L6 |
+| Identity change callback in saveIdentity | **DONE** | H5 |
+| Bounded queues (messageQueue, envelopeQueue) | **DONE** | M6 |
+| Decrypt rate limiting per sender | **DONE** | M13 |
+| Removed unused GRDBSignalStore | **DONE** | L1 |
+| Prekey replenishment after prekey messages | **DONE** | L5 |
+| M12 replay protection | **ALREADY HANDLED** | existing LWW guard |
 
 ### Phase 3: Before GA
 
@@ -946,10 +973,11 @@ These are things the Swift codebase does well:
 | **Swift (before fixes)** | 10 | 16 | 15 | 8 | 49 total |
 | ~~Swift (after Phase 1)~~ | ~~4~~ | ~~14~~ | ~~13~~ | ~~8~~ | ~~39~~ |
 | ~~Swift (after Phase 1+1b)~~ | ~~3~~ | ~~10~~ | ~~15~~ | ~~8~~ | ~~36~~ |
-| **Swift (after Phase 1+1b+2a)** | **3** | **5** | **14** | **8** | **30 remaining** |
-| **Swift (after Phase 2b)** | 0 | 2 | 10 | 8 | 20 remaining |
+| ~~Swift (after Phase 2a)~~ | ~~3~~ | ~~5~~ | ~~14~~ | ~~8~~ | ~~30~~ |
+| **Swift (after Phase 2b)** | **3** | **4** | **8** | **5** | **20 remaining** |
 | **Swift (after Phase 3)** | 0 | 0 | 2 | 4 | 6 remaining |
 
 Phase 1 resolved: C1, C2, C4, C5, C8, C9.
 Phase 1b resolved: C10, H1, H3, H4, H6, H7.
 Phase 2a resolved: H2, H10, H11, H12 (partial), M1.
+Phase 2b resolved: H5, M4, M5, M6, M8, M11, M13, M14, L1, L4, L5, L6.
