@@ -200,6 +200,15 @@ Tests/ScenarioTests/
 
 No locks. No race conditions. The compiler prevents cross-actor mutable access.
 
+## Documentation
+
+| Doc | What it covers |
+|-----|---------------|
+| [docs/PITFALLS.md](docs/PITFALLS.md) | Every gotcha that wastes hours — Docker, libsignal version, WebSocket, server quirks |
+| [docs/MESSAGE_FLOW.md](docs/MESSAGE_FLOW.md) | Complete send/receive data flow with ASCII diagrams |
+| [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) | Quick start, what's in the image, rebuild guide |
+| [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security review: constant-time comparison, key derivation, signature verification |
+
 ## Build & Test
 
 ```bash

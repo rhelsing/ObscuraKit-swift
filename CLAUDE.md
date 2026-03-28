@@ -1,6 +1,8 @@
 # Claude Code Context
 
 @README.md
+@docs/PITFALLS.md
+@docs/MESSAGE_FLOW.md
 
 ## Project Overview
 
