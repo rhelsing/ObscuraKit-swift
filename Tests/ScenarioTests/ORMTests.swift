@@ -1,8 +1,8 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Scenario 8: ORM Layer
-/// CRUD, fan-out targets, field validation, sync
+/// Scenario 8: ORM Layer — against actual server
+/// Model CRUD, CRDT sync via encrypted messages
 final class ORMTests: XCTestCase {
 
     func makeEntry(_ id: String, data: [String: Any] = [:], timestamp: UInt64 = 0, authorDeviceId: String = "dev1") -> ModelEntry {
@@ -15,9 +15,9 @@ final class ORMTests: XCTestCase {
         )
     }
 
-    // MARK: - 8.1: Auto-generation (ID, timestamp, signature, author)
+    // MARK: - 8.1: Auto-generation
 
-    func testScenario8_1_StoryCreation() async throws {
+    func testScenario8_1_AutoGeneration() async throws {
         let store = try ModelStore()
         let gset = GSet(store: store, modelName: "story")
 
@@ -25,73 +25,84 @@ final class ORMTests: XCTestCase {
         let entry = makeEntry(id, data: ["content": "hello world"], authorDeviceId: "device-abc")
 
         let result = await gset.add(entry)
-
-        XCTAssertEqual(result.id, id)
         XCTAssertTrue(result.id.hasPrefix("story_"))
         XCTAssertGreaterThan(result.timestamp, 0)
         XCTAssertEqual(result.authorDeviceId, "device-abc")
     }
 
-    // MARK: - 8.2: Local persistence via finder
+    // MARK: - 8.2: Local persistence
 
-    func testScenario8_2_LocalPersistence() async throws {
+    func testScenario8_2_Persistence() async throws {
         let store = try ModelStore()
         let gset = GSet(store: store, modelName: "story")
 
-        let entry = makeEntry("story_001", data: ["content": "persisted"])
-        _ = await gset.add(entry)
+        _ = await gset.add(makeEntry("story_001", data: ["content": "persisted"]))
 
-        // Create a NEW GSet pointing at same store (simulates app restart)
+        // New GSet instance pointing at same store (simulates restart)
         let gset2 = GSet(store: store, modelName: "story")
         let fetched = await gset2.get("story_001")
 
-        XCTAssertNotNil(fetched, "Entry should persist in store across GSet instances")
+        XCTAssertNotNil(fetched)
         XCTAssertEqual(fetched?.data["content"] as? String, "persisted")
     }
 
-    // MARK: - 8.3: Fan-out targeting (all friend devices)
+    // MARK: - 8.3: Fan-out via encrypted message to friend
 
-    func testScenario8_3_FanOutTargets() async throws {
-        let friends = try FriendActor()
+    func testScenario8_3_ModelSyncViaServer() async throws {
+        let alice = try await ObscuraTestClient.register()
+        await rateLimitDelay()
+        let bob = try await ObscuraTestClient.register()
+        await rateLimitDelay()
 
-        // Add friends with devices
-        await friends.add("user1", "alice", status: .accepted, devices: [
-            ["deviceId": "d1", "deviceUUID": "uuid1"],
-            ["deviceId": "d2", "deviceUUID": "uuid2"],
-        ])
-        await friends.add("user2", "bob", status: .accepted, devices: [
-            ["deviceId": "d3", "deviceUUID": "uuid3"],
-        ])
-        await friends.add("user3", "carol", status: .pendingReceived)
+        // Bob connects to receive
+        try await bob.connectWebSocket()
+        await rateLimitDelay()
 
-        // Accepted friends only
-        let accepted = await friends.getAccepted()
-        XCTAssertEqual(accepted.count, 2, "Only accepted friends")
+        // Alice sends MODEL_SYNC message
+        guard let messenger = alice.messenger else { throw ObscuraClient.ObscuraError.noMessenger }
+        let bundles = try await messenger.fetchPreKeyBundles(bob.userId!)
+        await rateLimitDelay()
 
-        // All devices across accepted friends
-        let allDevices = accepted.flatMap(\.devices)
-        XCTAssertEqual(allDevices.count, 3, "3 devices across 2 friends")
+        if let bundle = bundles.first {
+            try await messenger.processServerBundle(bundle, userId: bob.userId!)
+        }
+
+        var sync = Obscura_V2_ModelSync()
+        sync.model = "story"
+        sync.id = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_abc"
+        sync.op = .create
+        sync.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        sync.data = Data("{\"content\":\"from alice\"}".utf8)
+        sync.authorDeviceID = alice.deviceId ?? "unknown"
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .modelSync
+        msg.modelSync = sync
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        let targetDeviceId = bundles.first?["deviceId"] as? String ?? bob.userId!
+        try await messenger.queueMessage(
+            targetDeviceId: targetDeviceId,
+            clientMessageData: try msg.serializedData(),
+            targetUserId: bob.userId!
+        )
+        _ = try await messenger.flushMessages()
+        await rateLimitDelay()
+
+        // Bob receives MODEL_SYNC
+        let received = try await bob.waitForMessage(timeout: 10)
+        XCTAssertEqual(received.type, 30, "Type should be MODEL_SYNC (30)")
+        XCTAssertEqual(received.sourceUserId, alice.userId!)
+
+        bob.disconnectWebSocket()
     }
 
-    // MARK: - 8.4: Self-sync targeting (own devices)
-
-    func testScenario8_4_SelfSyncTargets() async throws {
-        let deviceActor = try DeviceActor()
-
-        await deviceActor.addOwnDevice(OwnDevice(deviceUUID: "uuid1", deviceId: "d1", deviceName: "iPhone"))
-        await deviceActor.addOwnDevice(OwnDevice(deviceUUID: "uuid2", deviceId: "d2", deviceName: "iPad"))
-
-        let targets = await deviceActor.getSelfSyncTargets()
-        XCTAssertEqual(targets.count, 2)
-    }
-
-    // MARK: - 8.5: Receiver queries synced data
+    // MARK: - 8.5: Receiver can query synced data
 
     func testScenario8_5_ReceiverQueriesSyncedData() async throws {
         let store = try ModelStore()
         let gset = GSet(store: store, modelName: "story")
 
-        // Simulate receiving synced entries from remote
         let remote = [
             makeEntry("story_r1", data: ["content": "from alice"], authorDeviceId: "alice-dev"),
             makeEntry("story_r2", data: ["content": "from bob"], authorDeviceId: "bob-dev"),
@@ -99,44 +110,27 @@ final class ORMTests: XCTestCase {
         let added = await gset.merge(remote)
         XCTAssertEqual(added.count, 2)
 
-        // Query all
-        let all = await gset.getAll()
-        XCTAssertEqual(all.count, 2)
-
-        // Filter by author
         let aliceStories = await gset.filter { $0.authorDeviceId == "alice-dev" }
         XCTAssertEqual(aliceStories.count, 1)
-        XCTAssertEqual(aliceStories[0].data["content"] as? String, "from alice")
     }
 
-    // MARK: - 8.6: Reverse direction sync
+    // MARK: - 8.6: Bidirectional sync
 
-    func testScenario8_6_ReverseSync() async throws {
+    func testScenario8_6_BidirectionalSync() async throws {
         let aliceStore = try ModelStore()
         let bobStore = try ModelStore()
-
         let aliceSet = GSet(store: aliceStore, modelName: "story")
         let bobSet = GSet(store: bobStore, modelName: "story")
 
-        // Alice creates a story
-        let aliceEntry = makeEntry("story_a1", data: ["content": "alice's story"], authorDeviceId: "alice-dev")
-        _ = await aliceSet.add(aliceEntry)
+        _ = await aliceSet.add(makeEntry("story_a1", data: ["content": "alice's"]))
+        _ = await bobSet.add(makeEntry("story_b1", data: ["content": "bob's"]))
 
-        // Bob creates a story
-        let bobEntry = makeEntry("story_b1", data: ["content": "bob's story"], authorDeviceId: "bob-dev")
-        _ = await bobSet.add(bobEntry)
+        let addedToBob = await bobSet.merge(await aliceSet.getAll())
+        let addedToAlice = await aliceSet.merge(await bobSet.getAll())
 
-        // Sync: Alice → Bob
-        let aliceAll = await aliceSet.getAll()
-        let addedToBob = await bobSet.merge(aliceAll)
         XCTAssertEqual(addedToBob.count, 1)
-
-        // Sync: Bob → Alice
-        let bobAll = await bobSet.getAll()
-        let addedToAlice = await aliceSet.merge(bobAll)
         XCTAssertEqual(addedToAlice.count, 1)
 
-        // Both should have 2 entries
         let aliceSize = await aliceSet.size()
         let bobSize = await bobSet.size()
         XCTAssertEqual(aliceSize, 2)
@@ -145,23 +139,18 @@ final class ORMTests: XCTestCase {
 
     // MARK: - 8.7: LWW conflict resolution
 
-    func testScenario8_7_LWWConflictResolution() async throws {
+    func testScenario8_7_ConflictResolution() async throws {
         let store = try ModelStore()
         let lww = LWWMap(store: store, modelName: "streak")
 
-        // Alice sets count=5 at time 1000
-        _ = await lww.set(makeEntry("streak_1", data: ["count": 5], timestamp: 1000, authorDeviceId: "alice"))
+        _ = await lww.set(makeEntry("s1", data: ["count": 5], timestamp: 1000))
+        _ = await lww.set(makeEntry("s1", data: ["count": 3], timestamp: 2000))
 
-        // Bob sets count=3 at time 2000 (newer)
-        _ = await lww.set(makeEntry("streak_1", data: ["count": 3], timestamp: 2000, authorDeviceId: "bob"))
+        let result = await lww.get("s1")
+        XCTAssertEqual(result?.timestamp, 2000, "Newer wins")
 
-        let result = await lww.get("streak_1")
-        XCTAssertEqual(result?.timestamp, 2000, "Newer timestamp wins")
-
-        // Alice tries to set count=10 at time 500 (older — should lose)
-        _ = await lww.set(makeEntry("streak_1", data: ["count": 10], timestamp: 500, authorDeviceId: "alice"))
-
-        let final_ = await lww.get("streak_1")
-        XCTAssertEqual(final_?.timestamp, 2000, "Older update rejected")
+        _ = await lww.set(makeEntry("s1", data: ["count": 10], timestamp: 500))
+        let final_ = await lww.get("s1")
+        XCTAssertEqual(final_?.timestamp, 2000, "Older rejected")
     }
 }

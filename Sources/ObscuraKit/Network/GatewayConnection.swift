@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import NIOCore
 import NIOPosix
 import WebSocketKit
@@ -22,7 +23,10 @@ public class GatewayConnection {
     }
 
     deinit {
-        try? eventLoopGroup.syncShutdownGracefully()
+        let group = eventLoopGroup
+        DispatchQueue.global().async {
+            try? group.syncShutdownGracefully()
+        }
     }
 
     /// Connect to WebSocket gateway

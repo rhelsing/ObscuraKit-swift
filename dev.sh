@@ -1,39 +1,23 @@
 #!/bin/bash
-# Dev helper - runs commands in the Docker build environment
-# Usage: ./dev.sh build | test | test-filter "TestName" | shell
+# Dev helper - runs swift commands with Swift 6.1 toolchain
 set -e
 
-IMAGE="obscura-kit:dev"
-VOLUME="obscura-build-cache"
-
-run() {
-  docker run --rm \
-    -v "$(pwd):/app" \
-    -v "${VOLUME}:/app/.build" \
-    -w /app "$IMAGE" \
-    "$@"
-}
+export TOOLCHAINS=swift-6.1.3-RELEASE
+SWIFT=/Library/Developer/Toolchains/swift-6.1.3-RELEASE.xctoolchain/usr/bin/swift
+LIBSIGNAL_PATH="$(pwd)/vendored/libsignal/target/release"
 
 case "${1:-test}" in
   build)
-    run swift build
+    LIBRARY_PATH="$LIBSIGNAL_PATH" $SWIFT build "${@:2}"
     ;;
   test)
-    run swift test "${@:2}"
-    ;;
-  test-filter|tf)
-    run swift test --filter "$2"
-    ;;
-  test-skip|ts)
-    run swift test --skip "$2"
+    LIBRARY_PATH="$LIBSIGNAL_PATH" $SWIFT test "${@:2}"
     ;;
   shell)
-    docker run --rm -it \
-      -v "$(pwd):/app" \
-      -v "${VOLUME}:/app/.build" \
-      -w /app "$IMAGE" bash
+    LIBRARY_PATH="$LIBSIGNAL_PATH" TOOLCHAINS=swift-6.1.3-RELEASE bash
     ;;
   *)
-    echo "Usage: ./dev.sh [build|test|test-filter NAME|test-skip NAME|shell]"
+    echo "Usage: ./dev.sh [build|test|shell]"
+    echo "Extra args passed to swift, e.g.: ./dev.sh test --filter CoreFlowTests"
     ;;
 esac
