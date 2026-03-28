@@ -208,6 +208,8 @@ No locks. No race conditions. The compiler prevents cross-actor mutable access.
 | [docs/MESSAGE_FLOW.md](docs/MESSAGE_FLOW.md) | Complete send/receive data flow with ASCII diagrams |
 | [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) | Quick start, what's in the image, rebuild guide |
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security review: constant-time comparison, key derivation, signature verification |
+| [docs/AGENT_NOTES.md](docs/AGENT_NOTES.md) | Hard-won lessons: race conditions, version gotchas, tech debt priorities |
+| [docs/plans/production-cleanup.md](docs/plans/production-cleanup.md) | Phase A/B/C plan to reach Signal-grade internals |
 
 ## Build & Test
 

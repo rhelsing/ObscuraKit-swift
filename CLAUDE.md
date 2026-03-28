@@ -3,6 +3,7 @@
 @README.md
 @docs/PITFALLS.md
 @docs/MESSAGE_FLOW.md
+@docs/AGENT_NOTES.md
 
 ## Project Overview
 
