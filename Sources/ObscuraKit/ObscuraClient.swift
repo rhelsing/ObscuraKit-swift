@@ -42,7 +42,7 @@ public class ObscuraClient {
 
     // Messenger is initialized after register/login with real keys
     private var _messenger: MessengerActor?
-    private var signalProtocolStore: InMemorySignalProtocolStore?
+    public private(set) var persistentSignalStore: PersistentSignalStore?
 
     // MARK: - Observable State
 
@@ -163,8 +163,9 @@ public class ObscuraClient {
         self.deviceId = APIClient.extractDeviceId(deviceToken)
         await api.setToken(deviceToken)
 
-        // 4. Signal protocol store
-        let protocolStore = InMemorySignalProtocolStore(identity: identity, registrationId: regId)
+        // 4. Persistent Signal protocol store (survives app restart)
+        let protocolStore = try PersistentSignalStore()
+        protocolStore.initialize(keyPair: identity, registrationId: regId)
         try protocolStore.storeSignedPreKey(
             SignedPreKeyRecord(id: 1, timestamp: UInt64(Date().timeIntervalSince1970), privateKey: signedPreKeyPrivate, signature: signedPreKeySignature),
             id: 1, context: NullContext()
@@ -175,7 +176,7 @@ public class ObscuraClient {
                 id: record.id, context: NullContext()
             )
         }
-        self.signalProtocolStore = protocolStore
+        self.persistentSignalStore = protocolStore
 
         // 5. Messenger
         self._messenger = MessengerActor(api: api, store: protocolStore, ownUserId: self.userId!)

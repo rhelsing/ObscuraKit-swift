@@ -6,7 +6,11 @@ import SwiftProtobuf
 /// Mirrors src/v2/lib/messenger.js
 public actor MessengerActor {
     private let api: APIClient
-    private let store: InMemorySignalProtocolStore
+    private let identityStore: IdentityKeyStore
+    private let preKeyStore: PreKeyStore
+    private let signedPreKeyStore: SignedPreKeyStore
+    private let sessionStore: SessionStore
+    private let kyberPreKeyStore: KyberPreKeyStore
     private let ownUserId: String
 
     // Device map: deviceId → (userId, registrationId)
@@ -15,9 +19,13 @@ public actor MessengerActor {
     // Message queue for batch sending
     private var queue: [(submissionId: Data, deviceId: Data, message: Data)] = []
 
-    public init(api: APIClient, store: InMemorySignalProtocolStore, ownUserId: String) {
+    public init(api: APIClient, store: PersistentSignalStore, ownUserId: String) {
         self.api = api
-        self.store = store
+        self.identityStore = store
+        self.preKeyStore = store
+        self.signedPreKeyStore = store
+        self.sessionStore = store
+        self.kyberPreKeyStore = store
         self.ownUserId = ownUserId
     }
 
@@ -52,8 +60,8 @@ public actor MessengerActor {
         let ciphertext = try signalEncrypt(
             message: plaintext,
             for: address,
-            sessionStore: store,
-            identityStore: store,
+            sessionStore: sessionStore,
+            identityStore: identityStore,
             context: NullContext()
         )
 
@@ -120,8 +128,8 @@ public actor MessengerActor {
         try LibSignalClient.processPreKeyBundle(
             bundle,
             for: address,
-            sessionStore: store,
-            identityStore: store,
+            sessionStore: sessionStore,
+            identityStore: identityStore,
             context: NullContext()
         )
     }
@@ -138,11 +146,11 @@ public actor MessengerActor {
             return try signalDecryptPreKey(
                 message: preKeyMessage,
                 from: address,
-                sessionStore: store,
-                identityStore: store,
-                preKeyStore: store,
-                signedPreKeyStore: store,
-                kyberPreKeyStore: store,
+                sessionStore: sessionStore,
+                identityStore: identityStore,
+                preKeyStore: preKeyStore,
+                signedPreKeyStore: signedPreKeyStore,
+                kyberPreKeyStore: kyberPreKeyStore,
                 context: NullContext()
             )
         } else {
@@ -151,8 +159,8 @@ public actor MessengerActor {
             return try signalDecrypt(
                 message: signalMessage,
                 from: address,
-                sessionStore: store,
-                identityStore: store,
+                sessionStore: sessionStore,
+                identityStore: identityStore,
                 context: NullContext()
             )
         }
