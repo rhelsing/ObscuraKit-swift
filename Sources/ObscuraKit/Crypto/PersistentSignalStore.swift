@@ -10,6 +10,7 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
     private let db: DatabaseQueue
     private var _identityKeyPair: IdentityKeyPair?
     private var _registrationId: UInt32 = 0
+    public var logger: ObscuraLogger = PrintLogger()
 
     public init(db: DatabaseQueue) throws {
         self.db = db
@@ -19,6 +20,7 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
     /// In-memory database for testing
     public init() throws {
         self.db = try DatabaseQueue()
+        try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         try createTables()
     }
 
@@ -84,12 +86,17 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
 
     public func saveIdentity(_ identity: IdentityKey, for address: ProtocolAddress, context: StoreContext) throws -> Bool {
         let addressStr = "\(address.name).\(address.deviceId)"
+        let newKeyData = Data(identity.serialize())
         let existing: Data? = try db.read { db in
             try Data.fetchOne(db, sql: "SELECT key_data FROM signal_identities WHERE address = ?", arguments: [addressStr])
         }
+        // Detect identity key change — potential MITM
+        if let existing = existing, !constantTimeEqual(existing, newKeyData) {
+            logger.identityChanged(address: addressStr)
+        }
         try db.write { db in
             try db.execute(sql: "INSERT OR REPLACE INTO signal_identities (address, key_data) VALUES (?, ?)",
-                           arguments: [addressStr, Data(identity.serialize())])
+                           arguments: [addressStr, newKeyData])
         }
         return existing != nil
     }

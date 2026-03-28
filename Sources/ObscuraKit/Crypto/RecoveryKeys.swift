@@ -64,9 +64,17 @@ public struct RecoveryKeys {
         deviceIds: [String], timestamp: UInt64, isRevocation: Bool
     ) -> Data {
         // Deterministic serialization matching JS: JSON.stringify({devices, isRevocation, timestamp})
-        let devices = deviceIds.map { "{\"deviceId\":\"\($0)\"}" }.joined(separator: ",")
-        let json = "{\"devices\":[\(devices)],\"isRevocation\":\(isRevocation),\"timestamp\":\(timestamp)}"
-        return Data(json.utf8)
+        // Uses JSONSerialization with .sortedKeys for safe key ordering
+        let dict: [String: Any] = [
+            "devices": deviceIds.map { ["deviceId": $0] },
+            "isRevocation": isRevocation,
+            "timestamp": timestamp,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]) {
+            return data
+        }
+        // Fallback: should never happen with known types
+        return Data("{}".utf8)
     }
 
     // MARK: - Internal helpers

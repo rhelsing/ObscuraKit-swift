@@ -26,14 +26,22 @@ public class LWWMap {
 
     /// Set/update an entry. Only updates if timestamp is newer.
     /// Returns the winning entry (might be existing if it was newer).
+    /// Rejects timestamps more than 60 seconds in the future to prevent spoofing.
     public func set(_ entry: ModelEntry) async -> ModelEntry {
         await ensureLoaded()
-        if let existing = entries[entry.id], entry.timestamp <= existing.timestamp {
+        let maxTimestamp = UInt64(Date().timeIntervalSince1970 * 1000) + 60_000
+        let effective: ModelEntry
+        if entry.timestamp > maxTimestamp {
+            effective = ModelEntry(id: entry.id, data: entry.data, timestamp: maxTimestamp, signature: entry.signature, authorDeviceId: entry.authorDeviceId)
+        } else {
+            effective = entry
+        }
+        if let existing = entries[effective.id], effective.timestamp <= existing.timestamp {
             return existing
         }
-        await store.put(modelName, entry)
-        entries[entry.id] = entry
-        return entry
+        await store.put(modelName, effective)
+        entries[effective.id] = effective
+        return effective
     }
 
     /// Alias for set, consistent interface with GSet.

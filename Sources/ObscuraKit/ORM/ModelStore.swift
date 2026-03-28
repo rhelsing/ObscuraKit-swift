@@ -14,6 +14,7 @@ public class ModelStore {
     /// In-memory store for testing
     public init() throws {
         self.db = try DatabaseQueue()
+        try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         try Self.createTables(db)
     }
 
@@ -67,23 +68,41 @@ public class ModelStore {
     }
 
     public func get(_ modelName: String, _ id: String) async -> ModelEntry? {
-        try? await db.read { db -> ModelEntry? in
+        let entry: ModelEntry? = try? await db.read { db -> ModelEntry? in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT id, data, timestamp, signature, author_device_id
                 FROM model_entries WHERE model_name = ? AND id = ?
             """, arguments: [modelName, id]) else { return nil }
             return Self.rowToEntry(row)
         }
+        guard let entry = entry else { return nil }
+        // Enforce TTL: return nil for expired entries
+        if let ttl = await getTTL(modelName: modelName, id: id), ttl < UInt64(Date().timeIntervalSince1970 * 1000) {
+            await delete(modelName, id)
+            return nil
+        }
+        return entry
     }
 
     public func getAll(_ modelName: String) async -> [ModelEntry] {
-        (try? await db.read { db -> [ModelEntry] in
+        let entries = (try? await db.read { db -> [ModelEntry] in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, data, timestamp, signature, author_device_id
                 FROM model_entries WHERE model_name = ?
             """, arguments: [modelName])
             return rows.compactMap { Self.rowToEntry($0) }
         }) ?? []
+        // Filter out expired entries
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        var live: [ModelEntry] = []
+        for entry in entries {
+            if let ttl = await getTTL(modelName: modelName, id: entry.id), ttl < now {
+                await delete(modelName, entry.id)
+            } else {
+                live.append(entry)
+            }
+        }
+        return live
     }
 
     public func delete(_ modelName: String, _ id: String) async {

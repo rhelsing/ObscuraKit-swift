@@ -35,7 +35,13 @@ public class ObscuraTestClient {
     /// Register a new test user. Returns ready-to-use client.
     public static func register(
         _ username: String? = nil,
-        _ password: String = "testpass123456",
+        _ password: String = {
+            #if DEBUG
+            return "testpass123456"
+            #else
+            fatalError("ObscuraTestClient must not be used in release builds")
+            #endif
+        }(),
         apiURL: String = "https://obscura.barrelmaker.dev"
     ) async throws -> ObscuraTestClient {
         let name = username ?? "test_\(Int.random(in: 100000...999999))"
@@ -48,7 +54,13 @@ public class ObscuraTestClient {
     /// Login an existing user.
     public static func login(
         _ username: String,
-        _ password: String = "testpass123456",
+        _ password: String = {
+            #if DEBUG
+            return "testpass123456"
+            #else
+            fatalError("ObscuraTestClient must not be used in release builds")
+            #endif
+        }(),
         deviceId: String? = nil,
         apiURL: String = "https://obscura.barrelmaker.dev"
     ) async throws -> ObscuraTestClient {

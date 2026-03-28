@@ -37,7 +37,7 @@ public struct AsyncValueObservation<T: Sendable> {
         AsyncStream { continuation in
             let cancellable = observation.start(in: db, onError: { error in
                 // Log but don't crash — observation continues
-                print("[Observation] error: \(error)")
+                print("[ObscuraKit] observation error: \(error)")
             }, onChange: { value in
                 continuation.yield(value)
             })

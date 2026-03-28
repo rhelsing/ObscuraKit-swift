@@ -9,6 +9,7 @@ import SwiftProtobuf
 /// Uses WebSocketKit (SwiftNIO) for Linux compatibility.
 public class GatewayConnection {
     private let api: APIClient
+    private let logger: ObscuraLogger
     private var ws: WebSocket?
     private let eventLoopGroup: EventLoopGroup
     private var isConnected = false
@@ -17,8 +18,9 @@ public class GatewayConnection {
     private var envelopeQueue: [(id: Data, senderID: Data, timestamp: UInt64, message: Data)] = []
     private var waiters: [CheckedContinuation<(id: Data, senderID: Data, timestamp: UInt64, message: Data), Error>] = []
 
-    public init(api: APIClient) {
+    public init(api: APIClient, logger: ObscuraLogger = PrintLogger()) {
         self.api = api
+        self.logger = logger
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     }
 
@@ -37,7 +39,8 @@ public class GatewayConnection {
         let baseURL = await api.baseURL
         let wsBase = baseURL
             .replacingOccurrences(of: "https://", with: "wss://")
-        let urlString = "\(wsBase)/v1/gateway?ticket=\(ticket)"
+        let encodedTicket = ticket.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ticket
+        let urlString = "\(wsBase)/v1/gateway?ticket=\(encodedTicket)"
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             WebSocket.connect(to: urlString, on: eventLoopGroup) { ws in
@@ -109,7 +112,13 @@ public class GatewayConnection {
     // MARK: - Private
 
     private func handleFrame(_ data: Data) {
-        guard let frame = try? Obscura_V1_WebSocketFrame(serializedData: data) else { return }
+        let frame: Obscura_V1_WebSocketFrame
+        do {
+            frame = try Obscura_V1_WebSocketFrame(serializedData: data)
+        } catch {
+            logger.frameParseFailed(byteCount: data.count, error: "\(error)")
+            return
+        }
 
         if case .envelopeBatch(let batch) = frame.payload {
             for envelope in batch.envelopes {
@@ -119,6 +128,7 @@ public class GatewayConnection {
                     let waiter = waiters.removeFirst()
                     waiter.resume(returning: raw)
                 } else {
+                    if envelopeQueue.count >= 1000 { envelopeQueue.removeFirst() }
                     envelopeQueue.append(raw)
                 }
             }

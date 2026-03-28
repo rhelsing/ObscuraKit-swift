@@ -74,7 +74,7 @@ public actor APIClient {
         public let body: String
 
         public var errorDescription: String? {
-            "HTTP \(status): \(body)"
+            "HTTP \(status)"
         }
     }
 
@@ -175,19 +175,19 @@ public actor APIClient {
     }
 
     public func getDevice(_ deviceId: String) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/devices/\(deviceId)")
+        let result = try await jsonRequest("/v1/devices/\(urlEncode(deviceId))")
         return result as? [String: Any] ?? [:]
     }
 
     public func updateDevice(_ deviceId: String, name: String) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/devices/\(deviceId)", method: "PUT", body: [
+        let result = try await jsonRequest("/v1/devices/\(urlEncode(deviceId))", method: "PUT", body: [
             "name": name,
         ])
         return result as? [String: Any] ?? [:]
     }
 
     public func deleteDevice(_ deviceId: String) async throws {
-        _ = try await jsonRequest("/v1/devices/\(deviceId)", method: "DELETE")
+        _ = try await jsonRequest("/v1/devices/\(urlEncode(deviceId))", method: "DELETE")
     }
 
     // MARK: - Keys
@@ -202,14 +202,15 @@ public actor APIClient {
     }
 
     public func fetchPreKeyBundles(_ userId: String) async throws -> [[String: Any]] {
-        let result = try await jsonRequest("/v1/users/\(userId)")
+        let result = try await jsonRequest("/v1/users/\(urlEncode(userId))")
         return result as? [[String: Any]] ?? []
     }
 
     // MARK: - Messaging (Protobuf)
 
     public func sendMessage(_ protobufData: Data) async throws {
-        let idempotencyKey = UUID().uuidString
+        let hash = recoverySHA256(protobufData)
+        let idempotencyKey = hash.prefix(16).map { String(format: "%02x", $0) }.joined()
         _ = try await request("/v1/messages", method: "POST", body: protobufData,
                               contentType: "application/x-protobuf",
                               extraHeaders: ["Idempotency-Key": idempotencyKey])
@@ -225,7 +226,7 @@ public actor APIClient {
     }
 
     public func fetchAttachment(_ id: String) async throws -> Data {
-        let (data, _) = try await request("/v1/attachments/\(id)")
+        let (data, _) = try await request("/v1/attachments/\(urlEncode(id))")
         return data
     }
 
@@ -290,5 +291,11 @@ public actor APIClient {
             "token": token,
             "type": type,
         ])
+    }
+
+    // MARK: - Helpers
+
+    private func urlEncode(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
     }
 }

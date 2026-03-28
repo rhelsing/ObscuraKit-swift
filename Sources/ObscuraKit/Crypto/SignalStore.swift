@@ -35,7 +35,7 @@ public protocol SignalStoreProtocol {
 
 // MARK: - Value Types
 
-public struct SignalKeyPair: Codable, Equatable, Sendable {
+public struct SignalKeyPair: Equatable, Sendable {
     public let publicKey: Data   // 33 bytes (0x05 + 32)
     public let privateKey: Data  // 32 bytes
 
@@ -45,7 +45,7 @@ public struct SignalKeyPair: Codable, Equatable, Sendable {
     }
 }
 
-public struct SignalSignedPreKey: Codable, Equatable, Sendable {
+public struct SignalSignedPreKey: Equatable, Sendable {
     public let keyId: UInt32
     public let keyPair: SignalKeyPair
     public let signature: Data  // 64 bytes (XEdDSA)
@@ -72,6 +72,7 @@ public actor GRDBSignalStore: SignalStoreProtocol {
     /// In-memory store for testing
     public init() throws {
         self.db = try DatabaseQueue()
+        try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         try Self.createTables(db)
     }
 
@@ -167,11 +168,17 @@ public actor GRDBSignalStore: SignalStoreProtocol {
     // MARK: - Trusted Identities
 
     public func isTrustedIdentity(_ address: String, _ identityKey: Data) async -> Bool {
-        let stored = try? await db.read { db -> Data? in
-            try Data.fetchOne(db, sql: "SELECT public_key FROM trusted_identities WHERE address = ?", arguments: [address])
+        do {
+            let stored = try await db.read { db -> Data? in
+                try Data.fetchOne(db, sql: "SELECT public_key FROM trusted_identities WHERE address = ?", arguments: [address])
+            }
+            guard let stored = stored else { return true } // TOFU: first contact
+            return constantTimeEqual(stored, identityKey)
+        } catch {
+            // Fail closed on DB errors — do not trust
+            print("[ObscuraKit] db error in isTrustedIdentity: \(error)")
+            return false
         }
-        guard let stored = stored else { return true } // Trust on first use
-        return constantTimeEqual(stored, identityKey)
     }
 
     public func saveIdentity(_ address: String, _ publicKey: Data) async {

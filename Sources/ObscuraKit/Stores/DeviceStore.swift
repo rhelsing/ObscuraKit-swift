@@ -44,6 +44,7 @@ public actor DeviceActor {
 
     public init() throws {
         self.db = try DatabaseQueue()
+        try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         try Self.createTables(db)
     }
 

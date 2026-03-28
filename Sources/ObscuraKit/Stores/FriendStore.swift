@@ -46,6 +46,7 @@ public actor FriendActor {
 
     public init() throws {
         self.db = try DatabaseQueue()
+        try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         try Self.createTables(db)
     }
 
@@ -157,6 +158,12 @@ public actor FriendActor {
     public func remove(_ userId: String) async {
         try? await db.write { db in
             try db.execute(sql: "DELETE FROM friends WHERE user_id = ?", arguments: [userId])
+        }
+    }
+
+    public func clearAll() async {
+        try? await db.write { db in
+            try db.execute(sql: "DELETE FROM friends")
         }
     }
 

@@ -37,12 +37,14 @@ public class ObscuraClient {
     public let friends: FriendActor
     public let messages: MessageActor
     public let devices: DeviceActor
-    public let signalStore: GRDBSignalStore
     public let gateway: GatewayConnection
 
     // Messenger is initialized after register/login with real keys
     private var _messenger: MessengerActor?
     public private(set) var persistentSignalStore: PersistentSignalStore?
+
+    /// Security logger — set your own implementation or use the default PrintLogger.
+    public var logger: ObscuraLogger = PrintLogger()
 
     // MARK: - Observable State
 
@@ -77,6 +79,7 @@ public class ObscuraClient {
             let waiter = messageWaiters.removeFirst()
             waiter.resume(returning: message)
         } else {
+            if messageQueue.count >= 1000 { messageQueue.removeFirst() }
             messageQueue.append(message)
         }
     }
@@ -95,15 +98,23 @@ public class ObscuraClient {
     private var envelopeTask: Task<Void, Never>?
     private var tokenRefreshTask: Task<Void, Never>?
 
+    // Decrypt rate limiting: track failures per sender
+    private var decryptFailures: [String: (count: Int, windowStart: Date)] = [:]
+    private let maxDecryptFailures = 10
+    private let decryptFailureWindow: TimeInterval = 60
+
+    // Prekey replenishment tracking
+    private var nextPreKeyId: UInt32 = 101  // Registration uses 1-100
+
     // MARK: - Init
 
-    public init(apiURL: String) throws {
+    public init(apiURL: String, logger: ObscuraLogger = PrintLogger()) throws {
+        self.logger = logger
         self.api = APIClient(baseURL: apiURL)
         self.friends = try FriendActor()
         self.messages = try MessageActor()
         self.devices = try DeviceActor()
-        self.signalStore = try GRDBSignalStore()
-        self.gateway = GatewayConnection(api: api)
+        self.gateway = GatewayConnection(api: api, logger: logger)
     }
 
     deinit {
@@ -171,6 +182,7 @@ public class ObscuraClient {
 
         // 4. Persistent Signal protocol store (survives app restart)
         let protocolStore = try PersistentSignalStore()
+        protocolStore.logger = self.logger
         protocolStore.initialize(keyPair: identity, registrationId: regId)
         try protocolStore.storeSignedPreKey(
             SignedPreKeyRecord(id: 1, timestamp: UInt64(Date().timeIntervalSince1970), privateKey: signedPreKeyPrivate, signature: signedPreKeySignature),
@@ -282,7 +294,12 @@ public class ObscuraClient {
         await rateLimitDelay()
 
         for bundle in bundles {
-            try? await messenger.processServerBundle(bundle, userId: friendUserId)
+            do {
+                try await messenger.processServerBundle(bundle, userId: friendUserId)
+            } catch {
+                logger.sessionEstablishFailed(userId: friendUserId, error: "\(error)")
+                continue
+            }
             let targetDeviceId = bundle["deviceId"] as? String ?? friendUserId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: clientMessageData, targetUserId: friendUserId)
         }
@@ -340,6 +357,9 @@ public class ObscuraClient {
         await rateLimitDelay()
 
         _ = await messages.deleteByAuthorDevice(targetDeviceId)
+
+        // Clean up Signal sessions for revoked device
+        try? persistentSignalStore?.deleteAllSessions(for: targetDeviceId)
 
         let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         let remainingDevices = await devices.getOwnDevices().filter { $0.deviceId != targetDeviceId }
@@ -432,11 +452,23 @@ public class ObscuraClient {
     public func logout() async throws {
         disconnect()
         if let rt = refreshToken { try? await api.logout(rt) }
+        // Clear all in-memory credentials
         token = nil
         refreshToken = nil
         userId = nil
+        username = nil
+        deviceId = nil
+        identityKeyPair = nil
+        registrationId = nil
+        _recoveryPhrase = nil
+        recoveryPublicKey = nil
+        _messenger = nil
         _authState = .loggedOut
         await api.clearToken()
+        // Wipe all persistent stores
+        await friends.clearAll()
+        await messages.clearAll()
+        await devices.clearAll()
     }
 
     // MARK: - Internal: Send to all devices of a user
@@ -448,7 +480,12 @@ public class ObscuraClient {
 
         let msgData = try msg.serializedData()
         for bundle in bundles {
-            try? await messenger.processServerBundle(bundle, userId: targetUserId)
+            do {
+                try await messenger.processServerBundle(bundle, userId: targetUserId)
+            } catch {
+                logger.sessionEstablishFailed(userId: targetUserId, error: "\(error)")
+                continue
+            }
             let targetDeviceId = bundle["deviceId"] as? String ?? targetUserId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: msgData, targetUserId: targetUserId)
         }
@@ -477,6 +514,15 @@ public class ObscuraClient {
 
         let sourceUserId = bytesToUuid(raw.senderID)
 
+        // Rate limit: skip senders with too many recent decrypt failures
+        if let entry = decryptFailures[sourceUserId] {
+            if Date().timeIntervalSince(entry.windowStart) > decryptFailureWindow {
+                decryptFailures[sourceUserId] = nil // Reset window
+            } else if entry.count >= maxDecryptFailures {
+                return // Skip — rate limited
+            }
+        }
+
         do {
             let encMsg = try Obscura_V2_EncryptedMessage(serializedData: raw.message)
             let messageType = encMsg.type == .prekeyMessage ? 1 : 2
@@ -484,6 +530,11 @@ public class ObscuraClient {
                 sourceUserId: sourceUserId, content: encMsg.content, messageType: messageType
             )
             let clientMsg = try Obscura_V2_ClientMessage(serializedData: Data(plaintext))
+
+            // Replenish prekeys if this was a prekey message (consumed one OTK)
+            if encMsg.type == .prekeyMessage {
+                await replenishPreKeysIfNeeded()
+            }
 
             // Route by message type
             await routeMessage(clientMsg, sourceUserId: sourceUserId)
@@ -502,9 +553,16 @@ public class ObscuraClient {
             emit(received)
 
             // Ack
-            try? gateway.acknowledge([raw.id])
+            do {
+                try gateway.acknowledge([raw.id])
+            } catch {
+                logger.ackFailed(envelopeId: raw.id.map { String(format: "%02x", $0) }.joined(), error: "\(error)")
+            }
         } catch {
-            // Decrypt failed — skip envelope
+            // Track decrypt failures per sender
+            let entry = decryptFailures[sourceUserId] ?? (count: 0, windowStart: Date())
+            decryptFailures[sourceUserId] = (count: entry.count + 1, windowStart: entry.windowStart)
+            logger.decryptFailed(sourceUserId: sourceUserId, error: "\(error)")
         }
     }
 
@@ -627,7 +685,11 @@ public class ObscuraClient {
         syncMsg.sentSync = payload
 
         for device in ownDevices where device.deviceId != self.deviceId {
-            try? await sendToAllDevices(self.userId!, syncMsg)
+            do {
+                try await sendToAllDevices(self.userId!, syncMsg)
+            } catch {
+                logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "sentSync: \(error)")
+            }
         }
     }
 
@@ -647,7 +709,54 @@ public class ObscuraClient {
         syncMsg.friendSync = payload
 
         for device in ownDevices where device.deviceId != self.deviceId {
-            try? await sendToAllDevices(self.userId!, syncMsg)
+            do {
+                try await sendToAllDevices(self.userId!, syncMsg)
+            } catch {
+                logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "friendSync: \(error)")
+            }
+        }
+    }
+
+    // MARK: - Internal: Prekey Replenishment
+
+    private func replenishPreKeysIfNeeded() async {
+        guard let store = persistentSignalStore, let identity = identityKeyPair else { return }
+        let batchSize: UInt32 = 50
+        var newKeys: [[String: Any]] = []
+        let startId = nextPreKeyId
+
+        for i in 0..<batchSize {
+            let keyId = startId + i
+            let pk = PrivateKey.generate()
+            newKeys.append([
+                "keyId": Int(keyId),
+                "publicKey": Data(pk.publicKey.serialize()).base64EncodedString(),
+            ])
+            try? store.storePreKey(
+                PreKeyRecord(id: keyId, publicKey: pk.publicKey, privateKey: pk),
+                id: keyId, context: NullContext()
+            )
+        }
+        nextPreKeyId = startId + batchSize
+
+        // Upload to server
+        let signedPreKeyPrivate = PrivateKey.generate()
+        let signedPreKeySignature = identity.privateKey.generateSignature(
+            message: signedPreKeyPrivate.publicKey.serialize()
+        )
+        do {
+            try await api.uploadDeviceKeys(
+                identityKey: Data(identity.publicKey.serialize()).base64EncodedString(),
+                registrationId: Int(registrationId ?? 0),
+                signedPreKey: [
+                    "keyId": Int(nextPreKeyId),
+                    "publicKey": Data(signedPreKeyPrivate.publicKey.serialize()).base64EncodedString(),
+                    "signature": Data(signedPreKeySignature).base64EncodedString(),
+                ],
+                oneTimePreKeys: newKeys
+            )
+        } catch {
+            logger.sessionEstablishFailed(userId: userId ?? "unknown", error: "prekey replenish: \(error)")
         }
     }
 
@@ -655,6 +764,7 @@ public class ObscuraClient {
 
     private func startTokenRefresh() {
         tokenRefreshTask = Task { [weak self] in
+            var consecutiveFailures = 0
             while !Task.isCancelled {
                 guard let self = self, let token = self.token else {
                     try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -665,13 +775,22 @@ public class ObscuraClient {
                 try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
 
                 if let rt = self.refreshToken {
-                    if let result = try? await self.api.refreshSession(rt) {
+                    do {
+                        let result = try await self.api.refreshSession(rt)
                         if let newToken = result["token"] as? String {
                             self.token = newToken
                             await self.api.setToken(newToken)
                         }
                         if let newRefresh = result["refreshToken"] as? String {
                             self.refreshToken = newRefresh
+                        }
+                        consecutiveFailures = 0
+                    } catch {
+                        consecutiveFailures += 1
+                        self.logger.tokenRefreshFailed(attempt: consecutiveFailures, error: "\(error)")
+                        if consecutiveFailures >= 3 {
+                            self._authState = .loggedOut
+                            break
                         }
                     }
                 }

@@ -54,7 +54,7 @@ public actor MessengerActor {
     // MARK: - Encryption
 
     /// Encrypt plaintext for a target user at a specific address
-    public func encrypt(_ targetUserId: String, _ plaintext: [UInt8], registrationId: UInt32 = 1) throws -> (type: CiphertextMessage.MessageType, body: [UInt8]) {
+    public func encrypt(_ targetUserId: String, _ plaintext: [UInt8], registrationId: UInt32) throws -> (type: CiphertextMessage.MessageType, body: [UInt8]) {
         let address = try ProtocolAddress(name: targetUserId, deviceId: registrationId)
 
         let ciphertext = try signalEncrypt(
@@ -70,7 +70,9 @@ public actor MessengerActor {
 
     /// Establish session from prekey bundle data (as returned by server)
     public func processServerBundle(_ bundleData: [String: Any], userId: String) throws {
-        let regId = bundleData["registrationId"] as? Int ?? 1
+        guard let regId = bundleData["registrationId"] as? Int else {
+            throw MessengerError.invalidBundle("missing registrationId")
+        }
         let address = try ProtocolAddress(name: userId, deviceId: UInt32(regId))
 
         // Parse keys from base64
@@ -174,7 +176,9 @@ public actor MessengerActor {
         // Resolve target
         let mapping = deviceMap[targetDeviceId]
         let userId = targetUserId ?? mapping?.userId ?? targetDeviceId
-        let regId = mapping?.registrationId ?? 1
+        guard let regId = mapping?.registrationId else {
+            throw MessengerError.invalidBundle("missing device mapping for \(targetDeviceId)")
+        }
 
         // Use pre-serialized ClientMessage bytes
         let plaintext = Array(clientMessageData)
@@ -222,6 +226,7 @@ public actor MessengerActor {
 
     private func uuidToBytes(_ uuid: String) -> Data {
         let cleaned = uuid.replacingOccurrences(of: "-", with: "")
+        guard cleaned.count == 32 else { return Data(repeating: 0, count: 16) }
         var bytes = Data(count: 16)
         for i in 0..<16 {
             let start = cleaned.index(cleaned.startIndex, offsetBy: i * 2)
