@@ -123,23 +123,62 @@ public class ObscuraTestClient {
 
     // MARK: - Text Messages
 
-    /// Send a text message to a friend
-    public func sendText(to targetUserId: String, _ text: String) async throws {
+    /// Send a text message to a friend, with optional SENT_SYNC to own devices
+    public func sendText(to targetUserId: String, _ text: String, sentSync: Bool = false) async throws {
         guard let messenger = messenger else { throw ObscuraClient.ObscuraError.noMessenger }
+
+        let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        let messageId = "msg_\(UUID().uuidString)"
 
         var msg = Obscura_V2_ClientMessage()
         msg.type = .text
         msg.text = text
-        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        msg.timestamp = timestamp
 
         // Fetch bundles to ensure we have session + device mapping
         let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
         await rateLimitDelay()
 
+        // Determine conversation ID (friend username from bundles context)
         for bundle in bundles {
             try? await messenger.processServerBundle(bundle, userId: targetUserId)
             let targetDeviceId = bundle["deviceId"] as? String ?? targetUserId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: try msg.serializedData(), targetUserId: targetUserId)
+        }
+
+        // SENT_SYNC: notify own devices of the sent message
+        if sentSync {
+            let ownDevices = await devices.getOwnDevices()
+            if !ownDevices.isEmpty {
+                var syncMsg = Obscura_V2_ClientMessage()
+                syncMsg.type = .sentSync
+                var sentSyncPayload = Obscura_V2_SentSync()
+                sentSyncPayload.conversationID = targetUserId
+                sentSyncPayload.messageID = messageId
+                sentSyncPayload.timestamp = timestamp
+                sentSyncPayload.content = Data(text.utf8)
+                syncMsg.sentSync = sentSyncPayload
+                syncMsg.timestamp = timestamp
+
+                for device in ownDevices {
+                    // Don't send to self
+                    guard device.deviceId != self.deviceId else { continue }
+                    // Need session with own device
+                    let selfBundles = try await messenger.fetchPreKeyBundles(self.userId!)
+                    await rateLimitDelay()
+                    for bundle in selfBundles {
+                        let bundleDeviceId = bundle["deviceId"] as? String ?? ""
+                        if bundleDeviceId == device.deviceId {
+                            try? await messenger.processServerBundle(bundle, userId: self.userId!)
+                            try await messenger.queueMessage(
+                                targetDeviceId: device.deviceId,
+                                clientMessageData: try syncMsg.serializedData(),
+                                targetUserId: self.userId!
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         _ = try await messenger.flushMessages()
