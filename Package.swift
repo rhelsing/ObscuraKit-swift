@@ -30,10 +30,6 @@ let package = Package(
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(
-            name: "ScratchpadTests",
-            dependencies: ["ObscuraKit"],
-            swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(
             name: "ScenarioTests",
             dependencies: ["ObscuraKit"],
             swiftSettings: [.swiftLanguageMode(.v5)]),
