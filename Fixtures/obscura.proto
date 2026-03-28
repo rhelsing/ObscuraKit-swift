@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package obscura.v1;
+
+option java_package = "xyz.obscura.server.contracts";
+option java_outer_classname = "ObscuraProtocol";
+
+// ==============================================================================
+// REST API Payloads (Upstream)
+// Endpoint: POST /v1/messages
+// Note: Idempotency is handled via HTTP Header (Idempotency-Key), not in payload.
+// ==============================================================================
+
+message SendMessageRequest {
+  message Submission {
+    bytes submission_id = 1; // Client-generated UUID (16 bytes)
+    bytes device_id = 2;     // UUID of the target device (16 bytes)
+    bytes message = 3;       // The encrypted message payload
+  }
+
+  repeated Submission messages = 1;
+}
+
+message SendMessageResponse {
+  enum ErrorCode {
+    ERROR_CODE_UNSPECIFIED = 0;
+    ERROR_CODE_INVALID_DEVICE = 1;          // Device not found in database
+    ERROR_CODE_MALFORMED_DEVICE_ID = 2;     // Device ID bytes are invalid (expected 16)
+    ERROR_CODE_MALFORMED_SUBMISSION_ID = 3; // Submission ID bytes are invalid (expected 16)
+    ERROR_CODE_MESSAGE_MISSING = 4;         // Message payload is missing
+  }
+
+  message FailedSubmission {
+    bytes submission_id = 1;  // Echoed back to the client (16 bytes)
+    ErrorCode error_code = 2;
+    string error_message = 3; // Optional human-readable context
+  }
+
+  // If empty, all submissions in the batch were successfully queued.
+  repeated FailedSubmission failed_submissions = 1;
+}
+
+// ==============================================================================
+// Gateway Protocol (WebSocket)
+// Endpoint: /v1/gateway
+// ==============================================================================
+
+// The top-level frame exchanged over the WebSocket connection.
+message WebSocketFrame {
+  oneof payload {
+    // Client -> Server: Acknowledge receipt of a message and triggers server-side deletion.
+    AckMessage ack = 11;
+
+    // Server -> Client: Notification that one-time pre-keys are running low.
+    PreKeyStatus pre_key_status = 12;
+
+    // Server -> Client: Batch of messages delivered in a single frame.
+    EnvelopeBatch envelope_batch = 13;
+  }
+}
+
+// A batch of envelopes for bulk message delivery over WebSocket.
+message EnvelopeBatch {
+  repeated Envelope envelopes = 1;
+}
+
+message PreKeyStatus {
+  int32 one_time_pre_key_count = 1;
+  int32 min_threshold = 2; // The server's configured threshold
+}
+
+// Represents a message waiting in the queue for the connected device.
+// The client MUST reply with an `AckMessage` containing this message's ID.
+message Envelope {
+  bytes id = 1;         // UUID of the message (16 bytes).
+  bytes sender_id = 2;  // UUID of the sender (16 bytes).
+  uint64 timestamp = 3; // Server-generated timestamp (ms) of when the message was received.
+  bytes message = 4;    // The encrypted message payload
+}
+
+// Sent by client to confirm processing. Server deletes the message upon receipt.
+message AckMessage {
+  repeated bytes message_ids = 1; // UUIDs of the messages to acknowledge (16 bytes each).
+}
