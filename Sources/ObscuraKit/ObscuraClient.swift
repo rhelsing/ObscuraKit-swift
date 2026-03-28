@@ -106,6 +106,12 @@ public class ObscuraClient {
         self.gateway = GatewayConnection(api: api)
     }
 
+    deinit {
+        envelopeTask?.cancel()
+        tokenRefreshTask?.cancel()
+        gateway.disconnect()
+    }
+
     // MARK: - Register
 
     public func register(_ username: String, _ password: String) async throws {
@@ -310,12 +316,20 @@ public class ObscuraClient {
     // MARK: - Recovery
 
     /// Generate a 12-word recovery phrase. Store it securely — it's the only way to recover.
-    public var recoveryPhrase: String?
+    /// Access via getRecoveryPhrase() which clears the in-memory copy after read.
+    private var _recoveryPhrase: String?
     public var recoveryPublicKey: Data?
+
+    /// Read the recovery phrase exactly once, then wipe it from memory.
+    public func getRecoveryPhrase() -> String? {
+        let phrase = _recoveryPhrase
+        _recoveryPhrase = nil
+        return phrase
+    }
 
     public func generateRecoveryPhrase() -> String {
         let phrase = RecoveryKeys.generatePhrase()
-        self.recoveryPhrase = phrase
+        self._recoveryPhrase = phrase
         self.recoveryPublicKey = RecoveryKeys.getPublicKey(from: phrase)
         return phrase
     }
@@ -445,14 +459,14 @@ public class ObscuraClient {
 
     private func startEnvelopeLoop() {
         envelopeTask = Task { [weak self] in
-            guard let self = self else { return }
             while !Task.isCancelled {
+                guard let self = self else { break }
                 do {
-                    let raw = try await self.gateway.waitForRawEnvelope(timeout: 60)
+                    let raw = try await self.gateway.waitForRawEnvelope(timeout: 30)
                     await self.processEnvelope(raw)
                 } catch {
                     if Task.isCancelled { break }
-                    // Timeout — just loop again
+                    // Timeout or error — loop again if not cancelled
                 }
             }
         }
@@ -517,12 +531,26 @@ public class ObscuraClient {
             await messages.add(sourceUserId, messageData)
 
         case .deviceAnnounce:
-            let deviceInfos = msg.deviceAnnounce.devices.map { dev -> [String: String] in
+            let announce = msg.deviceAnnounce
+            let deviceInfos = announce.devices.map { dev -> [String: String] in
                 ["deviceId": dev.deviceID, "deviceName": dev.deviceName]
             }
-            await friends.updateDevices(sourceUserId, devices: deviceInfos, timestamp: msg.deviceAnnounce.timestamp)
+            let deviceIds = announce.devices.map(\.deviceID)
 
-            if msg.deviceAnnounce.isRevocation {
+            // Verify signature against sender's stored recovery public key
+            if let friend = await friends.getFriend(sourceUserId),
+               let recoveryPubKey = friend.recoveryPublicKey, !recoveryPubKey.isEmpty {
+                let payload = RecoveryKeys.serializeAnnounceForSigning(
+                    deviceIds: deviceIds, timestamp: announce.timestamp, isRevocation: announce.isRevocation
+                )
+                guard RecoveryKeys.verify(publicKey: recoveryPubKey, data: payload, signature: announce.signature) else {
+                    break // Reject unverified announcement
+                }
+            }
+
+            await friends.updateDevices(sourceUserId, devices: deviceInfos, timestamp: announce.timestamp)
+
+            if announce.isRevocation {
                 // Purge messages from revoked devices
                 let currentDeviceIds = Set(deviceInfos.compactMap { $0["deviceId"] })
                 // Would need to know which device was removed to purge its messages
@@ -533,7 +561,8 @@ public class ObscuraClient {
             break
 
         case .syncBlob:
-            // Import state from linked device
+            // Import state from linked device — only accept from own devices
+            guard sourceUserId == self.userId else { break }
             if let parsed = SyncBlobExporter.parseExport(msg.syncBlob.compressedData) {
                 for f in parsed.friends {
                     let status = FriendStatus(rawValue: f["status"] as? String ?? "") ?? .pendingSent
@@ -550,6 +579,8 @@ public class ObscuraClient {
             }
 
         case .sentSync:
+            // Only accept sent sync from own devices
+            guard sourceUserId == self.userId else { break }
             let ss = msg.sentSync
             let messageData = Message(
                 messageId: ss.messageID,
@@ -561,6 +592,8 @@ public class ObscuraClient {
             await messages.add(ss.conversationID, messageData)
 
         case .friendSync:
+            // Only accept friend sync from own devices
+            guard sourceUserId == self.userId else { break }
             let fs = msg.friendSync
             if fs.action == "add" {
                 let status = FriendStatus(rawValue: fs.status) ?? .pendingSent

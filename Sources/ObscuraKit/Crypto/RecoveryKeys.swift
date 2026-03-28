@@ -30,10 +30,10 @@ public struct RecoveryKeys {
     }
 
     /// Derive a Curve25519 keypair from a recovery phrase.
-    /// Uses SHA-256 of the phrase as the 32-byte private key seed.
+    /// Uses PBKDF2-HMAC-SHA256 with BIP39-standard salt and 2048 iterations.
     public static func deriveKeypair(from phrase: String) -> (publicKey: Data, privateKey: Data) {
-        let seed = sha256(Data(phrase.utf8))
-        guard let privateKey = try? PrivateKey(Array(seed)) else {
+        let seed = pbkdf2(password: Array(phrase.utf8), salt: Array("mnemonic".utf8), iterations: 2048, keyLength: 32)
+        guard let privateKey = try? PrivateKey(seed) else {
             return (publicKey: Data(), privateKey: Data())
         }
         let publicKey = privateKey.publicKey
@@ -47,8 +47,8 @@ public struct RecoveryKeys {
 
     /// Sign data with a recovery phrase (derive key, sign, discard private key).
     public static func sign(phrase: String, data: Data) -> Data {
-        let seed = sha256(Data(phrase.utf8))
-        guard let privateKey = try? PrivateKey(Array(seed)) else { return Data() }
+        let seed = pbkdf2(password: Array(phrase.utf8), salt: Array("mnemonic".utf8), iterations: 2048, keyLength: 32)
+        guard let privateKey = try? PrivateKey(seed) else { return Data() }
         let signature = privateKey.generateSignature(message: Array(data))
         return Data(signature)
     }
@@ -115,6 +115,51 @@ internal func recoverySHA256(_ data: Data) -> [UInt8] {
     var result = [UInt8]()
     for val in h { result.append(UInt8((val>>24)&0xff)); result.append(UInt8((val>>16)&0xff)); result.append(UInt8((val>>8)&0xff)); result.append(UInt8(val&0xff)) }
     return result
+}
+
+// MARK: - PBKDF2-HMAC-SHA256 (cross-platform, no CommonCrypto dependency)
+
+/// PBKDF2 key derivation using HMAC-SHA256, per RFC 2898.
+internal func pbkdf2(password: [UInt8], salt: [UInt8], iterations: Int, keyLength: Int) -> [UInt8] {
+    var derivedKey = [UInt8]()
+    let blockCount = (keyLength + 31) / 32 // SHA-256 output is 32 bytes
+
+    for blockIndex in 1...blockCount {
+        // U1 = HMAC(password, salt || INT(blockIndex))
+        let blockBytes: [UInt8] = [
+            UInt8((blockIndex >> 24) & 0xff),
+            UInt8((blockIndex >> 16) & 0xff),
+            UInt8((blockIndex >> 8) & 0xff),
+            UInt8(blockIndex & 0xff),
+        ]
+        var u = hmacSHA256(key: password, message: salt + blockBytes)
+        var result = u
+
+        // U2..Uc
+        for _ in 1..<iterations {
+            u = hmacSHA256(key: password, message: u)
+            for j in 0..<32 { result[j] ^= u[j] }
+        }
+        derivedKey.append(contentsOf: result)
+    }
+
+    return Array(derivedKey.prefix(keyLength))
+}
+
+/// HMAC-SHA256 per RFC 2104.
+private func hmacSHA256(key: [UInt8], message: [UInt8]) -> [UInt8] {
+    let blockSize = 64
+    var k = key
+    if k.count > blockSize {
+        k = recoverySHA256(Data(k))
+    }
+    while k.count < blockSize { k.append(0) }
+
+    let iPad = k.map { $0 ^ 0x36 }
+    let oPad = k.map { $0 ^ 0x5c }
+
+    let inner = recoverySHA256(Data(iPad + message))
+    return recoverySHA256(Data(oPad + inner))
 }
 
 // BIP39_WORDLIST is in Bip39Wordlist.swift (2048 words from standard English wordlist)

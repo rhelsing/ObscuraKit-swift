@@ -171,7 +171,7 @@ public actor GRDBSignalStore: SignalStoreProtocol {
             try Data.fetchOne(db, sql: "SELECT public_key FROM trusted_identities WHERE address = ?", arguments: [address])
         }
         guard let stored = stored else { return true } // Trust on first use
-        return stored == identityKey
+        return constantTimeEqual(stored, identityKey)
     }
 
     public func saveIdentity(_ address: String, _ publicKey: Data) async {

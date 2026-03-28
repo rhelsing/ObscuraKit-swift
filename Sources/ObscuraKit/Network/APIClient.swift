@@ -10,6 +10,7 @@ public actor APIClient {
     private var token: String?
 
     public init(baseURL: String) {
+        precondition(baseURL.hasPrefix("https://"), "API URL must use HTTPS")
         self.baseURL = baseURL
     }
 

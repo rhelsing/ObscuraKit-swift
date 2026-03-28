@@ -37,7 +37,6 @@ public class GatewayConnection {
         let baseURL = await api.baseURL
         let wsBase = baseURL
             .replacingOccurrences(of: "https://", with: "wss://")
-            .replacingOccurrences(of: "http://", with: "ws://")
         let urlString = "\(wsBase)/v1/gateway?ticket=\(ticket)"
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

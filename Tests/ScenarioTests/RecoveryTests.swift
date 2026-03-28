@@ -84,7 +84,9 @@ final class RecoveryTests: XCTestCase {
         let phrase = client.generateRecoveryPhrase()
 
         XCTAssertEqual(phrase.split(separator: " ").count, 12)
-        XCTAssertNotNil(client.recoveryPhrase)
+        // One-time read: first call returns phrase, second returns nil
+        XCTAssertNotNil(client.getRecoveryPhrase())
+        XCTAssertNil(client.getRecoveryPhrase(), "Recovery phrase should be wiped after first read")
         XCTAssertNotNil(client.recoveryPublicKey)
         XCTAssertEqual(client.recoveryPublicKey?.count, 33)
     }

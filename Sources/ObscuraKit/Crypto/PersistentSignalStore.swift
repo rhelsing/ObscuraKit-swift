@@ -100,7 +100,7 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
             try Data.fetchOne(db, sql: "SELECT key_data FROM signal_identities WHERE address = ?", arguments: [addressStr])
         }
         guard let stored = stored else { return true } // TOFU
-        return stored == Data(identity.serialize())
+        return constantTimeEqual(stored, Data(identity.serialize()))
     }
 
     public func identity(for address: ProtocolAddress, context: StoreContext) throws -> IdentityKey? {
