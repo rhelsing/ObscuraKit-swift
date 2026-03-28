@@ -306,6 +306,87 @@ public class ObscuraClient {
         }
     }
 
+    // MARK: - Recovery
+
+    /// Generate a 12-word recovery phrase. Store it securely — it's the only way to recover.
+    public var recoveryPhrase: String?
+    public var recoveryPublicKey: Data?
+
+    public func generateRecoveryPhrase() -> String {
+        let phrase = RecoveryKeys.generatePhrase()
+        self.recoveryPhrase = phrase
+        self.recoveryPublicKey = RecoveryKeys.getPublicKey(from: phrase)
+        return phrase
+    }
+
+    /// Revoke a device — delete from server, purge messages, broadcast signed DeviceAnnounce.
+    public func revokeDevice(_ recoveryPhrase: String, targetDeviceId: String) async throws {
+        try await api.deleteDevice(targetDeviceId)
+        await rateLimitDelay()
+
+        _ = await messages.deleteByAuthorDevice(targetDeviceId)
+
+        let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        let remainingDevices = await devices.getOwnDevices().filter { $0.deviceId != targetDeviceId }
+        let remainingIds = remainingDevices.map(\.deviceId)
+
+        let announceData = RecoveryKeys.serializeAnnounceForSigning(
+            deviceIds: remainingIds, timestamp: timestamp, isRevocation: true
+        )
+        let signature = RecoveryKeys.sign(phrase: recoveryPhrase, data: announceData)
+        let recoveryPubKey = RecoveryKeys.getPublicKey(from: recoveryPhrase)
+
+        try await announceDevices(isRevocation: true, signature: signature)
+    }
+
+    /// Announce recovery to all friends (new device replacing old ones).
+    public func announceRecovery(_ recoveryPhrase: String) async throws {
+        let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        let announceData = RecoveryKeys.serializeAnnounceForSigning(
+            deviceIds: [deviceId ?? ""], timestamp: timestamp, isRevocation: false
+        )
+        let signature = RecoveryKeys.sign(phrase: recoveryPhrase, data: announceData)
+        let recoveryPubKey = RecoveryKeys.getPublicKey(from: recoveryPhrase)
+
+        var announce = Obscura_V2_DeviceRecoveryAnnounce()
+        var deviceInfo = Obscura_V2_DeviceInfo()
+        deviceInfo.deviceID = deviceId ?? ""
+        announce.newDevices = [deviceInfo]
+        announce.timestamp = timestamp
+        announce.signature = signature
+        announce.isFullRecovery = true
+        announce.recoveryPublicKey = recoveryPubKey
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .deviceRecoveryAnnounce
+        msg.deviceRecoveryAnnounce = announce
+
+        let accepted = await friends.getAccepted()
+        for friend in accepted {
+            try await sendToAllDevices(friend.userId, msg)
+        }
+    }
+
+    // MARK: - Backup
+
+    private var backupEtag: String?
+
+    /// Upload encrypted backup to server.
+    public func uploadBackup() async throws -> String? {
+        let friendsData = await friends.getAll()
+        let exportData = SyncBlobExporter.export(friends: friendsData, messages: [])
+        let etag = try await api.uploadBackup(exportData, etag: backupEtag)
+        backupEtag = etag
+        return etag
+    }
+
+    /// Download backup from server.
+    public func downloadBackup() async throws -> Data? {
+        guard let result = try await api.downloadBackup(etag: backupEtag) else { return nil }
+        backupEtag = result.etag
+        return result.data
+    }
+
     /// Wait for next incoming message. Uses buffered queue — messages processed by
     /// the envelope loop are queued here, so timing doesn't matter.
     public func waitForMessage(timeout: TimeInterval = 10) async throws -> ReceivedMessage {
