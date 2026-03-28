@@ -1,3 +1,4 @@
+# Swift / SPM
 .DS_Store
 /.build
 /Packages
@@ -7,4 +8,22 @@ DerivedData/
 .swiftpm/config/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
+
+# Vendored libsignal (cloned at build time, not checked in)
 vendored/libsignal
+
+# Rust build artifacts (if building libsignal locally)
+target/
+
+# Environment
+.env
+*.pem
+
+# Xcode
+*.xcworkspace
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+project.xcworkspace/
