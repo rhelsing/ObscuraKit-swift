@@ -1,8 +1,10 @@
 import Foundation
+import LibSignalClient
+import SwiftProtobuf
 
 /// Thin test wrapper around ObscuraClient.
-/// Provides convenience methods for scenario tests (register + connect in one call, etc.)
-/// This calls the same API that views would call.
+/// Provides convenience methods for scenario tests.
+/// Calls the same API that views would call.
 public class ObscuraTestClient {
     public let client: ObscuraClient
     public let username: String
@@ -12,11 +14,13 @@ public class ObscuraTestClient {
     public var deviceId: String? { client.deviceId }
     public var token: String? { client.token }
 
-    // Convenience accessors (same API views use)
+    // Convenience accessors
     public var friends: FriendActor { client.friends }
     public var messages: MessageActor { client.messages }
     public var devices: DeviceActor { client.devices }
     public var api: APIClient { client.api }
+    public var messenger: MessengerActor? { client.messenger }
+    public var gateway: GatewayConnection? { client.gateway }
 
     private init(client: ObscuraClient, username: String, password: String) {
         self.client = client
@@ -24,7 +28,9 @@ public class ObscuraTestClient {
         self.password = password
     }
 
-    /// Register a new test user. Returns a ready-to-use test client.
+    // MARK: - Registration
+
+    /// Register a new test user with real Signal keys. Returns a ready-to-use test client.
     public static func register(
         _ username: String? = nil,
         _ password: String = "testpass123456",
@@ -50,14 +56,170 @@ public class ObscuraTestClient {
         return ObscuraTestClient(client: client, username: username, password: password)
     }
 
-    /// Re-login this user (simulating logout + login).
-    public func relogin(deviceId: String? = nil) async throws {
-        try await client.login(username, password, deviceId: deviceId)
-        await rateLimitDelay()
+    // MARK: - WebSocket
+
+    /// Connect to WebSocket gateway for receiving messages
+    public func connectWebSocket() async throws {
+        guard let gateway = gateway else { throw ObscuraClient.ObscuraError.noMessenger }
+        try await gateway.connect()
     }
 
-    /// Check if this user is friends with another.
+    /// Disconnect WebSocket
+    public func disconnectWebSocket() {
+        gateway?.disconnect()
+    }
+
+    // MARK: - Friend Requests
+
+    /// Send a friend request to a target user via encrypted Signal message
+    public func sendFriendRequest(to targetUserId: String) async throws {
+        guard let messenger = messenger else { throw ObscuraClient.ObscuraError.noMessenger }
+
+        // Fetch target's prekey bundles and establish session
+        let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
+        await rateLimitDelay()
+
+        guard let bundle = bundles.first else {
+            throw TestClientError.noBundles(targetUserId)
+        }
+
+        try await messenger.processServerBundle(bundle, userId: targetUserId)
+
+        // Build friend request message
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .friendRequest
+        msg.username = username
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        // Queue and send
+        let targetDeviceId = bundle["deviceId"] as? String ?? targetUserId
+        try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: try msg.serializedData(), targetUserId: targetUserId)
+        _ = try await messenger.flushMessages()
+    }
+
+    /// Send a friend response (accept/decline)
+    public func sendFriendResponse(to targetUserId: String, accepted: Bool) async throws {
+        guard let messenger = messenger else { throw ObscuraClient.ObscuraError.noMessenger }
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .friendResponse
+        msg.username = username
+        msg.accepted = accepted
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        // Need to find the target's device - use stored mapping from prior interaction
+        let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
+        await rateLimitDelay()
+
+        if let bundle = bundles.first {
+            // Process bundle if no session exists
+            try? await messenger.processServerBundle(bundle, userId: targetUserId)
+            let targetDeviceId = bundle["deviceId"] as? String ?? targetUserId
+            try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: try msg.serializedData(), targetUserId: targetUserId)
+        }
+
+        _ = try await messenger.flushMessages()
+    }
+
+    // MARK: - Text Messages
+
+    /// Send a text message to a friend
+    public func sendText(to targetUserId: String, _ text: String) async throws {
+        guard let messenger = messenger else { throw ObscuraClient.ObscuraError.noMessenger }
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .text
+        msg.text = text
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        // Fetch bundles to ensure we have session + device mapping
+        let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
+        await rateLimitDelay()
+
+        for bundle in bundles {
+            try? await messenger.processServerBundle(bundle, userId: targetUserId)
+            let targetDeviceId = bundle["deviceId"] as? String ?? targetUserId
+            try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: try msg.serializedData(), targetUserId: targetUserId)
+        }
+
+        _ = try await messenger.flushMessages()
+    }
+
+    // MARK: - Receiving Messages
+
+    /// Wait for a message via WebSocket, decrypt it, return the ClientMessage
+    /// Received message from WebSocket
+    public struct ReceivedMessage {
+        public let sourceUserId: String
+        public let type: Int  // ClientMessage.Type raw value
+        public let text: String
+        public let username: String
+        public let accepted: Bool
+        public let timestamp: UInt64
+        public let rawBytes: Data
+    }
+
+    public func waitForMessage(timeout: TimeInterval = 10) async throws -> ReceivedMessage {
+        guard let gateway = gateway, let messenger = messenger else {
+            throw ObscuraClient.ObscuraError.noMessenger
+        }
+
+        let raw = try await gateway.waitForRawEnvelope(timeout: timeout)
+
+        // Parse sender ID from envelope bytes
+        let sourceUserId = bytesToUuid(raw.senderID)
+
+        // Decode EncryptedMessage from envelope
+        let encMsg = try Obscura_V2_EncryptedMessage(serializedData: raw.message)
+
+        // Decrypt
+        let messageType = encMsg.type == .prekeyMessage ? 1 : 2
+        let plaintext = try await messenger.decrypt(
+            sourceUserId: sourceUserId,
+            content: encMsg.content,
+            messageType: messageType
+        )
+
+        // Decode ClientMessage
+        let clientMessage = try Obscura_V2_ClientMessage(serializedData: Data(plaintext))
+
+        // Ack
+        try await gateway.acknowledge([raw.id])
+
+        return ReceivedMessage(
+            sourceUserId: sourceUserId,
+            type: clientMessage.type.rawValue,
+            text: clientMessage.text,
+            username: clientMessage.username,
+            accepted: clientMessage.accepted,
+            timestamp: clientMessage.timestamp,
+            rawBytes: Data(plaintext)
+        )
+    }
+
+    /// Check if this user is friends with another
     public func isFriendsWith(_ userId: String) async -> Bool {
         await friends.isFriend(userId)
+    }
+
+    // MARK: - Helpers
+
+    private func bytesToUuid(_ data: Data) -> String {
+        guard data.count == 16 else { return data.map { String(format: "%02x", $0) }.joined() }
+        let hex = data.map { String(format: "%02x", $0) }.joined()
+        let i = hex.startIndex
+        return "\(hex[i..<hex.index(i, offsetBy: 8)])-\(hex[hex.index(i, offsetBy: 8)..<hex.index(i, offsetBy: 12)])-\(hex[hex.index(i, offsetBy: 12)..<hex.index(i, offsetBy: 16)])-\(hex[hex.index(i, offsetBy: 16)..<hex.index(i, offsetBy: 20)])-\(hex[hex.index(i, offsetBy: 20)..<hex.index(i, offsetBy: 32)])"
+    }
+
+    public enum TestClientError: Error, LocalizedError {
+        case noBundles(String)
+        case noMessage
+
+        public var errorDescription: String? {
+            switch self {
+            case .noBundles(let userId): return "No prekey bundles for user \(userId)"
+            case .noMessage: return "No message received"
+            }
+        }
     }
 }

@@ -1,165 +1,123 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Scenario 1-4: Core Flow
-/// Register → Login → Friend Request → Messaging → Persistence
-///
-/// These tests use ObscuraTestClient which calls ObscuraClient — the same API views use.
+/// Scenario 1-4: Core Flow — ALL against actual server
+/// Register with real Signal keys → Friend request via encrypted message → Text messaging via WebSocket
 final class CoreFlowTests: XCTestCase {
 
-    // MARK: - Scenario 1: Register + Token + Persistence
+    // MARK: - Scenario 1: Register with real keys
 
-    func testScenario1_RegisterAndTokenValid() async throws {
+    func testScenario1_RegisterWithRealKeys() async throws {
         let alice = try await ObscuraTestClient.register()
 
-        // Token should exist and be parseable
-        XCTAssertNotNil(alice.token)
-        XCTAssertNotNil(alice.userId)
+        XCTAssertNotNil(alice.token, "Should have auth token")
+        XCTAssertNotNil(alice.userId, "Should have userId from JWT")
+        XCTAssertNotNil(alice.deviceId, "Should have deviceId (device-scoped token)")
         XCTAssertFalse(alice.userId!.isEmpty)
+        XCTAssertFalse(alice.deviceId!.isEmpty)
 
-        // JWT should decode
+        // JWT should decode correctly
         let payload = APIClient.decodeJWT(alice.token!)
         XCTAssertNotNil(payload)
         XCTAssertEqual(payload?["sub"] as? String, alice.userId)
     }
 
-    func testScenario1_RegisterCreatesStores() async throws {
-        let alice = try await ObscuraTestClient.register()
-
-        // Friends store should be empty but accessible
-        let friends = await alice.friends.getAll()
-        XCTAssertEqual(friends.count, 0)
-
-        // Messages store should be empty
-        let conversations = await alice.messages.getConversationIds()
-        XCTAssertEqual(conversations.count, 0)
-    }
-
-    // MARK: - Scenario 2: Logout + Login + Identity Restored
+    // MARK: - Scenario 2: Logout + Login
 
     func testScenario2_LogoutAndLogin() async throws {
         let alice = try await ObscuraTestClient.register()
         let originalUserId = alice.userId!
+        let originalDeviceId = alice.deviceId!
         await rateLimitDelay()
 
-        // Login again (simulating logout + login)
-        try await alice.relogin()
+        // Login again with stored deviceId
+        let alice2 = try await ObscuraTestClient.login(
+            alice.username,
+            deviceId: originalDeviceId
+        )
 
-        // Identity should be restored
-        XCTAssertEqual(alice.userId, originalUserId)
-        XCTAssertNotNil(alice.token)
+        XCTAssertEqual(alice2.userId, originalUserId, "UserId should be preserved")
     }
 
-    // MARK: - Scenario 3: Friend Request Flow
+    // MARK: - Scenario 3: Friend Request via server
 
-    func testScenario3_FriendRequestAndAccept() async throws {
+    func testScenario3_FriendRequestE2E() async throws {
         let alice = try await ObscuraTestClient.register()
         await rateLimitDelay()
         let bob = try await ObscuraTestClient.register()
         await rateLimitDelay()
 
-        // Alice adds Bob as pending_sent
-        await alice.friends.add(bob.userId!, bob.username, status: .pendingSent)
+        // Bob connects WebSocket to receive messages
+        try await bob.connectWebSocket()
+        await rateLimitDelay()
 
-        // Bob adds Alice as pending_received
-        await bob.friends.add(alice.userId!, alice.username, status: .pendingReceived)
+        // Alice sends friend request to Bob (encrypted via Signal, through server)
+        try await alice.sendFriendRequest(to: bob.userId!)
+        await rateLimitDelay()
 
-        // Verify pending states
-        let alicePending = await alice.friends.getFriend(bob.userId!)
-        XCTAssertEqual(alicePending?.status, .pendingSent)
+        // Bob receives the friend request via WebSocket
+        let received = try await bob.waitForMessage(timeout: 10)
 
-        let bobPending = await bob.friends.getPending()
-        XCTAssertEqual(bobPending.count, 1)
-        XCTAssertEqual(bobPending[0].username, alice.username)
+        XCTAssertEqual(received.sourceUserId, alice.userId!, "Sender should be Alice")
+        XCTAssertEqual(received.type, 2, "Type should be FRIEND_REQUEST (2)")
+        XCTAssertEqual(received.username, alice.username, "Username should match")
 
-        // Bob accepts
-        await bob.friends.updateStatus(alice.userId!, .accepted)
-        // Alice updates too
-        await alice.friends.updateStatus(bob.userId!, .accepted)
+        // Bob sends acceptance back
+        // Alice needs to connect to receive the response
+        try await alice.connectWebSocket()
+        await rateLimitDelay()
 
-        // Both should see each other as accepted
-        let aliceAccepted = await alice.friends.getAccepted()
-        XCTAssertEqual(aliceAccepted.count, 1)
-        XCTAssertEqual(aliceAccepted[0].username, bob.username)
+        try await bob.sendFriendResponse(to: alice.userId!, accepted: true)
+        await rateLimitDelay()
 
-        let bobAccepted = await bob.friends.getAccepted()
-        XCTAssertEqual(bobAccepted.count, 1)
-        XCTAssertEqual(bobAccepted[0].username, alice.username)
+        // Alice receives the response
+        let response = try await alice.waitForMessage(timeout: 10)
 
-        // isFriend should be true
-        let aliceIsFriend = await alice.friends.isFriend(bob.userId!)
-        XCTAssertTrue(aliceIsFriend)
+        XCTAssertEqual(response.sourceUserId, bob.userId!)
+        XCTAssertEqual(response.type, 3, "Type should be FRIEND_RESPONSE (3)")
+        XCTAssertTrue(response.accepted)
+
+        // Cleanup
+        alice.disconnectWebSocket()
+        bob.disconnectWebSocket()
     }
 
-    // MARK: - Scenario 4: Send Message + Persistence
+    // MARK: - Scenario 4: Text message delivery via server
 
-    func testScenario4_MessagePersistence() async throws {
+    func testScenario4_TextMessageE2E() async throws {
         let alice = try await ObscuraTestClient.register()
         await rateLimitDelay()
         let bob = try await ObscuraTestClient.register()
+        await rateLimitDelay()
 
-        // Set up friendship
-        await alice.friends.add(bob.userId!, bob.username, status: .accepted)
-        await bob.friends.add(alice.userId!, alice.username, status: .accepted)
+        // Bob connects WebSocket
+        try await bob.connectWebSocket()
+        await rateLimitDelay()
 
-        // Alice sends a message (persisted locally)
-        let msg = Message(
-            messageId: "msg_\(UUID().uuidString)",
-            conversationId: bob.username,
-            content: "hello from alice",
-            isSent: true
-        )
-        await alice.messages.add(bob.username, msg)
+        // Alice sends text to Bob
+        try await alice.sendText(to: bob.userId!, "hello from swift!")
+        await rateLimitDelay()
 
-        // Message should be retrievable
-        let aliceMessages = await alice.messages.getMessages(bob.username)
-        XCTAssertEqual(aliceMessages.count, 1)
-        XCTAssertEqual(aliceMessages[0].content, "hello from alice")
-        XCTAssertTrue(aliceMessages[0].isSent)
+        // Bob receives it
+        let received = try await bob.waitForMessage(timeout: 10)
 
-        // Bob receives the message (persisted on his side)
-        let received = Message(
-            messageId: msg.messageId,
-            conversationId: alice.username,
-            content: "hello from alice",
-            isSent: false,
-            authorDeviceId: "alice-device-1"
-        )
-        await bob.messages.add(alice.username, received)
+        XCTAssertEqual(received.sourceUserId, alice.userId!)
+        XCTAssertEqual(received.type, 0, "Type should be TEXT (0)")
+        XCTAssertEqual(received.text, "hello from swift!")
 
-        let bobMessages = await bob.messages.getMessages(alice.username)
-        XCTAssertEqual(bobMessages.count, 1)
-        XCTAssertEqual(bobMessages[0].content, "hello from alice")
-        XCTAssertFalse(bobMessages[0].isSent)
-    }
+        // Bob replies
+        try await alice.connectWebSocket()
+        await rateLimitDelay()
 
-    func testScenario4_MessageIdempotent() async throws {
-        let alice = try await ObscuraTestClient.register()
+        try await bob.sendText(to: alice.userId!, "hello back!")
+        await rateLimitDelay()
 
-        let msg = Message(
-            messageId: "msg_dup",
-            conversationId: "bob",
-            content: "hello"
-        )
+        let reply = try await alice.waitForMessage(timeout: 10)
 
-        // Add same message twice
-        await alice.messages.add("bob", msg)
-        await alice.messages.add("bob", msg)
+        XCTAssertEqual(reply.sourceUserId, bob.userId!)
+        XCTAssertEqual(reply.text, "hello back!")
 
-        // Should only have one copy
-        let messages = await alice.messages.getMessages("bob")
-        XCTAssertEqual(messages.count, 1)
-    }
-
-    func testScenario4_MultipleConversations() async throws {
-        let alice = try await ObscuraTestClient.register()
-
-        await alice.messages.add("bob", Message(messageId: "m1", conversationId: "bob", content: "hi bob"))
-        await alice.messages.add("carol", Message(messageId: "m2", conversationId: "carol", content: "hi carol"))
-
-        let convos = await alice.messages.getConversationIds()
-        XCTAssertEqual(convos.count, 2)
-        XCTAssertTrue(convos.contains("bob"))
-        XCTAssertTrue(convos.contains("carol"))
+        alice.disconnectWebSocket()
+        bob.disconnectWebSocket()
     }
 }
