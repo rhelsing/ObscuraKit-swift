@@ -36,6 +36,9 @@ public struct Friend: Codable, Sendable, Equatable {
 public actor FriendActor {
     private let db: DatabaseQueue
 
+    /// Exposed for GRDB ValueObservation (read-only observation from any isolation)
+    public nonisolated var dbQueue: DatabaseQueue { db }
+
     public init(db: DatabaseQueue) throws {
         self.db = db
         try Self.createTables(db)
@@ -44,6 +47,38 @@ public actor FriendActor {
     public init() throws {
         self.db = try DatabaseQueue()
         try Self.createTables(db)
+    }
+
+    // MARK: - Reactive Streams (GRDB ValueObservation)
+
+    /// Stream of accepted friends. Emits on every change to the friends table.
+    /// Subscribe once in SwiftUI — re-renders automatically.
+    public nonisolated func observeAccepted() -> AsyncValueObservation<[Friend]> {
+        let observation = ValueObservation.tracking { db -> [Friend] in
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends WHERE status = ?",
+                                        arguments: [FriendStatus.accepted.rawValue])
+            return rows.compactMap { Self.rowToFriend($0) }
+        }
+        return AsyncValueObservation(observation: observation, in: db)
+    }
+
+    /// Stream of pending friend requests received.
+    public nonisolated func observePending() -> AsyncValueObservation<[Friend]> {
+        let observation = ValueObservation.tracking { db -> [Friend] in
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends WHERE status = ?",
+                                        arguments: [FriendStatus.pendingReceived.rawValue])
+            return rows.compactMap { Self.rowToFriend($0) }
+        }
+        return AsyncValueObservation(observation: observation, in: db)
+    }
+
+    /// Stream of all friends.
+    public nonisolated func observeAll() -> AsyncValueObservation<[Friend]> {
+        let observation = ValueObservation.tracking { db -> [Friend] in
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends")
+            return rows.compactMap { Self.rowToFriend($0) }
+        }
+        return AsyncValueObservation(observation: observation, in: db)
     }
 
     private static func createTables(_ db: DatabaseQueue) throws {

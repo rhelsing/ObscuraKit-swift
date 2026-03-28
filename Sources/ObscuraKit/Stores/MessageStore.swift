@@ -22,6 +22,8 @@ public struct Message: Codable, Sendable, Equatable {
 public actor MessageActor {
     private let db: DatabaseQueue
 
+    public nonisolated var dbQueue: DatabaseQueue { db }
+
     public init(db: DatabaseQueue) throws {
         self.db = db
         try Self.createTables(db)
@@ -30,6 +32,28 @@ public actor MessageActor {
     public init() throws {
         self.db = try DatabaseQueue()
         try Self.createTables(db)
+    }
+
+    // MARK: - Reactive Streams
+
+    /// Stream of messages for a conversation. Emits on every change.
+    public nonisolated func observeMessages(_ conversationId: String, limit: Int = 100) -> AsyncValueObservation<[Message]> {
+        let observation = ValueObservation.tracking { db -> [Message] in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM messages WHERE conversation_id = ?
+                ORDER BY timestamp ASC LIMIT ?
+            """, arguments: [conversationId, limit])
+                .compactMap { Self.rowToMessage($0) }
+        }
+        return AsyncValueObservation(observation: observation, in: db)
+    }
+
+    /// Stream of all conversation IDs.
+    public nonisolated func observeConversationIds() -> AsyncValueObservation<[String]> {
+        let observation = ValueObservation.tracking { db -> [String] in
+            try String.fetchAll(db, sql: "SELECT DISTINCT conversation_id FROM messages")
+        }
+        return AsyncValueObservation(observation: observation, in: db)
     }
 
     private static func createTables(_ db: DatabaseQueue) throws {

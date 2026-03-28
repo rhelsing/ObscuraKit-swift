@@ -35,6 +35,8 @@ public struct OwnDevice: Codable, Sendable, Equatable {
 public actor DeviceActor {
     private let db: DatabaseQueue
 
+    public nonisolated var dbQueue: DatabaseQueue { db }
+
     public init(db: DatabaseQueue) throws {
         self.db = db
         try Self.createTables(db)
@@ -43,6 +45,30 @@ public actor DeviceActor {
     public init() throws {
         self.db = try DatabaseQueue()
         try Self.createTables(db)
+    }
+
+    // MARK: - Reactive Streams
+
+    /// Stream of own devices. Emits on every change.
+    public nonisolated func observeOwnDevices() -> AsyncValueObservation<[OwnDevice]> {
+        let observation = ValueObservation.tracking { db -> [OwnDevice] in
+            try Row.fetchAll(db, sql: "SELECT * FROM own_devices").map { row in
+                var d = OwnDevice(deviceUUID: row["device_uuid"], deviceId: row["device_id"], deviceName: row["device_name"])
+                d.signalIdentityKey = row["signal_identity_key"]
+                d.registrationId = (row["registration_id"] as Int64?).map { UInt32($0) }
+                return d
+            }
+        }
+        return AsyncValueObservation(observation: observation, in: db)
+    }
+
+    /// Stream of identity state (exists or not).
+    public nonisolated func observeHasIdentity() -> AsyncValueObservation<Bool> {
+        let observation = ValueObservation.tracking { db -> Bool in
+            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM device_identity WHERE id = 1") ?? 0
+            return count > 0
+        }
+        return AsyncValueObservation(observation: observation, in: db)
     }
 
     private static func createTables(_ db: DatabaseQueue) throws {
