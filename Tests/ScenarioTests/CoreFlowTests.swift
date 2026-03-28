@@ -52,7 +52,7 @@ final class CoreFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends friend request to Bob (encrypted via Signal, through server)
-        try await alice.sendFriendRequest(to: bob.userId!)
+        try await alice.befriend(bob.userId!)
         await rateLimitDelay()
 
         // Bob receives the friend request via WebSocket
@@ -67,7 +67,7 @@ final class CoreFlowTests: XCTestCase {
         try await alice.connectWebSocket()
         await rateLimitDelay()
 
-        try await bob.sendFriendResponse(to: alice.userId!, accepted: true)
+        try await bob.acceptFriend(alice.userId!)
         await rateLimitDelay()
 
         // Alice receives the response
@@ -95,7 +95,7 @@ final class CoreFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends text to Bob
-        try await alice.sendText(to: bob.userId!, "hello from swift!")
+        try await alice.send(to: bob.userId!, "hello from swift!")
         await rateLimitDelay()
 
         // Bob receives it
@@ -109,7 +109,7 @@ final class CoreFlowTests: XCTestCase {
         try await alice.connectWebSocket()
         await rateLimitDelay()
 
-        try await bob.sendText(to: alice.userId!, "hello back!")
+        try await bob.send(to: alice.userId!, "hello back!")
         await rateLimitDelay()
 
         let reply = try await alice.waitForMessage(timeout: 10)

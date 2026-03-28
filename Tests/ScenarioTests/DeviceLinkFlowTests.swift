@@ -30,14 +30,6 @@ final class DeviceLinkFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Existing device sends DEVICE_LINK_APPROVAL
-        guard let messenger = existingDevice.messenger else { throw ObscuraClient.ObscuraError.noMessenger }
-        let bundles = try await messenger.fetchPreKeyBundles(newDevice.userId!)
-        await rateLimitDelay()
-
-        if let bundle = bundles.first {
-            try await messenger.processServerBundle(bundle, userId: newDevice.userId!)
-        }
-
         // Build approval message with p2p keys and device list
         var approval = Obscura_V2_DeviceLinkApproval()
         approval.p2PPublicKey = Data(repeating: 0x05, count: 33)   // p2p identity
@@ -59,14 +51,7 @@ final class DeviceLinkFlowTests: XCTestCase {
         msg.type = .deviceLinkApproval
         msg.deviceLinkApproval = approval
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        let targetDeviceId = bundles.first?["deviceId"] as? String ?? newDevice.userId!
-        try await messenger.queueMessage(
-            targetDeviceId: targetDeviceId,
-            clientMessageData: try msg.serializedData(),
-            targetUserId: newDevice.userId!
-        )
-        _ = try await messenger.flushMessages()
+        try await existingDevice.sendRaw(to: newDevice.userId!, try msg.serializedData())
         await rateLimitDelay()
 
         // New device receives DEVICE_LINK_APPROVAL
@@ -94,14 +79,6 @@ final class DeviceLinkFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Device1 sends SYNC_BLOB to device2
-        guard let messenger = device1.messenger else { throw ObscuraClient.ObscuraError.noMessenger }
-        let bundles = try await messenger.fetchPreKeyBundles(device2.userId!)
-        await rateLimitDelay()
-
-        if let bundle = bundles.first {
-            try await messenger.processServerBundle(bundle, userId: device2.userId!)
-        }
-
         let friends = await device1.friends.getAll()
         let msgs = await device1.messages.getMessages("carol")
         let exportData = SyncBlobExporter.export(friends: friends, messages: [("carol", msgs)])
@@ -112,14 +89,7 @@ final class DeviceLinkFlowTests: XCTestCase {
         blob.compressedData = exportData
         msg.syncBlob = blob
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        let targetDeviceId = bundles.first?["deviceId"] as? String ?? device2.userId!
-        try await messenger.queueMessage(
-            targetDeviceId: targetDeviceId,
-            clientMessageData: try msg.serializedData(),
-            targetUserId: device2.userId!
-        )
-        _ = try await messenger.flushMessages()
+        try await device1.sendRaw(to: device2.userId!, try msg.serializedData())
         await rateLimitDelay()
 
         // Device2 receives SYNC_BLOB

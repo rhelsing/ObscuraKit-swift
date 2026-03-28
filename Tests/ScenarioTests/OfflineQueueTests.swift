@@ -19,7 +19,7 @@ final class OfflineQueueTests: XCTestCase {
 
         // Alice sends a message while Bob is offline
         // Server should queue it
-        try await alice.sendText(to: bob.userId!, "you there?")
+        try await alice.send(to: bob.userId!, "you there?")
         await rateLimitDelay()
 
         // Bob reconnects
@@ -48,9 +48,9 @@ final class OfflineQueueTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends multiple messages while Bob is offline
-        try await alice.sendText(to: bob.userId!, "message 1")
+        try await alice.send(to: bob.userId!, "message 1")
         await rateLimitDelay()
-        try await alice.sendText(to: bob.userId!, "message 2")
+        try await alice.send(to: bob.userId!, "message 2")
         await rateLimitDelay()
 
         // Bob reconnects
@@ -77,7 +77,7 @@ final class OfflineQueueTests: XCTestCase {
         try await bob.connectWebSocket()
         await rateLimitDelay()
 
-        try await alice.sendText(to: bob.userId!, "before disconnect")
+        try await alice.send(to: bob.userId!, "before disconnect")
         await rateLimitDelay()
 
         let first = try await bob.waitForMessage(timeout: 10)
@@ -90,7 +90,7 @@ final class OfflineQueueTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends another message (session should still work — Whisper, not PreKey)
-        try await alice.sendText(to: bob.userId!, "after reconnect")
+        try await alice.send(to: bob.userId!, "after reconnect")
         await rateLimitDelay()
 
         let second = try await bob.waitForMessage(timeout: 10)

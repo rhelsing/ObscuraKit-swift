@@ -17,15 +17,7 @@ final class DeviceRevocationFlowTests: XCTestCase {
         try await alice.connectWebSocket()
         await rateLimitDelay()
 
-        // Bob sends DEVICE_ANNOUNCE to Alice (simulating device list change)
-        guard let messenger = bob.messenger else { throw ObscuraClient.ObscuraError.noMessenger }
-        let bundles = try await messenger.fetchPreKeyBundles(alice.userId!)
-        await rateLimitDelay()
-
-        if let bundle = bundles.first {
-            try await messenger.processServerBundle(bundle, userId: alice.userId!)
-        }
-
+        // Bob sends DEVICE_ANNOUNCE to Alice
         var announce = Obscura_V2_DeviceAnnounce()
         var deviceInfo = Obscura_V2_DeviceInfo()
         deviceInfo.deviceID = bob.deviceId ?? ""
@@ -38,14 +30,7 @@ final class DeviceRevocationFlowTests: XCTestCase {
         msg.type = .deviceAnnounce
         msg.deviceAnnounce = announce
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        let targetDeviceId = bundles.first?["deviceId"] as? String ?? alice.userId!
-        try await messenger.queueMessage(
-            targetDeviceId: targetDeviceId,
-            clientMessageData: try msg.serializedData(),
-            targetUserId: alice.userId!
-        )
-        _ = try await messenger.flushMessages()
+        try await bob.sendRaw(to: alice.userId!, try msg.serializedData())
         await rateLimitDelay()
 
         // Alice receives DEVICE_ANNOUNCE
@@ -67,14 +52,6 @@ final class DeviceRevocationFlowTests: XCTestCase {
         try await alice.connectWebSocket()
         await rateLimitDelay()
 
-        guard let messenger = bob.messenger else { throw ObscuraClient.ObscuraError.noMessenger }
-        let bundles = try await messenger.fetchPreKeyBundles(alice.userId!)
-        await rateLimitDelay()
-
-        if let bundle = bundles.first {
-            try await messenger.processServerBundle(bundle, userId: alice.userId!)
-        }
-
         // Bob sends revocation announce (device removed)
         var announce = Obscura_V2_DeviceAnnounce()
         announce.devices = [] // empty — all devices revoked
@@ -86,14 +63,7 @@ final class DeviceRevocationFlowTests: XCTestCase {
         msg.type = .deviceAnnounce
         msg.deviceAnnounce = announce
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        let targetDeviceId = bundles.first?["deviceId"] as? String ?? alice.userId!
-        try await messenger.queueMessage(
-            targetDeviceId: targetDeviceId,
-            clientMessageData: try msg.serializedData(),
-            targetUserId: alice.userId!
-        )
-        _ = try await messenger.flushMessages()
+        try await bob.sendRaw(to: alice.userId!, try msg.serializedData())
         await rateLimitDelay()
 
         let received = try await alice.waitForMessage(timeout: 10)

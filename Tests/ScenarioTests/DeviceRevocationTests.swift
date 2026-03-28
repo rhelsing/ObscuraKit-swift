@@ -16,7 +16,7 @@ final class DeviceRevocationTests: XCTestCase {
         try await bob.connectWebSocket()
         await rateLimitDelay()
 
-        try await alice.sendText(to: bob.userId!, "hi bob")
+        try await alice.send(to: bob.userId!, "hi bob")
         await rateLimitDelay()
 
         let msg = try await bob.waitForMessage(timeout: 10)
@@ -26,7 +26,7 @@ final class DeviceRevocationTests: XCTestCase {
         try await alice.connectWebSocket()
         await rateLimitDelay()
 
-        try await bob.sendText(to: alice.userId!, "hi alice")
+        try await bob.send(to: alice.userId!, "hi alice")
         await rateLimitDelay()
 
         let reply = try await alice.waitForMessage(timeout: 10)

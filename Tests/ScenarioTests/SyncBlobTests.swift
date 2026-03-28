@@ -114,13 +114,6 @@ final class SyncBlobTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends SYNC_BLOB to Bob (via encrypted message)
-        guard let messenger = alice.messenger else { throw ObscuraClient.ObscuraError.noMessenger }
-        let bundles = try await messenger.fetchPreKeyBundles(bob.userId!)
-        await rateLimitDelay()
-
-        if let bundle = bundles.first {
-            try await messenger.processServerBundle(bundle, userId: bob.userId!)
-        }
 
         var msg = Obscura_V2_ClientMessage()
         msg.type = .syncBlob
@@ -128,14 +121,7 @@ final class SyncBlobTests: XCTestCase {
         blob.compressedData = exportData
         msg.syncBlob = blob
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        let targetDeviceId = bundles.first?["deviceId"] as? String ?? bob.userId!
-        try await messenger.queueMessage(
-            targetDeviceId: targetDeviceId,
-            clientMessageData: try msg.serializedData(),
-            targetUserId: bob.userId!
-        )
-        _ = try await messenger.flushMessages()
+        try await alice.sendRaw(to: bob.userId!, try msg.serializedData())
         await rateLimitDelay()
 
         // Bob receives SYNC_BLOB

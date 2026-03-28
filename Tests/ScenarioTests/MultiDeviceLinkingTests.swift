@@ -39,7 +39,7 @@ final class MultiDeviceLinkingTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends message to Bob
-        try await alice.sendText(to: bob.userId!, "fan-out test")
+        try await alice.send(to: bob.userId!, "fan-out test")
         await rateLimitDelay()
 
         // Bob's first device receives
