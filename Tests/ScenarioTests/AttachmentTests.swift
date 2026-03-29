@@ -16,8 +16,8 @@ final class AttachmentTests: XCTestCase {
         blob.append(Data(repeating: 0xAA, count: 1000))
 
         let result = try await alice.api.uploadAttachment(blob)
-        let attachmentId = result["id"] as? String
-        XCTAssertNotNil(attachmentId, "Server should return attachment ID")
+        let attachmentId = result.id
+        XCTAssertFalse(attachmentId.isEmpty, "Server should return attachment ID")
     }
 
     // MARK: - 6.3: Download + integrity check
@@ -29,7 +29,7 @@ final class AttachmentTests: XCTestCase {
         // Upload
         let originalData = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46])
         let result = try await alice.api.uploadAttachment(originalData)
-        let attachmentId = result["id"] as! String
+        let attachmentId = result.id
         await rateLimitDelay()
 
         // Download
@@ -54,7 +54,7 @@ final class AttachmentTests: XCTestCase {
         // Upload attachment
         let blob = Data(repeating: 0xBB, count: 500)
         let uploadResult = try await alice.api.uploadAttachment(blob)
-        let attachmentId = uploadResult["id"] as! String
+        let attachmentId = uploadResult.id
         await rateLimitDelay()
 
         // Bob connects to receive

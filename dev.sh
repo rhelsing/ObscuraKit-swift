@@ -1,9 +1,8 @@
 #!/bin/bash
-# Dev helper - runs swift commands with Swift 6.1 toolchain
+# Dev helper - runs swift commands with Xcode's Swift toolchain
 set -e
 
-export TOOLCHAINS=swift-6.1.3-RELEASE
-SWIFT=/Library/Developer/Toolchains/swift-6.1.3-RELEASE.xctoolchain/usr/bin/swift
+SWIFT="xcrun swift"
 LIBSIGNAL_PATH="$(pwd)/vendored/libsignal/target/release"
 
 case "${1:-test}" in
@@ -14,7 +13,7 @@ case "${1:-test}" in
     LIBRARY_PATH="$LIBSIGNAL_PATH" $SWIFT test "${@:2}"
     ;;
   shell)
-    LIBRARY_PATH="$LIBSIGNAL_PATH" TOOLCHAINS=swift-6.1.3-RELEASE bash
+    LIBRARY_PATH="$LIBSIGNAL_PATH" bash
     ;;
   *)
     echo "Usage: ./dev.sh [build|test|shell]"

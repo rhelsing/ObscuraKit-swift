@@ -126,8 +126,9 @@ PUT    /v1/push-tokens           Register APNS/FCM token (Device-Scoped, JSON)
 ## Build & Test
 
 ```bash
-swift build
-swift test
+./dev.sh build
+./dev.sh test
+./dev.sh test --filter CoreFlowTests
 ```
 
-No Xcode required. Everything runs via SPM from the command line.
+Native builds on macOS 13+. No Docker. `dev.sh` sets the Swift 6.1 toolchain and `LIBRARY_PATH` for libsignal FFI.

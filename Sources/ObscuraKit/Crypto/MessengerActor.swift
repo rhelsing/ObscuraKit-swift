@@ -38,14 +38,11 @@ public actor MessengerActor {
     // MARK: - PreKey Bundle Fetching
 
     /// Fetch prekey bundles for all devices of a user, auto-populate device map
-    public func fetchPreKeyBundles(_ userId: String) async throws -> [[String: Any]] {
+    public func fetchPreKeyBundles(_ userId: String) async throws -> [PreKeyBundleResponse] {
         let bundles = try await api.fetchPreKeyBundles(userId)
 
         for bundle in bundles {
-            if let deviceId = bundle["deviceId"] as? String,
-               let regId = bundle["registrationId"] as? Int {
-                deviceMap[deviceId] = (userId: userId, registrationId: UInt32(regId))
-            }
+            deviceMap[bundle.deviceId] = (userId: userId, registrationId: UInt32(bundle.registrationId))
         }
 
         return bundles
@@ -68,26 +65,19 @@ public actor MessengerActor {
         return (type: ciphertext.messageType, body: Array(ciphertext.serialize()))
     }
 
-    /// Establish session from prekey bundle data (as returned by server)
-    public func processServerBundle(_ bundleData: [String: Any], userId: String) throws {
-        guard let regId = bundleData["registrationId"] as? Int else {
-            throw MessengerError.invalidBundle("missing registrationId")
-        }
-        let address = try ProtocolAddress(name: userId, deviceId: UInt32(regId))
+    /// Establish session from prekey bundle response
+    public func processServerBundle(_ bundleData: PreKeyBundleResponse, userId: String) throws {
+        let regId = UInt32(bundleData.registrationId)
+        let address = try ProtocolAddress(name: userId, deviceId: regId)
 
-        // Parse keys from base64
-        guard let identityKeyB64 = bundleData["identityKey"] as? String,
-              let identityKeyData = Data(base64Encoded: identityKeyB64) else {
-            throw MessengerError.invalidBundle("missing identityKey")
+        guard let identityKeyData = Data(base64Encoded: bundleData.identityKey) else {
+            throw MessengerError.invalidBundle("invalid identityKey base64")
         }
 
-        guard let spk = bundleData["signedPreKey"] as? [String: Any],
-              let spkPubB64 = spk["publicKey"] as? String,
-              let spkPubData = Data(base64Encoded: spkPubB64),
-              let spkSigB64 = spk["signature"] as? String,
-              let spkSigData = Data(base64Encoded: spkSigB64),
-              let spkId = spk["keyId"] as? Int else {
-            throw MessengerError.invalidBundle("missing signedPreKey")
+        let spk = bundleData.signedPreKey
+        guard let spkPubData = Data(base64Encoded: spk.publicKey),
+              let spkSigData = Data(base64Encoded: spk.signature) else {
+            throw MessengerError.invalidBundle("invalid signedPreKey base64")
         }
 
         let identityKey = try IdentityKey(bytes: Array(identityKeyData))
@@ -96,42 +86,31 @@ public actor MessengerActor {
         // One-time pre-key (optional)
         var preKeyPublic: PublicKey? = nil
         var preKeyId: UInt32 = ~0
-        if let otpk = bundleData["oneTimePreKey"] as? [String: Any],
-           let otpkPubB64 = otpk["publicKey"] as? String,
-           let otpkPubData = Data(base64Encoded: otpkPubB64),
-           let otpkId = otpk["keyId"] as? Int {
+        if let otpk = bundleData.oneTimePreKey,
+           let otpkPubData = Data(base64Encoded: otpk.publicKey) {
             preKeyPublic = try PublicKey(Array(otpkPubData))
-            preKeyId = UInt32(otpkId)
+            preKeyId = UInt32(otpk.keyId)
         }
 
         let bundle: PreKeyBundle
         if let preKeyPublic = preKeyPublic {
             bundle = try PreKeyBundle(
-                registrationId: UInt32(regId),
-                deviceId: UInt32(regId),
-                prekeyId: preKeyId,
-                prekey: preKeyPublic,
-                signedPrekeyId: UInt32(spkId),
-                signedPrekey: signedPreKeyPublic,
-                signedPrekeySignature: Array(spkSigData),
-                identity: identityKey
+                registrationId: regId, deviceId: regId,
+                prekeyId: preKeyId, prekey: preKeyPublic,
+                signedPrekeyId: UInt32(spk.keyId), signedPrekey: signedPreKeyPublic,
+                signedPrekeySignature: Array(spkSigData), identity: identityKey
             )
         } else {
             bundle = try PreKeyBundle(
-                registrationId: UInt32(regId),
-                deviceId: UInt32(regId),
-                signedPrekeyId: UInt32(spkId),
-                signedPrekey: signedPreKeyPublic,
-                signedPrekeySignature: Array(spkSigData),
-                identity: identityKey
+                registrationId: regId, deviceId: regId,
+                signedPrekeyId: UInt32(spk.keyId), signedPrekey: signedPreKeyPublic,
+                signedPrekeySignature: Array(spkSigData), identity: identityKey
             )
         }
 
         try LibSignalClient.processPreKeyBundle(
-            bundle,
-            for: address,
-            sessionStore: sessionStore,
-            identityStore: identityStore,
+            bundle, for: address,
+            sessionStore: sessionStore, identityStore: identityStore,
             context: NullContext()
         )
     }

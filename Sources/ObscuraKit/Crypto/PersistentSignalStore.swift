@@ -137,6 +137,19 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
         }
     }
 
+    public func getPreKeyCount() -> Int {
+        (try? db.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM signal_prekeys") ?? 0
+        }) ?? 0
+    }
+
+    public func getHighestPreKeyId() -> UInt32 {
+        let val64 = (try? db.read { db in
+            try Int64.fetchOne(db, sql: "SELECT MAX(key_id) FROM signal_prekeys")
+        }) ?? nil
+        return UInt32(val64 ?? 0)
+    }
+
     public func removePreKey(id: UInt32, context: StoreContext) throws {
         try db.write { db in
             try db.execute(sql: "DELETE FROM signal_prekeys WHERE key_id = ?", arguments: [id])

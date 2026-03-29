@@ -1,10 +1,7 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
+import CryptoKit
 
 /// HTTP API Client for Obscura Server
-/// Pure functional — mirrors src/v2/api/client.js
 public actor APIClient {
     public let baseURL: String
     private var token: String?
@@ -20,8 +17,6 @@ public actor APIClient {
     public func getToken() -> String? { token }
     public func clearToken() { token = nil }
 
-    /// Decode JWT payload (base64url middle segment)
-    /// Nonisolated static helper — works without actor context
     public nonisolated static func decodeJWT(_ jwt: String) -> [String: Any]? {
         let parts = jwt.split(separator: ".")
         guard parts.count >= 2 else { return nil }
@@ -37,12 +32,6 @@ public actor APIClient {
         return json
     }
 
-    /// Instance version that uses current token
-    public func decodeToken(_ t: String? = nil) -> [String: Any]? {
-        guard let jwt = t ?? token else { return nil }
-        return Self.decodeJWT(jwt)
-    }
-
     public nonisolated static func extractUserId(_ jwt: String) -> String? {
         guard let payload = decodeJWT(jwt) else { return nil }
         return (payload["sub"] as? String)
@@ -55,16 +44,6 @@ public actor APIClient {
         guard let payload = decodeJWT(jwt) else { return nil }
         return (payload["device_id"] as? String)
             ?? (payload["deviceId"] as? String)
-    }
-
-    public func getUserId(_ t: String? = nil) -> String? {
-        guard let jwt = t ?? token else { return nil }
-        return Self.extractUserId(jwt)
-    }
-
-    public func getDeviceId(_ t: String? = nil) -> String? {
-        guard let jwt = t ?? token else { return nil }
-        return Self.extractDeviceId(jwt)
     }
 
     // MARK: - Generic Request
@@ -117,100 +96,114 @@ public actor APIClient {
         return (data, httpResponse)
     }
 
-    private func jsonRequest(_ path: String, method: String = "GET", body: Any? = nil, auth: Bool = true) async throws -> Any {
+    private let decoder = JSONDecoder()
+
+    private func jsonRequest<T: Decodable>(_ type: T.Type, _ path: String, method: String = "GET", body: (any Encodable)? = nil, auth: Bool = true) async throws -> T {
         var bodyData: Data? = nil
         if let body = body {
-            bodyData = try JSONSerialization.data(withJSONObject: body)
+            bodyData = try JSONEncoder().encode(body)
         }
         let (data, _) = try await request(path, method: method, body: bodyData, auth: auth)
-        if data.isEmpty { return [:] as [String: Any] }
-        return try JSONSerialization.jsonObject(with: data)
+        if data.isEmpty {
+            // Some endpoints return empty body on success; try decoding anyway
+        }
+        return try decoder.decode(T.self, from: data)
+    }
+
+    /// Fire-and-forget JSON request (for endpoints where we don't need the response body)
+    private func jsonRequestVoid(_ path: String, method: String = "GET", body: (any Encodable)? = nil, auth: Bool = true) async throws {
+        var bodyData: Data? = nil
+        if let body = body {
+            bodyData = try JSONEncoder().encode(body)
+        }
+        _ = try await request(path, method: method, body: bodyData, auth: auth)
     }
 
     // MARK: - Auth
 
-    public func registerUser(_ username: String, _ password: String) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/users", method: "POST", body: [
-            "username": username,
-            "password": password,
-        ], auth: false)
-        return result as? [String: Any] ?? [:]
+    public func registerUser(_ username: String, _ password: String) async throws -> AuthResponse {
+        try await jsonRequest(AuthResponse.self, "/v1/users", method: "POST",
+                              body: ["username": username, "password": password], auth: false)
     }
 
-    public func loginWithDevice(_ username: String, _ password: String, deviceId: String? = nil) async throws -> [String: Any] {
-        var body: [String: Any] = ["username": username, "password": password]
+    public func loginWithDevice(_ username: String, _ password: String, deviceId: String? = nil) async throws -> AuthResponse {
+        var body: [String: String] = ["username": username, "password": password]
         if let deviceId = deviceId { body["deviceId"] = deviceId }
-        let result = try await jsonRequest("/v1/sessions", method: "POST", body: body, auth: false)
-        return result as? [String: Any] ?? [:]
+        return try await jsonRequest(AuthResponse.self, "/v1/sessions", method: "POST", body: body, auth: false)
     }
 
-    public func refreshSession(_ refreshToken: String) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/sessions/refresh", method: "POST", body: [
-            "refreshToken": refreshToken,
-        ], auth: false)
-        return result as? [String: Any] ?? [:]
+    public func refreshSession(_ refreshToken: String) async throws -> AuthResponse {
+        try await jsonRequest(AuthResponse.self, "/v1/sessions/refresh", method: "POST",
+                              body: ["refreshToken": refreshToken], auth: false)
     }
 
     public func logout(_ refreshToken: String) async throws {
-        _ = try await jsonRequest("/v1/sessions", method: "DELETE", body: [
-            "refreshToken": refreshToken,
-        ])
+        try await jsonRequestVoid("/v1/sessions", method: "DELETE", body: ["refreshToken": refreshToken])
     }
 
     // MARK: - Devices
 
-    public func provisionDevice(name: String, identityKey: String, registrationId: Int, signedPreKey: [String: Any], oneTimePreKeys: [[String: Any]]) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/devices", method: "POST", body: [
-            "name": name,
-            "identityKey": identityKey,
-            "registrationId": registrationId,
-            "signedPreKey": signedPreKey,
-            "oneTimePreKeys": oneTimePreKeys,
-        ])
-        return result as? [String: Any] ?? [:]
+    public func provisionDevice(name: String, identityKey: String, registrationId: Int,
+                                 signedPreKey: SignedPreKeyUpload, oneTimePreKeys: [PreKeyUpload]) async throws -> AuthResponse {
+        struct ProvisionRequest: Encodable {
+            let name: String
+            let identityKey: String
+            let registrationId: Int
+            let signedPreKey: SignedPreKeyUpload
+            let oneTimePreKeys: [PreKeyUpload]
+        }
+        let body = ProvisionRequest(name: name, identityKey: identityKey, registrationId: registrationId,
+                                     signedPreKey: signedPreKey, oneTimePreKeys: oneTimePreKeys)
+        return try await jsonRequest(AuthResponse.self, "/v1/devices", method: "POST", body: body)
     }
 
-    public func listDevices() async throws -> Any {
-        return try await jsonRequest("/v1/devices")
+    public func listDevices() async throws -> [DeviceResponse] {
+        let (data, _) = try await request("/v1/devices")
+        // Server may return a bare array or a wrapped {"devices": [...]}
+        if let devices = try? decoder.decode([DeviceResponse].self, from: data) {
+            return devices
+        }
+        let wrapper = try decoder.decode(DeviceListWrapper.self, from: data)
+        return wrapper.devices
     }
 
-    public func getDevice(_ deviceId: String) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/devices/\(urlEncode(deviceId))")
-        return result as? [String: Any] ?? [:]
+    private struct DeviceListWrapper: Decodable {
+        let devices: [DeviceResponse]
     }
 
-    public func updateDevice(_ deviceId: String, name: String) async throws -> [String: Any] {
-        let result = try await jsonRequest("/v1/devices/\(urlEncode(deviceId))", method: "PUT", body: [
-            "name": name,
-        ])
-        return result as? [String: Any] ?? [:]
+    public func getDevice(_ deviceId: String) async throws -> DeviceResponse {
+        try await jsonRequest(DeviceResponse.self, "/v1/devices/\(urlEncode(deviceId))")
     }
 
     public func deleteDevice(_ deviceId: String) async throws {
-        _ = try await jsonRequest("/v1/devices/\(urlEncode(deviceId))", method: "DELETE")
+        try await jsonRequestVoid("/v1/devices/\(urlEncode(deviceId))", method: "DELETE")
     }
 
     // MARK: - Keys
 
-    public func uploadDeviceKeys(identityKey: String, registrationId: Int, signedPreKey: [String: Any], oneTimePreKeys: [[String: Any]]) async throws {
-        _ = try await jsonRequest("/v1/devices/keys", method: "POST", body: [
-            "identityKey": identityKey,
-            "registrationId": registrationId,
-            "signedPreKey": signedPreKey,
-            "oneTimePreKeys": oneTimePreKeys,
-        ])
+    public func uploadDeviceKeys(identityKey: String, registrationId: Int,
+                                  signedPreKey: SignedPreKeyUpload, oneTimePreKeys: [PreKeyUpload]) async throws {
+        struct KeysRequest: Encodable {
+            let identityKey: String
+            let registrationId: Int
+            let signedPreKey: SignedPreKeyUpload
+            let oneTimePreKeys: [PreKeyUpload]
+        }
+        let body = KeysRequest(identityKey: identityKey, registrationId: registrationId,
+                                signedPreKey: signedPreKey, oneTimePreKeys: oneTimePreKeys)
+        try await jsonRequestVoid("/v1/devices/keys", method: "POST", body: body)
     }
 
-    public func fetchPreKeyBundles(_ userId: String) async throws -> [[String: Any]] {
-        let result = try await jsonRequest("/v1/users/\(urlEncode(userId))")
-        return result as? [[String: Any]] ?? []
+    public func fetchPreKeyBundles(_ userId: String) async throws -> [PreKeyBundleResponse] {
+        let (data, _) = try await request("/v1/users/\(urlEncode(userId))")
+        return try decoder.decode([PreKeyBundleResponse].self, from: data)
     }
 
     // MARK: - Messaging (Protobuf)
 
     public func sendMessage(_ protobufData: Data) async throws {
-        let hash = recoverySHA256(protobufData)
-        let idempotencyKey = hash.prefix(16).map { String(format: "%02x", $0) }.joined()
+        let hash = SHA256.hash(data: protobufData)
+        let idempotencyKey = Array(hash).prefix(16).map { String(format: "%02x", $0) }.joined()
         _ = try await request("/v1/messages", method: "POST", body: protobufData,
                               contentType: "application/x-protobuf",
                               extraHeaders: ["Idempotency-Key": idempotencyKey])
@@ -218,11 +211,10 @@ public actor APIClient {
 
     // MARK: - Attachments
 
-    public func uploadAttachment(_ blob: Data) async throws -> [String: Any] {
+    public func uploadAttachment(_ blob: Data) async throws -> AttachmentResponse {
         let (data, _) = try await request("/v1/attachments", method: "POST", body: blob,
                                           contentType: "application/octet-stream")
-        let result = try JSONSerialization.jsonObject(with: data)
-        return result as? [String: Any] ?? [:]
+        return try decoder.decode(AttachmentResponse.self, from: data)
     }
 
     public func fetchAttachment(_ id: String) async throws -> Data {
@@ -233,18 +225,8 @@ public actor APIClient {
     // MARK: - Gateway
 
     public func fetchGatewayTicket() async throws -> String {
-        let result = try await jsonRequest("/v1/gateway/ticket", method: "POST")
-        guard let dict = result as? [String: Any], let ticket = dict["ticket"] as? String else {
-            throw APIError(status: 0, body: "No ticket in response")
-        }
-        return ticket
-    }
-
-    public func getGatewayURL(ticket: String) -> URL? {
-        let wsBase = baseURL
-            .replacingOccurrences(of: "https://", with: "wss://")
-            .replacingOccurrences(of: "http://", with: "ws://")
-        return URL(string: "\(wsBase)/v1/gateway?ticket=\(ticket)")
+        let response = try await jsonRequest(GatewayTicketResponse.self, "/v1/gateway/ticket", method: "POST")
+        return response.ticket
     }
 
     // MARK: - Backup
@@ -287,10 +269,7 @@ public actor APIClient {
     // MARK: - Push
 
     public func registerPushToken(_ token: String, type: String = "apns") async throws {
-        _ = try await jsonRequest("/v1/push-tokens", method: "PUT", body: [
-            "token": token,
-            "type": type,
-        ])
+        try await jsonRequestVoid("/v1/push-tokens", method: "PUT", body: ["token": token, "type": type])
     }
 
     // MARK: - Helpers

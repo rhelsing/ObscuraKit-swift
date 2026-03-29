@@ -57,7 +57,7 @@ public class ObscuraClient {
 
     /// Buffered message queue for waitForMessage
     private var messageQueue: [ReceivedMessage] = []
-    private var messageWaiters: [CheckedContinuation<ReceivedMessage, Error>] = []
+    // messageWaiters removed — waitForMessage now polls messageQueue directly
 
     /// Events stream — every received message after routing (multi-observer)
     private var eventContinuations: [AsyncStream<ReceivedMessage>.Continuation] = []
@@ -74,14 +74,9 @@ public class ObscuraClient {
     private func emit(_ message: ReceivedMessage) {
         // Push to stream subscribers
         for c in eventContinuations { c.yield(message) }
-        // Push to waitForMessage waiters
-        if !messageWaiters.isEmpty {
-            let waiter = messageWaiters.removeFirst()
-            waiter.resume(returning: message)
-        } else {
-            if messageQueue.count >= 1000 { messageQueue.removeFirst() }
-            messageQueue.append(message)
-        }
+        // Push to queue — waitForMessage polls this
+        if messageQueue.count >= 1000 { messageQueue.removeFirst() }
+        messageQueue.append(message)
     }
 
     // MARK: - Auth State
@@ -103,8 +98,20 @@ public class ObscuraClient {
     private let maxDecryptFailures = 10
     private let decryptFailureWindow: TimeInterval = 60
 
-    // Prekey replenishment tracking
-    private var nextPreKeyId: UInt32 = 101  // Registration uses 1-100
+    // Prekey replenishment (matches Kotlin pattern)
+    private let prekeyMinCount = 20
+    private let prekeyReplenishCount: UInt32 = 50
+
+    // Signal key generation constants (shared by register, loginAndProvision, takeoverDevice)
+    private static let initialPreKeyCount: UInt32 = 100
+    private static let maxRegistrationId: UInt32 = 16380
+    private static let signedPreKeyId: UInt32 = 1
+
+    // Token refresh buffer — refresh if expiring within this many seconds
+    private static let tokenExpiryBufferSeconds: Double = 60
+
+    // XEdDSA empty signature placeholder size (bytes)
+    private static let emptySignatureSize = 64
 
     // MARK: - Init
 
@@ -123,81 +130,95 @@ public class ObscuraClient {
         gateway.disconnect()
     }
 
+    // MARK: - Session State
+
+    /// Quick check if authenticated (has token + userId)
+    public var hasSession: Bool { token != nil && userId != nil }
+
+    /// Restore a previously saved session without re-authenticating.
+    /// If a PersistentSignalStore is available, also restores the messenger.
+    /// Call `connect()` after this to start the envelope loop.
+    public func restoreSession(token: String, refreshToken: String?, userId: String,
+                               deviceId: String?, username: String?, registrationId: UInt32 = 0) async {
+        self.token = token
+        self.refreshToken = refreshToken
+        self.userId = userId
+        self.deviceId = deviceId
+        self.username = username
+        self.registrationId = registrationId
+        await api.setToken(token)
+
+        if let deviceId = deviceId {
+            await _messenger?.mapDevice(deviceId, userId: userId, registrationId: registrationId)
+        }
+        _authState = .authenticated
+    }
+
+    /// Ensure the current token is fresh; refresh if expiring within buffer.
+    /// Returns true if a valid token is available after the call.
+    @discardableResult
+    public func ensureFreshToken() async -> Bool {
+        guard let token = token else { return false }
+        guard let payload = APIClient.decodeJWT(token),
+              let exp = payload["exp"] as? Double else { return false }
+        let now = Date().timeIntervalSince1970
+        guard (exp - now) <= Self.tokenExpiryBufferSeconds else { return true }
+        guard let rt = refreshToken else { return false }
+        do {
+            let result = try await api.refreshSession(rt)
+            self.token = result.token
+            await api.setToken(result.token)
+            if let newRT = result.refreshToken { self.refreshToken = newRT }
+            return true
+        } catch {
+            logger.tokenRefreshFailed(attempt: 1, error: "\(error)")
+            return false
+        }
+    }
+
     // MARK: - Register
 
     public func register(_ username: String, _ password: String) async throws {
         // 1. Register user account
         let result = try await api.registerUser(username, password)
-        guard let token = result["token"] as? String else { throw ObscuraError.missingToken }
+        let token = result.token
 
         self.token = token
-        self.refreshToken = result["refreshToken"] as? String
+        self.refreshToken = result.refreshToken
         self.userId = APIClient.extractUserId(token)
         self.username = username
         await api.setToken(token)
         await rateLimitDelay()
 
         // 2. Generate Signal keys
-        let identity = IdentityKeyPair.generate()
-        let regId = UInt32.random(in: 1...16380)
-        self.identityKeyPair = identity
-        self.registrationId = regId
-
-        let signedPreKeyPrivate = PrivateKey.generate()
-        let signedPreKeySignature = identity.privateKey.generateSignature(
-            message: signedPreKeyPrivate.publicKey.serialize()
-        )
-
-        var oneTimePreKeys: [[String: Any]] = []
-        var preKeyRecords: [(id: UInt32, privateKey: PrivateKey)] = []
-        for i: UInt32 in 1...100 {
-            let pk = PrivateKey.generate()
-            oneTimePreKeys.append([
-                "keyId": Int(i),
-                "publicKey": Data(pk.publicKey.serialize()).base64EncodedString(),
-            ])
-            preKeyRecords.append((id: i, privateKey: pk))
-        }
+        let (identity, regId) = generateSignalIdentity()
+        let (spkPrivate, spkSig) = generateSignedPreKey(identity: identity)
+        let (otpKeys, preKeyRecords) = generateOneTimePreKeys()
 
         // 3. Provision device
         let deviceResult = try await api.provisionDevice(
             name: "ObscuraKit-device",
             identityKey: Data(identity.publicKey.serialize()).base64EncodedString(),
             registrationId: Int(regId),
-            signedPreKey: [
-                "keyId": 1,
-                "publicKey": Data(signedPreKeyPrivate.publicKey.serialize()).base64EncodedString(),
-                "signature": Data(signedPreKeySignature).base64EncodedString(),
-            ],
-            oneTimePreKeys: oneTimePreKeys
+            signedPreKey: SignedPreKeyUpload(
+                keyId: Int(Self.signedPreKeyId),
+                publicKey: Data(spkPrivate.publicKey.serialize()).base64EncodedString(),
+                signature: Data(spkSig).base64EncodedString()
+            ),
+            oneTimePreKeys: otpKeys
         )
 
-        guard let deviceToken = deviceResult["token"] as? String else {
-            throw ObscuraError.provisionFailed("no device token")
-        }
+        let deviceToken = deviceResult.token
 
         self.token = deviceToken
         self.deviceId = APIClient.extractDeviceId(deviceToken)
         await api.setToken(deviceToken)
 
         // 4. Persistent Signal protocol store (survives app restart)
-        let protocolStore = try PersistentSignalStore()
-        protocolStore.logger = self.logger
-        protocolStore.initialize(keyPair: identity, registrationId: regId)
-        try protocolStore.storeSignedPreKey(
-            SignedPreKeyRecord(id: 1, timestamp: UInt64(Date().timeIntervalSince1970), privateKey: signedPreKeyPrivate, signature: signedPreKeySignature),
-            id: 1, context: NullContext()
-        )
-        for record in preKeyRecords {
-            try protocolStore.storePreKey(
-                PreKeyRecord(id: record.id, publicKey: record.privateKey.publicKey, privateKey: record.privateKey),
-                id: record.id, context: NullContext()
-            )
-        }
-        self.persistentSignalStore = protocolStore
+        let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
 
         // 5. Messenger
-        self._messenger = MessengerActor(api: api, store: protocolStore, ownUserId: self.userId!)
+        self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
         self._authState = .authenticated
     }
 
@@ -205,10 +226,10 @@ public class ObscuraClient {
 
     public func login(_ username: String, _ password: String, deviceId: String? = nil) async throws {
         let result = try await api.loginWithDevice(username, password, deviceId: deviceId)
-        guard let token = result["token"] as? String else { throw ObscuraError.missingToken }
+        let token = result.token
 
         self.token = token
-        self.refreshToken = result["refreshToken"] as? String
+        self.refreshToken = result.refreshToken
         self.userId = APIClient.extractUserId(token)
         self.username = username
         self.deviceId = APIClient.extractDeviceId(token) ?? deviceId
@@ -216,10 +237,65 @@ public class ObscuraClient {
         self._authState = .authenticated
     }
 
+    // MARK: - Login + Provision (device linking)
+
+    /// Combined login + new device provisioning for device linking.
+    /// Logs in with user credentials, generates fresh Signal keys, provisions a new device.
+    public func loginAndProvision(_ username: String, _ password: String, deviceName: String = "Device 2") async throws {
+        self.username = username
+        let loginResult = try await api.loginWithDevice(username, password, deviceId: nil)
+        self.token = loginResult.token
+        self.userId = APIClient.extractUserId(loginResult.token)
+        await api.setToken(loginResult.token)
+        await rateLimitDelay()
+
+        let (identity, regId) = generateSignalIdentity()
+        let (spkPrivate, spkSig) = generateSignedPreKey(identity: identity)
+        let (otpKeys, preKeyRecords) = generateOneTimePreKeys()
+
+        let deviceResult = try await api.provisionDevice(
+            name: deviceName,
+            identityKey: Data(identity.publicKey.serialize()).base64EncodedString(),
+            registrationId: Int(regId),
+            signedPreKey: SignedPreKeyUpload(
+                keyId: Int(Self.signedPreKeyId),
+                publicKey: Data(spkPrivate.publicKey.serialize()).base64EncodedString(),
+                signature: Data(spkSig).base64EncodedString()
+            ),
+            oneTimePreKeys: otpKeys
+        )
+
+        self.token = deviceResult.token
+        self.refreshToken = deviceResult.refreshToken
+        self.deviceId = APIClient.extractDeviceId(deviceResult.token) ?? deviceResult.deviceId
+        await api.setToken(deviceResult.token)
+
+        let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
+        self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
+
+        await devices.storeIdentity(DeviceIdentity(
+            coreUsername: username, deviceId: self.deviceId ?? "", deviceUUID: self.deviceId ?? ""
+        ))
+        _authState = .authenticated
+        await rateLimitDelay()
+    }
+
     // MARK: - Connect (WebSocket + envelope loop + token refresh)
 
     public func connect() async throws {
+        // Cancel any existing loops from a previous connection
+        envelopeTask?.cancel()
+        envelopeTask = nil
+        tokenRefreshTask?.cancel()
+        tokenRefreshTask = nil
+
         _connectionState = .connecting
+        // Listen for PreKeyStatus frames from server
+        gateway.onPreKeyStatus = { [weak self] count, threshold in
+            if count < threshold {
+                Task { [weak self] in await self?.replenishPreKeys() }
+            }
+        }
         try await gateway.connect()
         _connectionState = .connected
         startEnvelopeLoop()
@@ -228,9 +304,12 @@ public class ObscuraClient {
 
     public func disconnect() {
         envelopeTask?.cancel()
+        envelopeTask = nil
         tokenRefreshTask?.cancel()
+        tokenRefreshTask = nil
         gateway.disconnect()
         _connectionState = .disconnected
+        messageQueue.removeAll()
     }
 
     // MARK: - High-Level Operations
@@ -300,7 +379,7 @@ public class ObscuraClient {
                 logger.sessionEstablishFailed(userId: friendUserId, error: "\(error)")
                 continue
             }
-            let targetDeviceId = bundle["deviceId"] as? String ?? friendUserId
+            let targetDeviceId = bundle.deviceId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: clientMessageData, targetUserId: friendUserId)
         }
         _ = try await messenger.flushMessages()
@@ -328,6 +407,213 @@ public class ObscuraClient {
         for friend in accepted {
             try await sendToAllDevices(friend.userId, msg)
         }
+    }
+
+    // MARK: - Session Reset
+
+    /// Delete all Signal sessions for a user and send SESSION_RESET message.
+    public func resetSessionWith(_ targetUserId: String, reason: String = "manual") async throws {
+        try? persistentSignalStore?.deleteAllSessions(for: targetUserId)
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .sessionReset
+        msg.resetReason = reason
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        try await sendToAllDevices(targetUserId, msg)
+    }
+
+    /// Reset Signal sessions with all accepted friends.
+    public func resetAllSessions(reason: String = "manual") async throws {
+        for friend in await friends.getAccepted() {
+            try? await resetSessionWith(friend.userId, reason: reason)
+        }
+    }
+
+    // MARK: - Device Sync
+
+    /// Ask own devices for state (SYNC_REQUEST).
+    public func requestSync() async throws {
+        let messenger = try requireMessenger()
+        guard let uid = userId else { throw ObscuraError.notAuthenticated }
+        let ownDevices = await devices.getOwnDevices()
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .syncRequest
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        let msgData = try msg.serializedData()
+
+        for device in ownDevices where device.deviceId != self.deviceId {
+            try await messenger.queueMessage(targetDeviceId: device.deviceId, clientMessageData: msgData, targetUserId: uid)
+        }
+        _ = try await messenger.flushMessages()
+    }
+
+    /// Send history (friends + messages) as SYNC_BLOB to a specific device.
+    public func pushHistoryToDevice(_ targetDeviceId: String) async throws {
+        let messenger = try requireMessenger()
+        guard let uid = userId else { throw ObscuraError.notAuthenticated }
+
+        let friendsData = await friends.getAll()
+        let compressed = SyncBlobExporter.export(friends: friendsData, messages: [])
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .syncBlob
+        msg.syncBlob.compressedData = compressed
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        let msgData = try msg.serializedData()
+        try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: msgData, targetUserId: uid)
+        _ = try await messenger.flushMessages()
+    }
+
+    /// Approve a device link request — send DEVICE_LINK_APPROVAL, push history, announce.
+    public func approveLink(newDeviceId: String, challengeResponse: Data) async throws {
+        let messenger = try requireMessenger()
+        guard let uid = userId else { throw ObscuraError.notAuthenticated }
+
+        let identity = await devices.getIdentity()
+        let ownDevices = await devices.getOwnDevices()
+        let friendsData = await friends.getAll()
+        let friendsExportData = SyncBlobExporter.export(friends: friendsData, messages: [])
+
+        var approval = Obscura_V2_DeviceLinkApproval()
+        if let pk = identity?.p2pPublicKey { approval.p2PPublicKey = pk }
+        if let sk = identity?.p2pPrivateKey { approval.p2PPrivateKey = sk }
+        if let rk = identity?.recoveryPublicKey { approval.recoveryPublicKey = rk }
+        approval.challengeResponse = challengeResponse
+        approval.ownDevices = ownDevices.map { d in
+            var info = Obscura_V2_DeviceInfo()
+            info.deviceID = d.deviceId
+            info.deviceName = d.deviceName
+            return info
+        }
+        approval.friendsExport = friendsExportData
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .deviceLinkApproval
+        msg.deviceLinkApproval = approval
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        let msgData = try msg.serializedData()
+        try await messenger.queueMessage(targetDeviceId: newDeviceId, clientMessageData: msgData, targetUserId: uid)
+        _ = try await messenger.flushMessages()
+
+        try await pushHistoryToDevice(newDeviceId)
+        try await announceDevices()
+    }
+
+    /// Announce device revocation to a specific friend with remaining device IDs.
+    public func announceDeviceRevocation(to friendUserId: String, remainingDeviceIds: [String]) async throws {
+        var announce = Obscura_V2_DeviceAnnounce()
+        announce.devices = remainingDeviceIds.map { id in
+            var info = Obscura_V2_DeviceInfo()
+            info.deviceID = id
+            info.deviceName = "Device"
+            return info
+        }
+        announce.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        announce.isRevocation = true
+        announce.signature = Data(repeating: 0, count: Self.emptySignatureSize)
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .deviceAnnounce
+        msg.deviceAnnounce = announce
+        try await sendToAllDevices(friendUserId, msg)
+    }
+
+    /// Re-provision this device with a new identity key (device takeover).
+    public func takeoverDevice() async throws {
+        let (identity, regId) = generateSignalIdentity()
+        let (spkPrivate, spkSig) = generateSignedPreKey(identity: identity)
+        let (otpKeys, preKeyRecords) = generateOneTimePreKeys()
+
+        try await api.uploadDeviceKeys(
+            identityKey: Data(identity.publicKey.serialize()).base64EncodedString(),
+            registrationId: Int(regId),
+            signedPreKey: SignedPreKeyUpload(
+                keyId: Int(Self.signedPreKeyId),
+                publicKey: Data(spkPrivate.publicKey.serialize()).base64EncodedString(),
+                signature: Data(spkSig).base64EncodedString()
+            ),
+            oneTimePreKeys: otpKeys
+        )
+
+        let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
+        self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
+
+        if let did = deviceId, let uid = userId {
+            await _messenger?.mapDevice(did, userId: uid, registrationId: regId)
+        }
+    }
+
+    // MARK: - Encrypted Attachments
+
+    /// Encrypt plaintext, upload ciphertext, send CONTENT_REFERENCE to friend.
+    public func sendEncryptedAttachment(to friendUserId: String, plaintext: Data, mimeType: String = "application/octet-stream") async throws {
+        let encrypted = try AttachmentCrypto.encrypt(plaintext)
+        let result = try await api.uploadAttachment(encrypted.ciphertext)
+        await rateLimitDelay()
+        try await sendAttachment(
+            to: friendUserId, attachmentId: result.id,
+            contentKey: encrypted.contentKey, nonce: encrypted.nonce,
+            mimeType: mimeType, sizeBytes: encrypted.sizeBytes
+        )
+    }
+
+    /// Download ciphertext and decrypt with provided key material.
+    public func downloadDecryptedAttachment(id: String, contentKey: Data, nonce: Data, expectedHash: Data? = nil) async throws -> Data {
+        let ciphertext = try await api.fetchAttachment(id)
+        return try AttachmentCrypto.decrypt(ciphertext, contentKey: contentKey, nonce: nonce, expectedHash: expectedHash)
+    }
+
+    /// Send a CONTENT_REFERENCE message to a friend (attachment already uploaded).
+    public func sendAttachment(to friendUserId: String, attachmentId: String, contentKey: Data, nonce: Data, mimeType: String, sizeBytes: Int) async throws {
+        var ref = Obscura_V2_ContentReference()
+        ref.attachmentID = attachmentId
+        ref.contentKey = contentKey
+        ref.nonce = nonce
+        ref.contentType = mimeType
+        ref.sizeBytes = UInt64(sizeBytes)
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .contentReference
+        msg.contentReference = ref
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        try await sendToAllDevices(friendUserId, msg)
+    }
+
+    /// Send a MODEL_SYNC message to a friend.
+    public func sendModelSync(to friendUserId: String, model: String, entryId: String, op: String = "CREATE", data: Data) async throws {
+        var sync = Obscura_V2_ModelSync()
+        sync.model = model
+        sync.id = entryId
+        sync.op = {
+            switch op.uppercased() {
+            case "UPDATE": return .update
+            case "DELETE": return .delete
+            default: return .create
+            }
+        }()
+        sync.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        sync.data = data
+        sync.authorDeviceID = deviceId ?? ""
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .modelSync
+        msg.modelSync = sync
+        try await sendToAllDevices(friendUserId, msg)
+    }
+
+    // MARK: - Query Helpers
+
+    /// Convenience: get messages for a conversation (delegates to MessageActor).
+    public func getMessages(_ conversationId: String, limit: Int = 50) async -> [Message] {
+        await messages.getMessages(conversationId, limit: limit)
+    }
+
+    /// Check if a backup exists on the server (HEAD request).
+    public func checkBackup() async throws -> (exists: Bool, etag: String?, size: Int?) {
+        try await api.checkBackup()
     }
 
     // MARK: - Recovery
@@ -430,21 +716,15 @@ public class ObscuraClient {
             return messageQueue.removeFirst()
         }
 
-        // Wait with timeout
-        return try await withThrowingTaskGroup(of: ReceivedMessage.self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { continuation in
-                    self.messageWaiters.append(continuation)
-                }
+        // Poll with short sleeps — avoids continuation leak that caused hangs
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !messageQueue.isEmpty {
+                return messageQueue.removeFirst()
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw ObscuraError.timeout
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            try await Task.sleep(nanoseconds: 50_000_000) // 50ms poll
         }
+        throw ObscuraError.timeout
     }
 
     // MARK: - Logout
@@ -486,7 +766,7 @@ public class ObscuraClient {
                 logger.sessionEstablishFailed(userId: targetUserId, error: "\(error)")
                 continue
             }
-            let targetDeviceId = bundle["deviceId"] as? String ?? targetUserId
+            let targetDeviceId = bundle.deviceId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: msgData, targetUserId: targetUserId)
         }
         _ = try await messenger.flushMessages()
@@ -503,7 +783,12 @@ public class ObscuraClient {
                     await self.processEnvelope(raw)
                 } catch {
                     if Task.isCancelled { break }
-                    // Timeout or error — loop again if not cancelled
+                    if error is CancellationError { break }
+                    if let gwError = error as? GatewayConnection.GatewayError {
+                        if case .notConnected = gwError { break }
+                        if case .timeout = gwError { continue }
+                    }
+                    break
                 }
             }
         }
@@ -531,11 +816,6 @@ public class ObscuraClient {
             )
             let clientMsg = try Obscura_V2_ClientMessage(serializedData: Data(plaintext))
 
-            // Replenish prekeys if this was a prekey message (consumed one OTK)
-            if encMsg.type == .prekeyMessage {
-                await replenishPreKeysIfNeeded()
-            }
-
             // Route by message type
             await routeMessage(clientMsg, sourceUserId: sourceUserId)
 
@@ -551,6 +831,9 @@ public class ObscuraClient {
                 rawBytes: Data(plaintext)
             )
             emit(received)
+
+            // Check prekey count (non-blocking, fire-and-forget)
+            checkAndReplenishPreKeys()
 
             // Ack
             do {
@@ -717,42 +1000,47 @@ public class ObscuraClient {
         }
     }
 
-    // MARK: - Internal: Prekey Replenishment
+    // MARK: - Internal: Prekey Replenishment (matches Kotlin pattern)
 
-    private func replenishPreKeysIfNeeded() async {
-        guard let store = persistentSignalStore, let identity = identityKeyPair else { return }
-        let batchSize: UInt32 = 50
-        var newKeys: [[String: Any]] = []
-        let startId = nextPreKeyId
-
-        for i in 0..<batchSize {
-            let keyId = startId + i
-            let pk = PrivateKey.generate()
-            newKeys.append([
-                "keyId": Int(keyId),
-                "publicKey": Data(pk.publicKey.serialize()).base64EncodedString(),
-            ])
-            try? store.storePreKey(
-                PreKeyRecord(id: keyId, publicKey: pk.publicKey, privateKey: pk),
-                id: keyId, context: NullContext()
-            )
+    private func checkAndReplenishPreKeys() {
+        Task { [weak self] in
+            guard let self = self,
+                  let store = self.persistentSignalStore,
+                  store.getPreKeyCount() < self.prekeyMinCount else { return }
+            await self.replenishPreKeys()
         }
-        nextPreKeyId = startId + batchSize
+    }
 
-        // Upload to server
-        let signedPreKeyPrivate = PrivateKey.generate()
-        let signedPreKeySignature = identity.privateKey.generateSignature(
-            message: signedPreKeyPrivate.publicKey.serialize()
-        )
+    private func replenishPreKeys() async {
+        guard let store = persistentSignalStore, let identity = identityKeyPair else { return }
         do {
+            let highestId = store.getHighestPreKeyId()
+            var newKeys: [PreKeyUpload] = []
+
+            for i: UInt32 in 1...prekeyReplenishCount {
+                let keyId = highestId + i
+                let pk = PrivateKey.generate()
+                newKeys.append(PreKeyUpload(
+                    keyId: Int(keyId),
+                    publicKey: Data(pk.publicKey.serialize()).base64EncodedString()
+                ))
+                try store.storePreKey(
+                    PreKeyRecord(id: keyId, publicKey: pk.publicKey, privateKey: pk),
+                    id: keyId, context: NullContext()
+                )
+            }
+
+            // Reuse existing signed prekey — don't generate a new one
+            let existingSpk = try store.loadSignedPreKey(id: 1, context: NullContext())
+
             try await api.uploadDeviceKeys(
                 identityKey: Data(identity.publicKey.serialize()).base64EncodedString(),
                 registrationId: Int(registrationId ?? 0),
-                signedPreKey: [
-                    "keyId": Int(nextPreKeyId),
-                    "publicKey": Data(signedPreKeyPrivate.publicKey.serialize()).base64EncodedString(),
-                    "signature": Data(signedPreKeySignature).base64EncodedString(),
-                ],
+                signedPreKey: SignedPreKeyUpload(
+                    keyId: 1,
+                    publicKey: Data(existingSpk.publicKey.serialize()).base64EncodedString(),
+                    signature: Data(existingSpk.signature).base64EncodedString()
+                ),
                 oneTimePreKeys: newKeys
             )
         } catch {
@@ -777,11 +1065,9 @@ public class ObscuraClient {
                 if let rt = self.refreshToken {
                     do {
                         let result = try await self.api.refreshSession(rt)
-                        if let newToken = result["token"] as? String {
-                            self.token = newToken
-                            await self.api.setToken(newToken)
-                        }
-                        if let newRefresh = result["refreshToken"] as? String {
+                        self.token = result.token
+                        await self.api.setToken(result.token)
+                        if let newRefresh = result.refreshToken {
                             self.refreshToken = newRefresh
                         }
                         consecutiveFailures = 0
@@ -812,6 +1098,55 @@ public class ObscuraClient {
     private func requireMessenger() throws -> MessengerActor {
         guard let m = _messenger else { throw ObscuraError.noMessenger }
         return m
+    }
+
+    /// Generate a fresh Signal identity keypair + registration ID. Stores on self.
+    private func generateSignalIdentity() -> (IdentityKeyPair, UInt32) {
+        let identity = IdentityKeyPair.generate()
+        let regId = UInt32.random(in: 1...Self.maxRegistrationId)
+        self.identityKeyPair = identity
+        self.registrationId = regId
+        return (identity, regId)
+    }
+
+    /// Generate a signed pre-key from the given identity.
+    private func generateSignedPreKey(identity: IdentityKeyPair) -> (privateKey: PrivateKey, signature: [UInt8]) {
+        let spkPrivate = PrivateKey.generate()
+        let spkSig = identity.privateKey.generateSignature(message: spkPrivate.publicKey.serialize())
+        return (spkPrivate, spkSig)
+    }
+
+    /// Generate one-time pre-keys for upload + local storage.
+    private func generateOneTimePreKeys() -> (uploads: [PreKeyUpload], records: [(id: UInt32, privateKey: PrivateKey)]) {
+        var uploads: [PreKeyUpload] = []
+        var records: [(id: UInt32, privateKey: PrivateKey)] = []
+        for i: UInt32 in 1...Self.initialPreKeyCount {
+            let pk = PrivateKey.generate()
+            uploads.append(PreKeyUpload(keyId: Int(i), publicKey: Data(pk.publicKey.serialize()).base64EncodedString()))
+            records.append((id: i, privateKey: pk))
+        }
+        return (uploads, records)
+    }
+
+    /// Create and populate a PersistentSignalStore with identity + keys.
+    private func initializeSignalStore(identity: IdentityKeyPair, regId: UInt32,
+                                       spkPrivate: PrivateKey, spkSig: [UInt8],
+                                       preKeyRecords: [(id: UInt32, privateKey: PrivateKey)]) throws -> PersistentSignalStore {
+        let store = try PersistentSignalStore()
+        store.logger = self.logger
+        store.initialize(keyPair: identity, registrationId: regId)
+        try store.storeSignedPreKey(
+            SignedPreKeyRecord(id: Self.signedPreKeyId, timestamp: UInt64(Date().timeIntervalSince1970), privateKey: spkPrivate, signature: spkSig),
+            id: Self.signedPreKeyId, context: NullContext()
+        )
+        for record in preKeyRecords {
+            try store.storePreKey(
+                PreKeyRecord(id: record.id, publicKey: record.privateKey.publicKey, privateKey: record.privateKey),
+                id: record.id, context: NullContext()
+            )
+        }
+        self.persistentSignalStore = store
+        return store
     }
 
     private func bytesToUuid(_ data: Data) -> String {

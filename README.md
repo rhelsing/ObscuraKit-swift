@@ -155,7 +155,7 @@ Sources/ObscuraKit/
 │   └── Bip39Wordlist.swift      261  2048-word BIP39 English wordlist
 ├── Network/
 │   ├── APIClient.swift          293  URLSession REST: auth, devices, messages, attachments, backup
-│   ├── GatewayConnection.swift  134  WebSocketKit (SwiftNIO): ticket auth, envelopes, ACK
+│   ├── GatewayConnection.swift  134  URLSessionWebSocketTask: ticket auth, envelopes, ACK
 │   └── Constants.swift            9  Rate limit delay
 ├── ORM/
 │   ├── CRDT/
@@ -214,23 +214,26 @@ No locks. No race conditions. The compiler prevents cross-actor mutable access.
 ## Build & Test
 
 ```bash
-# Docker (Swift 6.1 + Rust libsignal FFI)
-docker build -t obscura-kit:dev .
-docker run --rm -v "$(pwd):/app" -v obscura-build-cache:/app/.build \
-  -w /app -e LIBRARY_PATH=/usr/local/lib obscura-kit:dev swift test
+# Native (macOS 13+ with Swift 6.1 toolchain)
+swift build
+swift test
+swift test --filter CoreFlowTests
 
-# Or use dev.sh helper
+# Or use dev.sh helper (sets LIBRARY_PATH for libsignal FFI)
+./dev.sh build
 ./dev.sh test
 ./dev.sh test --filter CoreFlowTests
-./dev.sh build
 ```
+
+No Docker required. Builds natively on macOS.
 
 ## Dependencies
 
 - `signalapp/libsignal` v0.40.0 — Signal Protocol (vendored, Rust FFI)
 - `apple/swift-protobuf` — protobuf codegen
 - `groue/GRDB.swift` — SQLite persistence + ValueObservation
-- `vapor/websocket-kit` — SwiftNIO WebSocket (Linux compatible)
+- `CryptoKit` — SHA-256, HMAC (system framework)
+- `URLSessionWebSocketTask` — WebSocket (system framework)
 
 ## Server
 

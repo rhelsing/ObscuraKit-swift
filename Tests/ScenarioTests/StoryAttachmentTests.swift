@@ -42,7 +42,7 @@ final class StoryAttachmentTests: XCTestCase {
         var imageData = Data([0xFF, 0xD8, 0xFF, 0xE0])
         imageData.append(Data(repeating: 0x99, count: 1000))
         let uploadResult = try await alice.api.uploadAttachment(imageData)
-        let attachmentId = uploadResult["id"] as! String
+        let attachmentId = uploadResult.id
         await rateLimitDelay()
 
         // Bob connects
@@ -87,7 +87,7 @@ final class StoryAttachmentTests: XCTestCase {
         var imageData = Data([0xFF, 0xD8, 0xFF, 0xE0])
         imageData.append(Data(repeating: 0x77, count: 800))
         let uploadResult = try await alice.api.uploadAttachment(imageData)
-        let attachmentId = uploadResult["id"] as! String
+        let attachmentId = uploadResult.id
         await rateLimitDelay()
 
         // Bob downloads (both users can access after auth)

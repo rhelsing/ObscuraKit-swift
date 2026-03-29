@@ -1,16 +1,10 @@
 # Pitfalls — Things That Will Waste Your Time
 
-## Docker / Build
+## Build
 
-**Swift 6.1 standalone toolchain does NOT work on macOS 12.** The `.pkg` installs fine but every binary crashes with `Symbol not found: (_$s10Foundation10NSNotFoundSivg)`. The toolchain requires macOS 13+. Update the OS or use Docker.
+**Requires macOS 13+ and Xcode 16+.** The project uses `URLSessionWebSocketTask` (macOS 13+), CryptoKit, and Swift 6.1 toolchain. Ensure Xcode is up to date — the Swift toolchain uses Xcode's SDK for platform headers.
 
-**`-index-store-path` crashes clang on Linux.** The `swift-crypto` and SwiftNIO C shims pass this Apple-only flag. The Docker image has a clang wrapper at `/usr/bin/clang` that strips it. If you rebuild the Docker image, you MUST include this wrapper or C compilation fails on every build.
-
-**GRDB requires SQLite with snapshot support.** The Ubuntu `libsqlite3-dev` package does NOT have `SQLITE_ENABLE_SNAPSHOT`. The Dockerfile builds SQLite from source with this flag. Without it, linking fails with `undefined reference to sqlite3_snapshot_open`.
-
-**Docker build cache is a named volume.** Use `docker volume create obscura-build-cache` and mount it at `/app/.build`. Without this, every `swift test` rebuilds ALL dependencies (~5 min). With it, incremental builds are ~5-10 seconds.
-
-**`LIBRARY_PATH=/usr/local/lib` is required.** The libsignal Rust FFI (`.a` file) lives at `/usr/local/lib/libsignal_ffi.a` in the Docker image. Without this env var, linking fails with `undefined reference to signal_*`.
+**`LIBRARY_PATH` must point to libsignal FFI.** The vendored libsignal Rust FFI (`.a` file) must be on the library path. Use `LIBRARY_PATH="$(pwd)/vendored/libsignal/target/release" swift build`. The `dev.sh` helper sets this automatically.
 
 ## libsignal
 
@@ -24,7 +18,7 @@
 
 ## WebSocket
 
-**`URLSessionWebSocketTask` does NOT work on Linux.** The `swift-corelibs-foundation` implementation uses libcurl which has no WebSocket support. Use `WebSocketKit` (SwiftNIO) instead. It works on both Linux and macOS.
+**The project uses `URLSessionWebSocketTask` (native Foundation).** Linux is no longer a supported build target. The previous WebSocketKit/SwiftNIO dependency was removed in March 2026.
 
 **The envelope loop must use a buffered queue for `waitForMessage()`.** If you create a fresh `AsyncStream` subscription after the message has already been processed by the loop, you miss it. The `messageQueue` array in ObscuraClient buffers processed messages for test consumption.
 
@@ -38,7 +32,7 @@
 
 **Device provisioning validates XEdDSA signatures.** You cannot use dummy/fake keys for provisioning. The `identityKey` must be a real Curve25519 key (33 bytes, 0x05 prefix) and the `signedPreKey.signature` must be a valid XEdDSA signature (64 bytes) signed by the identity key. libsignal handles this correctly.
 
-**`POST /v1/messages` requires `Idempotency-Key` header** (UUID) and `Content-Type: application/x-protobuf`. Missing either causes 400.
+**`POST /v1/messages` requires `Idempotency-Key` header** (content-hash based) and `Content-Type: application/x-protobuf`. Missing either causes 400.
 
 ## Protobuf
 
@@ -51,3 +45,13 @@
 **Tests that call `client.connect()` start an envelope loop task.** This task must be cancelled via `client.disconnect()` before the test ends, otherwise it blocks the next test. The `ObscuraClient.deinit` handles this, but only if the client is deallocated (not retained by test references).
 
 **The `constantTimeEqual` function must be used for identity key comparison.** Using `==` on `Data` is timing-vulnerable. This was flagged by the security audit.
+
+## Historical: Docker Notes
+
+These are preserved for reference. Docker is no longer needed for development.
+
+- Swift 6.1 standalone toolchain does NOT work on macOS 12 (needs 13+).
+- `-index-store-path` crashes clang on Linux; Docker image had a wrapper to strip it.
+- GRDB requires SQLite with `SQLITE_ENABLE_SNAPSHOT` (Dockerfile built SQLite from source).
+- Docker build cache was a named volume at `/app/.build`.
+- `LIBRARY_PATH=/usr/local/lib` was required in Docker for the libsignal FFI.

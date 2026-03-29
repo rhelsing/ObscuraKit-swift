@@ -84,16 +84,6 @@ final class DeviceRevocationTests: XCTestCase {
 
         // List devices — should have our device
         let devicesList = try await bob.api.listDevices()
-        // Server may return array directly or wrapped in object
-        let hasDevices: Bool
-        if let arr = devicesList as? [[String: Any]] {
-            hasDevices = !arr.isEmpty
-        } else if let dict = devicesList as? [String: Any],
-                  let arr = dict["devices"] as? [[String: Any]] {
-            hasDevices = !arr.isEmpty
-        } else {
-            hasDevices = false
-        }
-        XCTAssertTrue(hasDevices, "Should have at least one device")
+        XCTAssertFalse(devicesList.isEmpty, "Should have at least one device")
     }
 }

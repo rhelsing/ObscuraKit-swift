@@ -18,7 +18,7 @@ final class PixFlowTests: XCTestCase {
         jpegData.append(Data(repeating: 0x42, count: 2000))
 
         let uploadResult = try await alice.api.uploadAttachment(jpegData)
-        let attachmentId = uploadResult["id"] as! String
+        let attachmentId = uploadResult.id
         await rateLimitDelay()
 
         // Bob connects
@@ -59,7 +59,7 @@ final class PixFlowTests: XCTestCase {
         jpegData.append(Data(repeating: 0x55, count: 500))
 
         let uploadResult = try await alice.api.uploadAttachment(jpegData)
-        let attachmentId = uploadResult["id"] as! String
+        let attachmentId = uploadResult.id
         await rateLimitDelay()
 
         // Download

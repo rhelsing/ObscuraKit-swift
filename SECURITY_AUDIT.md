@@ -1,7 +1,7 @@
 # ObscuraKit Swift — Security Audit
 
 **Date:** 2026-03-28
-**Last updated:** 2026-03-28 (Phase 1 + 1b + 2a + 2b fixes applied)
+**Last updated:** 2026-03-28 (Phase 1 + 1b + 2a + 2b fixes applied, modernization: CryptoKit + URLSession)
 **Scope:** Full codebase — crypto, network, storage, facade, dependencies, config
 **Cross-referenced against:** Kotlin client audit (30 findings), Kotlin 7-fix patch, independent Swift deep audit (5 parallel agents)
 
@@ -754,13 +754,9 @@ let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKey
 
 **Fix:** Use one Signal store implementation throughout. Remove whichever is not the primary.
 
-### L2. Duplicate Custom SHA-256
+### L2. Duplicate Custom SHA-256 — FIXED
 
-**Files:** `RecoveryKeys.swift:88-118`, `VerificationCode.swift:29-99`
-
-Identical hand-rolled SHA-256 duplicated in two files.
-
-**Fix:** Replace both with `import CryptoKit; SHA256.hash(data:)` or `CommonCrypto.CC_SHA256`.
+**Fixed:** Replaced both hand-rolled SHA-256 implementations (~140 lines total) with `import CryptoKit; SHA256.hash(data:)`. Also replaced hand-rolled HMAC-SHA256 with `HMAC<SHA256>.authenticationCode()`. WebSocketKit/SwiftNIO dependency removed, replaced with native `URLSessionWebSocketTask`.
 
 ### L3. No Signal Session Expiration
 
@@ -800,26 +796,13 @@ Prekeys are uploaded once during registration and never replenished. Once one-ti
 
 **Fix:** Gate behind `#if DEBUG` or move to test target only.
 
-### L7. Docker Container Runs as Root
+### L7. Docker Container Runs as Root — N/A
 
-**File:** `Dockerfile` (no `USER` directive)
+Docker is no longer used for development. The Dockerfile remains for CI/CD if needed but is not part of the standard workflow.
 
-**Fix:**
-```dockerfile
-RUN useradd -m -u 1000 builder
-USER builder
-```
+### L8. libsignal Vendored Without Version Pin — N/A
 
-### L8. libsignal Vendored Without Version Pin
-
-**File:** `Dockerfile:24-35`
-
-`git clone --depth 1` clones `main` HEAD. Non-reproducible builds.
-
-**Fix:**
-```dockerfile
-git clone --depth 1 --branch v0.40.0 https://github.com/signalapp/libsignal.git
-```
+Docker is no longer used. The vendored libsignal at `vendored/libsignal/` is v0.40.0 and built locally.
 
 ---
 
