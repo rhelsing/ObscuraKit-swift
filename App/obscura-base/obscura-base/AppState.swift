@@ -104,50 +104,56 @@ class AppState: ObservableObject {
     func login(_ username: String, _ password: String) async {
         statusText = "Logging in..."
         do {
-            // Phase 1: Authenticate to get userId
-            let creds = try await ObscuraClient.loginAccount(username, password)
-            guard !creds.userId.isEmpty else {
+            // Step 1: User-scoped login (no deviceId) to get userId
+            let shellCreds = try await ObscuraClient.loginAccount(username, password)
+            guard !shellCreds.userId.isEmpty else {
                 statusText = "Error: no userId"
                 return
             }
 
-            let userDir = Self.userDir(for: creds.userId)
+            let userDir = Self.userDir(for: shellCreds.userId)
             let existingDB = FileManager.default.fileExists(atPath: userDir)
 
-            // Open (or create) user-scoped encrypted DB
-            let userClient = try ObscuraClient(
-                apiURL: "https://obscura.barrelmaker.dev",
-                dataDirectory: userDir,
-                userId: creds.userId
-            )
-
             if existingDB {
-                // Returning user — reuse DB. Login again WITH deviceId to get device-scoped token.
-                // (Matches JS EXISTING_DEVICE scenario: login with stored device identity)
-                let savedDeviceId = KeychainSession.load()?.deviceId
+                // EXISTING_DEVICE — open DB, read stored deviceId, login with it
+                let userClient = try ObscuraClient(
+                    apiURL: "https://obscura.barrelmaker.dev",
+                    dataDirectory: userDir,
+                    userId: shellCreds.userId
+                )
+                // Read saved deviceId from the encrypted DB (persisted across logout)
+                let savedIdentity = await userClient.devices.getIdentity()
+                let savedDeviceId = savedIdentity?.deviceId
+
+                // Login with deviceId to get device-scoped token (matches Kotlin/JS)
                 let deviceCreds = try await ObscuraClient.loginAccount(
                     username, password, deviceId: savedDeviceId
                 )
                 await userClient.restoreSession(
                     token: deviceCreds.token,
                     refreshToken: deviceCreds.refreshToken,
-                    userId: creds.userId,
+                    userId: shellCreds.userId,
                     deviceId: savedDeviceId,
                     username: username
                 )
+                replaceClient(userClient)
             } else {
-                // New user on this device
+                // NEW_DEVICE — create encrypted DB, provision new device
+                let userClient = try ObscuraClient(
+                    apiURL: "https://obscura.barrelmaker.dev",
+                    dataDirectory: userDir,
+                    userId: shellCreds.userId
+                )
                 await userClient.restoreSession(
-                    token: creds.token,
-                    refreshToken: creds.refreshToken,
-                    userId: creds.userId,
+                    token: shellCreds.token,
+                    refreshToken: shellCreds.refreshToken,
+                    userId: shellCreds.userId,
                     deviceId: nil,
                     username: username
                 )
                 try await userClient.provisionCurrentDevice()
+                replaceClient(userClient)
             }
-
-            replaceClient(userClient)
 
             isAuthenticated = true
             saveSession()
