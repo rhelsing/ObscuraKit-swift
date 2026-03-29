@@ -109,13 +109,8 @@ class AppState: ObservableObject {
     func login(_ username: String, _ password: String) async {
         statusText = "Logging in..."
         do {
-            // Provision new device into temp directory
-            let tempDir = Self.baseDir.appendingPathComponent("_pending").path
-            try? FileManager.default.removeItem(atPath: tempDir)
-            let tempClient = try ObscuraClient(
-                apiURL: "https://obscura.barrelmaker.dev",
-                dataDirectory: tempDir
-            )
+            // First: authenticate to get userId + tokens
+            let tempClient = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
             try await tempClient.loginAndProvision(username, password)
 
             guard let userId = tempClient.userId else {
@@ -123,24 +118,48 @@ class AppState: ObservableObject {
                 return
             }
 
-            // Move to user-scoped path (overwrites any stale DB)
             let userDir = Self.userDir(for: userId)
-            try? FileManager.default.removeItem(atPath: userDir)
-            try FileManager.default.moveItem(atPath: tempDir, toPath: userDir)
+            let existingDB = FileManager.default.fileExists(atPath: userDir)
 
-            let userClient = try ObscuraClient(
-                apiURL: "https://obscura.barrelmaker.dev",
-                dataDirectory: userDir
-            )
-            await userClient.restoreSession(
-                token: tempClient.token!,
-                refreshToken: tempClient.refreshToken,
-                userId: userId,
-                deviceId: tempClient.deviceId,
-                username: username
-            )
+            if existingDB {
+                // User has data on this device — reuse their DB, just refresh auth
+                let userClient = try ObscuraClient(
+                    apiURL: "https://obscura.barrelmaker.dev",
+                    dataDirectory: userDir
+                )
+                await userClient.restoreSession(
+                    token: tempClient.token!,
+                    refreshToken: tempClient.refreshToken,
+                    userId: userId,
+                    deviceId: tempClient.deviceId,
+                    username: username
+                )
+                replaceClient(userClient)
+            } else {
+                // First time on this device — provision into user-scoped dir
+                let tempDir = Self.baseDir.appendingPathComponent("_pending").path
+                try? FileManager.default.removeItem(atPath: tempDir)
+                let provClient = try ObscuraClient(
+                    apiURL: "https://obscura.barrelmaker.dev",
+                    dataDirectory: tempDir
+                )
+                try await provClient.loginAndProvision(username, password)
+                try FileManager.default.moveItem(atPath: tempDir, toPath: userDir)
 
-            replaceClient(userClient)
+                let userClient = try ObscuraClient(
+                    apiURL: "https://obscura.barrelmaker.dev",
+                    dataDirectory: userDir
+                )
+                await userClient.restoreSession(
+                    token: provClient.token!,
+                    refreshToken: provClient.refreshToken,
+                    userId: userId,
+                    deviceId: provClient.deviceId,
+                    username: username
+                )
+                replaceClient(userClient)
+            }
+
             isAuthenticated = true
             saveSession()
             try await client.connect()
