@@ -63,11 +63,21 @@ public actor FriendActor {
         return AsyncValueObservation(observation: observation, in: db)
     }
 
-    /// Stream of pending friend requests received.
+    /// Stream of pending friend requests received (incoming).
     public nonisolated func observePending() -> AsyncValueObservation<[Friend]> {
         let observation = ValueObservation.tracking { db -> [Friend] in
             let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends WHERE status = ?",
                                         arguments: [FriendStatus.pendingReceived.rawValue])
+            return rows.compactMap { Self.rowToFriend($0) }
+        }
+        return AsyncValueObservation(observation: observation, in: db)
+    }
+
+    /// Stream of pending friend requests sent (outgoing).
+    public nonisolated func observePendingSent() -> AsyncValueObservation<[Friend]> {
+        let observation = ValueObservation.tracking { db -> [Friend] in
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends WHERE status = ?",
+                                        arguments: [FriendStatus.pendingSent.rawValue])
             return rows.compactMap { Self.rowToFriend($0) }
         }
         return AsyncValueObservation(observation: observation, in: db)

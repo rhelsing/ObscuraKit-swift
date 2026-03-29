@@ -131,15 +131,35 @@ public class ObscuraClient {
 
     /// File-backed client (production). All state persists to `dataDirectory/obscura.sqlite`.
     /// On init, restores Signal identity from DB if one exists.
-    public init(apiURL: String, dataDirectory: String, logger: ObscuraLogger = PrintLogger()) throws {
+    public init(apiURL: String, dataDirectory: String, userId: String? = nil, logger: ObscuraLogger = PrintLogger()) throws {
         self.logger = logger
 
-        // Ensure directory exists
-        try FileManager.default.createDirectory(atPath: dataDirectory, withIntermediateDirectories: true)
+        // Ensure directory exists with iOS Data Protection (encrypted at rest)
+        try FileManager.default.createDirectory(
+            atPath: dataDirectory, withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
         let dbPath = (dataDirectory as NSString).appendingPathComponent("obscura.sqlite")
 
-        let db = try DatabaseQueue(path: dbPath)
+        // SQLCipher encryption: per-user key from Keychain
+        var config = Configuration()
+        if let userId = userId {
+            let key = DatabaseSecret.getOrCreate(userId: userId)
+            config.prepareDatabase { db in
+                try db.usePassphrase(key)
+                try db.execute(sql: "PRAGMA kdf_iter = 1") // key is already 256-bit entropy
+                try db.execute(sql: "PRAGMA cipher_page_size = 4096")
+            }
+        }
+
+        let db = try DatabaseQueue(path: dbPath, configuration: config)
         try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
+
+        // Set file protection on the DB file itself
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: dbPath
+        )
         self.sharedDb = db
 
         self.api = APIClient(baseURL: apiURL)
@@ -218,6 +238,23 @@ public class ObscuraClient {
         }
     }
 
+    /// Lightweight account registration — API call only, no Signal keys or DB.
+    /// Returns (token, refreshToken, userId) so the caller can create a user-scoped client.
+    public static func registerAccount(_ username: String, _ password: String, apiURL: String = "https://obscura.barrelmaker.dev") async throws -> (token: String, refreshToken: String?, userId: String) {
+        let api = APIClient(baseURL: apiURL)
+        let result = try await api.registerUser(username, password)
+        let userId = APIClient.extractUserId(result.token) ?? ""
+        return (token: result.token, refreshToken: result.refreshToken, userId: userId)
+    }
+
+    /// Lightweight login — API call only, returns credentials.
+    public static func loginAccount(_ username: String, _ password: String, apiURL: String = "https://obscura.barrelmaker.dev") async throws -> (token: String, refreshToken: String?, userId: String) {
+        let api = APIClient(baseURL: apiURL)
+        let result = try await api.loginWithDevice(username, password, deviceId: nil)
+        let userId = APIClient.extractUserId(result.token) ?? ""
+        return (token: result.token, refreshToken: result.refreshToken, userId: userId)
+    }
+
     // MARK: - Register
 
     public func register(_ username: String, _ password: String) async throws {
@@ -261,6 +298,39 @@ public class ObscuraClient {
 
         // 5. Messenger
         self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
+        self._authState = .authenticated
+    }
+
+    /// Provision the current device with Signal keys. Requires token + userId already set.
+    /// Used after registerAccount/loginAccount when the client was created with a user-scoped DB.
+    public func provisionCurrentDevice(deviceName: String = "ObscuraKit-device") async throws {
+        guard let _ = token, let userId = userId else {
+            throw NSError(domain: "ObscuraKit", code: 1, userInfo: [NSLocalizedDescriptionKey: "No auth token or userId set"])
+        }
+        await rateLimitDelay()
+
+        let (identity, regId) = generateSignalIdentity()
+        let (spkPrivate, spkSig) = generateSignedPreKey(identity: identity)
+        let (otpKeys, preKeyRecords) = generateOneTimePreKeys()
+
+        let deviceResult = try await api.provisionDevice(
+            name: deviceName,
+            identityKey: Data(identity.publicKey.serialize()).base64EncodedString(),
+            registrationId: Int(regId),
+            signedPreKey: SignedPreKeyUpload(
+                keyId: Int(Self.signedPreKeyId),
+                publicKey: Data(spkPrivate.publicKey.serialize()).base64EncodedString(),
+                signature: Data(spkSig).base64EncodedString()
+            ),
+            oneTimePreKeys: otpKeys
+        )
+
+        self.token = deviceResult.token
+        self.deviceId = APIClient.extractDeviceId(deviceResult.token)
+        await api.setToken(deviceResult.token)
+
+        let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
+        self._messenger = MessengerActor(api: api, store: store, ownUserId: userId)
         self._authState = .authenticated
     }
 

@@ -15,7 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.25.0"),
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
+        .package(path: "../grdb-cipher-fork"),
         .package(path: "vendored/libsignal/swift"),
     ],
     targets: [
@@ -23,7 +23,7 @@ let package = Package(
             name: "ObscuraKit",
             dependencies: [
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-                .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "GRDB", package: "grdb-cipher-fork"),
                 .product(name: "LibSignalClient", package: "swift"),
             ],
             swiftSettings: [

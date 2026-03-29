@@ -1,7 +1,6 @@
 import SwiftUI
 import ObscuraKit
 
-/// Root view — shows RegisterScreen when logged out, ConnectedScreen when authenticated.
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
 
@@ -64,42 +63,91 @@ struct RegisterScreen: View {
 
 struct ConnectedScreen: View {
     @EnvironmentObject var appState: AppState
-    @State private var targetUserId = ""
+    @State private var friendCodeInput = ""
     @State private var selectedFriend: Friend?
+    @State private var codeCopied = false
+
+    private var myCode: String? {
+        guard let userId = appState.client.userId,
+              let username = appState.client.username else { return nil }
+        return FriendCode.encode(userId: userId, username: username)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // User info — tap to copy userId
-            Text("User: \(appState.client.username ?? "") (\(appState.client.userId ?? ""))")
-                .font(.subheadline)
-                .onTapGesture {
-                    if let id = appState.client.userId {
-                        UIPasteboard.general.string = id
-                        appState.statusText = "userId copied"
-                    }
+            // My friend code — tap to copy
+            if let code = myCode {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("My Friend Code")
+                        .font(.caption)
+                        .bold()
+                    Text(code)
+                        .font(.system(.caption2, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(6)
+                        .onTapGesture {
+                            UIPasteboard.general.string = code
+                            codeCopied = true
+                            appState.statusText = "Friend code copied!"
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { codeCopied = false }
+                        }
+                    Text(codeCopied ? "Copied!" : "Tap to copy")
+                        .font(.caption2)
+                        .foregroundColor(codeCopied ? .green : .secondary)
                 }
-
-            // Befriend
-            HStack(spacing: 4) {
-                TextField("Friend userId", text: $targetUserId)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-
-                Button("Add") {
-                    Task {
-                        await appState.befriend(targetUserId)
-                        targetUserId = ""
-                    }
-                }
-                .buttonStyle(.borderedProminent)
             }
 
-            // Pending requests
-            if !appState.pendingRequests.isEmpty {
-                Text("Pending (\(appState.pendingRequests.count)):")
+            Divider()
+
+            // Add friend by code
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Add Friend")
                     .font(.caption)
                     .bold()
+                HStack(spacing: 4) {
+                    TextField("Paste friend code", text: $friendCodeInput)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+
+                    Button("Add") {
+                        let code = friendCodeInput
+                        friendCodeInput = ""
+                        Task { await appState.addFriendByCode(code) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(friendCodeInput.isEmpty)
+                }
+            }
+
+            // Sent requests (pending outgoing)
+            if !appState.pendingSent.isEmpty {
+                Text("Sent (\(appState.pendingSent.count)):")
+                    .font(.caption)
+                    .bold()
+                    .foregroundColor(.orange)
+                ForEach(appState.pendingSent, id: \.userId) { req in
+                    HStack {
+                        Text(req.username.isEmpty ? req.userId.prefix(8) + "..." : req.username)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("pending")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                }
+            }
+
+            // Incoming requests (pending received)
+            if !appState.pendingRequests.isEmpty {
+                Text("Requests (\(appState.pendingRequests.count)):")
+                    .font(.caption)
+                    .bold()
+                    .foregroundColor(.blue)
                 ForEach(appState.pendingRequests, id: \.userId) { req in
                     HStack {
                         Text(req.username)
@@ -159,7 +207,6 @@ struct ChatView: View {
                 .font(.subheadline)
                 .bold()
 
-            // Messages — GRDB reactive observation
             List(messages, id: \.messageId) { msg in
                 HStack {
                     if msg.isSent {
@@ -185,7 +232,6 @@ struct ChatView: View {
                 }
             }
 
-            // Send message
             HStack(spacing: 4) {
                 TextField("Message", text: $messageText)
                     .textFieldStyle(.roundedBorder)
