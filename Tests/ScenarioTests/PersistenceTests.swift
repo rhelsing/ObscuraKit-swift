@@ -40,21 +40,22 @@ final class PersistenceTests: XCTestCase {
         let bobRefreshToken = bob1.refreshToken
         await rateLimitDelay()
 
-        // 3. Bob connects, exchanges friend request with Alice
+        // 3. Both connect, complete full friend handshake
+        try await alice.connectWebSocket()
         try await bob1.connect()
         await rateLimitDelay()
 
-        try await alice.befriend(bobUserId)
+        try await alice.client.befriend(bobUserId, username: bobUsername)
         _ = try await bob1.waitForMessage(timeout: 10) // FRIEND_REQUEST
-        try await bob1.send(to: alice.userId!, "pre-restart test")
-
-        // We need Alice to accept so Bob has a session
-        try await alice.connectWebSocket()
+        try await bob1.acceptFriend(alice.userId!, username: alice.username)
         await rateLimitDelay()
+        _ = try await alice.waitForMessage(timeout: 10) // FRIEND_RESPONSE
 
-        // Actually let's simplify — just have Alice send to Bob
-        // First Alice needs session with Bob, which befriend already created
-        // Now verify Bob can receive
+        // Verify friendship
+        let aliceFriend = await alice.friends.getFriend(bobUserId)
+        XCTAssertEqual(aliceFriend?.status, .accepted)
+
+        // Now send a message to prove sessions work
         try await alice.send(to: bobUserId, "before restart")
         let msg1 = try await bob1.waitForMessage(timeout: 10)
         XCTAssertEqual(msg1.text, "before restart", "Should receive while connected")
@@ -250,7 +251,7 @@ final class PersistenceTests: XCTestCase {
 
         // Bob goes offline immediately (never connected)
         // Alice sends friend request
-        try await alice.befriend(bobUserId)
+        try await alice.befriend(bobUserId, username: bobUsername)
         await rateLimitDelay()
         try await Task.sleep(nanoseconds: 1_000_000_000)
 

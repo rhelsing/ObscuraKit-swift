@@ -16,10 +16,16 @@ final class SessionResetTests: XCTestCase {
         await rateLimitDelay()
 
         // Establish friendship (creates Signal sessions)
-        try await alice.befriend(bob.userId!)
+        try await alice.befriend(bob.userId!, username: bob.username)
         _ = try await bob.waitForMessage(timeout: 10)
-        try await bob.acceptFriend(alice.userId!)
+        try await bob.acceptFriend(alice.userId!, username: alice.username)
         _ = try await alice.waitForMessage(timeout: 10)
+
+        // Verify friendship established in stores
+        let aliceFriend1 = await alice.friends.getFriend(bob.userId!)
+        let bobFriend1 = await bob.friends.getFriend(alice.userId!)
+        XCTAssertEqual(aliceFriend1?.status, .accepted)
+        XCTAssertEqual(bobFriend1?.status, .accepted)
 
         // Alice resets session with Bob
         try await alice.client.resetSessionWith(bob.userId!, reason: "test reset")
@@ -27,6 +33,12 @@ final class SessionResetTests: XCTestCase {
 
         let msg = try await bob.waitForMessage(timeout: 10)
         XCTAssertEqual(msg.type, 4, "Should be SESSION_RESET (4)")
+
+        // Friendship should NOT be affected by session reset
+        let aliceFriend2 = await alice.friends.getFriend(bob.userId!)
+        let bobFriend2 = await bob.friends.getFriend(alice.userId!)
+        XCTAssertEqual(aliceFriend2?.status, .accepted)
+        XCTAssertEqual(bobFriend2?.status, .accepted)
 
         alice.disconnectWebSocket()
         bob.disconnectWebSocket()

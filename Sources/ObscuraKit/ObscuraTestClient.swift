@@ -105,17 +105,44 @@ public class ObscuraTestClient {
         await rateLimitDelay()
     }
 
-    public func befriend(_ userId: String) async throws {
-        try await client.befriend(userId)
+    public func befriend(_ userId: String, username: String = "") async throws {
+        try await client.befriend(userId, username: username)
         await rateLimitDelay()
     }
 
-    public func acceptFriend(_ userId: String) async throws {
-        try await client.acceptFriend(userId)
+    public func acceptFriend(_ userId: String, username: String = "") async throws {
+        try await client.acceptFriend(userId, username: username)
         await rateLimitDelay()
     }
 
     public func waitForMessage(timeout: TimeInterval = 10) async throws -> ReceivedMessage {
         return try await client.waitForMessage(timeout: timeout)
+    }
+
+    // MARK: - Compound Helpers
+
+    /// Full friend handshake: A befriends B, B accepts. Both must be connected.
+    /// Returns after both sides are ACCEPTED in their stores.
+    public static func becomeFriends(_ a: ObscuraTestClient, _ b: ObscuraTestClient) async throws {
+        try await a.befriend(b.userId!, username: b.username)
+        _ = try await b.waitForMessage(timeout: 10) // FRIEND_REQUEST
+        try await b.acceptFriend(a.userId!, username: a.username)
+        _ = try await a.waitForMessage(timeout: 10) // FRIEND_RESPONSE
+    }
+
+    /// Register two users, connect both, complete friend handshake.
+    /// Returns (userA, userB) ready for messaging.
+    public static func registerPairAndBecomeFriends() async throws -> (ObscuraTestClient, ObscuraTestClient) {
+        let a = try await ObscuraTestClient.register()
+        await rateLimitDelay()
+        let b = try await ObscuraTestClient.register()
+        await rateLimitDelay()
+
+        try await a.connectWebSocket()
+        try await b.connectWebSocket()
+        await rateLimitDelay()
+
+        try await becomeFriends(a, b)
+        return (a, b)
     }
 }

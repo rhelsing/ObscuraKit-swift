@@ -2,8 +2,8 @@ import Foundation
 import SwiftProtobuf
 
 /// WebSocket gateway connection for real-time message delivery.
-/// Uses URLSessionWebSocketTask (native Foundation, macOS 13+ / iOS 16+).
-public class GatewayConnection {
+/// Actor isolation ensures envelopeQueue and waiters are never accessed concurrently.
+public actor GatewayConnection {
     private let api: APIClient
     private let logger: ObscuraLogger
     private var wsTask: URLSessionWebSocketTask?
@@ -11,21 +11,22 @@ public class GatewayConnection {
     private var isConnected = false
     private var receiveTask: Task<Void, Never>?
 
-    // Message queue for waitForMessage pattern
     private var envelopeQueue: [(id: Data, senderID: Data, timestamp: UInt64, message: Data)] = []
-    private var waiters: [CheckedContinuation<(id: Data, senderID: Data, timestamp: UInt64, message: Data), Error>] = []
+    private var waiters: [(id: Int, continuation: CheckedContinuation<(id: Data, senderID: Data, timestamp: UInt64, message: Data), Error>)] = []
+    private var nextWaiterId = 0
 
-    /// Callback for PreKeyStatus frames from server
-    public var onPreKeyStatus: ((Int32, Int32) -> Void)?  // (count, minThreshold)
+    private var onPreKeyStatus: (@Sendable (Int32, Int32) -> Void)?
+
+    public func setOnPreKeyStatus(_ handler: (@Sendable (Int32, Int32) -> Void)?) {
+        onPreKeyStatus = handler
+    }
 
     public init(api: APIClient, logger: ObscuraLogger = PrintLogger()) {
         self.api = api
         self.logger = logger
     }
 
-    /// Connect to WebSocket gateway
     public func connect() async throws {
-        // Clean up any previous connection
         receiveTask?.cancel()
         receiveTask = nil
         flushWaiters()
@@ -35,8 +36,7 @@ public class GatewayConnection {
         await rateLimitDelay()
 
         let baseURL = await api.baseURL
-        let wsBase = baseURL
-            .replacingOccurrences(of: "https://", with: "wss://")
+        let wsBase = baseURL.replacingOccurrences(of: "https://", with: "wss://")
         let encodedTicket = ticket.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ticket
         let urlString = "\(wsBase)/v1/gateway?ticket=\(encodedTicket)"
 
@@ -53,7 +53,6 @@ public class GatewayConnection {
         startReceiveLoop()
     }
 
-    /// Disconnect
     public func disconnect() {
         isConnected = false
         receiveTask?.cancel()
@@ -66,35 +65,29 @@ public class GatewayConnection {
         envelopeQueue.removeAll()
     }
 
-    /// Wait for next envelope with timeout
+    /// Fire-and-forget disconnect for deinit / sync contexts.
+    nonisolated public func disconnectSync() {
+        Task { await disconnect() }
+    }
+
     public func waitForRawEnvelope(timeout: TimeInterval = 10) async throws -> (id: Data, senderID: Data, timestamp: UInt64, message: Data) {
         if !envelopeQueue.isEmpty {
             return envelopeQueue.removeFirst()
         }
 
-        return try await withThrowingTaskGroup(of: (id: Data, senderID: Data, timestamp: UInt64, message: Data).self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { continuation in
-                    // Check queue again inside continuation to close the race window
-                    if !self.envelopeQueue.isEmpty {
-                        continuation.resume(returning: self.envelopeQueue.removeFirst())
-                    } else {
-                        self.waiters.append(continuation)
-                    }
-                }
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw GatewayError.timeout
-            }
+        let waiterId = nextWaiterId
+        nextWaiterId += 1
 
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+        return try await withCheckedThrowingContinuation { continuation in
+            waiters.append((id: waiterId, continuation: continuation))
+
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                await self?.timeoutWaiter(id: waiterId)
+            }
         }
     }
 
-    /// Send acknowledgment for processed messages
     public func acknowledge(_ envelopeIds: [Data]) throws {
         guard let wsTask = wsTask else { throw GatewayError.notConnected }
 
@@ -105,26 +98,32 @@ public class GatewayConnection {
         frame.ack = ack
 
         let data = try frame.serializedData()
-        wsTask.send(.data(data)) { [weak self] error in
+        wsTask.send(.data(data)) { error in
             if let error = error {
-                self?.logger.ackFailed(envelopeId: "batch", error: "\(error)")
+                NSLog("[ObscuraKit] ack send error: %@", "\(error)")
             }
         }
     }
 
     // MARK: - Private
 
+    private func timeoutWaiter(id: Int) {
+        if let idx = waiters.firstIndex(where: { $0.id == id }) {
+            let waiter = waiters.remove(at: idx)
+            waiter.continuation.resume(throwing: GatewayError.timeout)
+        }
+    }
+
     private func flushWaiters() {
         let pending = waiters
         waiters.removeAll()
         for waiter in pending {
-            waiter.resume(throwing: GatewayError.notConnected)
+            waiter.continuation.resume(throwing: GatewayError.notConnected)
         }
     }
 
     private func startReceiveLoop() {
         guard let ws = wsTask else { return }
-        NSLog("[ObscuraKit] WS receive loop started")
         receiveTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -132,26 +131,26 @@ public class GatewayConnection {
                     guard let self = self else { break }
                     switch message {
                     case .data(let data):
-                        NSLog("[ObscuraKit] WS frame received: %d bytes", data.count)
-                        self.handleFrame(data)
-                    case .string(let str):
-                        NSLog("[ObscuraKit] WS string received: %@", str)
+                        await self.handleFrame(data)
+                    case .string(_):
                         break
                     @unknown default:
                         break
                     }
                 } catch {
                     guard let self = self else { break }
-                    NSLog("[ObscuraKit] WS receive error: %@", "\(error)")
-                    self.isConnected = false
-                    self.flushWaiters()
-                    if !Task.isCancelled {
-                        self.logger.frameParseFailed(byteCount: 0, error: "receive loop: \(error)")
-                    }
+                    await self.handleReceiveError(error)
                     break
                 }
             }
-            NSLog("[ObscuraKit] WS receive loop ended")
+        }
+    }
+
+    private func handleReceiveError(_ error: Error) {
+        isConnected = false
+        flushWaiters()
+        if !Task.isCancelled {
+            logger.frameParseFailed(byteCount: 0, error: "receive loop: \(error)")
         }
     }
 
@@ -172,7 +171,7 @@ public class GatewayConnection {
 
                 if !waiters.isEmpty {
                     let waiter = waiters.removeFirst()
-                    waiter.resume(returning: raw)
+                    waiter.continuation.resume(returning: raw)
                 } else {
                     if envelopeQueue.count >= 1000 { envelopeQueue.removeFirst() }
                     envelopeQueue.append(raw)

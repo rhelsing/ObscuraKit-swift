@@ -105,7 +105,7 @@ struct ConnectedScreen: View {
                         Text(req.username)
                         Spacer()
                         Button("Accept") {
-                            Task { await appState.acceptFriend(req.userId) }
+                            Task { await appState.acceptFriend(req.userId, username: req.username) }
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

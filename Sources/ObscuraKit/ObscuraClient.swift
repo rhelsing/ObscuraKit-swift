@@ -161,7 +161,7 @@ public class ObscuraClient {
     deinit {
         envelopeTask?.cancel()
         tokenRefreshTask?.cancel()
-        gateway.disconnect()
+        gateway.disconnectSync()
     }
 
     // MARK: - Session State
@@ -333,15 +333,14 @@ public class ObscuraClient {
 
         _connectionState = .connecting
         // Listen for PreKeyStatus frames from server
-        gateway.onPreKeyStatus = { [weak self] count, threshold in
+        await gateway.setOnPreKeyStatus { [weak self] count, threshold in
             if count < threshold {
                 Task { [weak self] in await self?.replenishPreKeys() }
             }
         }
-        NSLog("[ObscuraKit] connecting gateway...")
         try await gateway.connect()
-        NSLog("[ObscuraKit] gateway connected, starting envelope loop")
         _connectionState = .connected
+        logger.log("gateway connected (messenger: \(_messenger != nil))")
         startEnvelopeLoop()
         startTokenRefresh()
     }
@@ -351,16 +350,19 @@ public class ObscuraClient {
         envelopeTask = nil
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
-        gateway.disconnect()
+        gateway.disconnectSync()
         _connectionState = .disconnected
         messageQueue.removeAll()
     }
 
     // MARK: - High-Level Operations
 
-    /// Send a text message to a friend
+    /// Send a text message to an accepted friend. Throws if not friends.
     public func send(to friendUserId: String, _ text: String) async throws {
-        let messenger = try requireMessenger()
+        _ = try requireMessenger()
+        guard await friends.isFriend(friendUserId) else {
+            throw ObscuraError.notFriends(friendUserId)
+        }
         let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         let messageId = "msg_\(UUID().uuidString)"
 
@@ -378,9 +380,9 @@ public class ObscuraClient {
         try await sendSentSync(conversationId: friendUserId, messageId: messageId, timestamp: timestamp, content: text)
     }
 
-    /// Send a friend request
-    public func befriend(_ targetUserId: String) async throws {
-        let messenger = try requireMessenger()
+    /// Send a friend request. Stores the target with their username so the UI can display it.
+    public func befriend(_ targetUserId: String, username targetUsername: String) async throws {
+        _ = try requireMessenger()
 
         var msg = Obscura_V2_ClientMessage()
         msg.type = .friendRequest
@@ -388,15 +390,14 @@ public class ObscuraClient {
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
         try await sendToAllDevices(targetUserId, msg)
-        await friends.add(targetUserId, "", status: .pendingSent)
+        await friends.add(targetUserId, targetUsername, status: .pendingSent)
 
-        // FRIEND_SYNC to own devices
-        try await sendFriendSync(username: "", action: "add", status: "pending_sent", userId: targetUserId)
+        try await sendFriendSync(username: targetUsername, action: "add", status: "pending_sent", userId: targetUserId)
     }
 
-    /// Accept a friend request
-    public func acceptFriend(_ targetUserId: String) async throws {
-        let messenger = try requireMessenger()
+    /// Accept a friend request. Updates status to accepted.
+    public func acceptFriend(_ targetUserId: String, username targetUsername: String) async throws {
+        _ = try requireMessenger()
 
         var msg = Obscura_V2_ClientMessage()
         msg.type = .friendResponse
@@ -407,7 +408,7 @@ public class ObscuraClient {
         try await sendToAllDevices(targetUserId, msg)
         await friends.updateStatus(targetUserId, .accepted)
 
-        try await sendFriendSync(username: "", action: "add", status: "accepted", userId: targetUserId)
+        try await sendFriendSync(username: targetUsername, action: "add", status: "accepted", userId: targetUserId)
     }
 
     /// Send a MODEL_SYNC message to a friend (pass pre-serialized ClientMessage data)
@@ -592,8 +593,9 @@ public class ObscuraClient {
 
     // MARK: - Encrypted Attachments
 
-    /// Encrypt plaintext, upload ciphertext, send CONTENT_REFERENCE to friend.
+    /// Encrypt plaintext, upload ciphertext, send CONTENT_REFERENCE to friend. Throws if not friends.
     public func sendEncryptedAttachment(to friendUserId: String, plaintext: Data, mimeType: String = "application/octet-stream") async throws {
+        guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
         let encrypted = try AttachmentCrypto.encrypt(plaintext)
         let result = try await api.uploadAttachment(encrypted.ciphertext)
         await rateLimitDelay()
@@ -610,8 +612,9 @@ public class ObscuraClient {
         return try AttachmentCrypto.decrypt(ciphertext, contentKey: contentKey, nonce: nonce, expectedHash: expectedHash)
     }
 
-    /// Send a CONTENT_REFERENCE message to a friend (attachment already uploaded).
+    /// Send a CONTENT_REFERENCE message to a friend (attachment already uploaded). Throws if not friends.
     public func sendAttachment(to friendUserId: String, attachmentId: String, contentKey: Data, nonce: Data, mimeType: String, sizeBytes: Int) async throws {
+        guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
         var ref = Obscura_V2_ContentReference()
         ref.attachmentID = attachmentId
         ref.contentKey = contentKey
@@ -626,8 +629,9 @@ public class ObscuraClient {
         try await sendToAllDevices(friendUserId, msg)
     }
 
-    /// Send a MODEL_SYNC message to a friend.
+    /// Send a MODEL_SYNC message to a friend. Throws if not friends.
     public func sendModelSync(to friendUserId: String, model: String, entryId: String, op: String = "CREATE", data: Data) async throws {
+        guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
         var sync = Obscura_V2_ModelSync()
         sync.model = model
         sync.id = entryId
@@ -807,9 +811,7 @@ public class ObscuraClient {
 
     private func sendToAllDevices(_ targetUserId: String, _ msg: Obscura_V2_ClientMessage) async throws {
         let messenger = try requireMessenger()
-        NSLog("[ObscuraKit] sendToAllDevices to %@, fetching bundles...", targetUserId)
         let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
-        NSLog("[ObscuraKit] got %d bundles for %@", bundles.count, targetUserId)
         await rateLimitDelay()
 
         let msgData = try msg.serializedData()
@@ -817,7 +819,6 @@ public class ObscuraClient {
             do {
                 try await messenger.processServerBundle(bundle, userId: targetUserId)
             } catch {
-                NSLog("[ObscuraKit] session establish failed for %@: %@", targetUserId, "\(error)")
                 logger.sessionEstablishFailed(userId: targetUserId, error: "\(error)")
                 continue
             }
@@ -825,43 +826,33 @@ public class ObscuraClient {
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: msgData, targetUserId: targetUserId)
         }
         let result = try await messenger.flushMessages()
-        NSLog("[ObscuraKit] flushMessages result: %@", "\(result)")
+        _ = result
     }
 
     // MARK: - Internal: Envelope Loop
 
     private func startEnvelopeLoop() {
-        NSLog("[ObscuraKit] startEnvelopeLoop — messenger exists: \(_messenger != nil)")
         envelopeTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
                 do {
                     let raw = try await self.gateway.waitForRawEnvelope(timeout: 30)
-                    NSLog("[ObscuraKit] envelope received from %@", bytesToUuid(raw.senderID))
                     await self.processEnvelope(raw)
                 } catch {
                     if Task.isCancelled { break }
                     if error is CancellationError { break }
                     if let gwError = error as? GatewayConnection.GatewayError {
-                        if case .notConnected = gwError {
-                            NSLog("[ObscuraKit] envelope loop: not connected, exiting")
-                            break
-                        }
+                        if case .notConnected = gwError { break }
                         if case .timeout = gwError { continue }
                     }
-                    NSLog("[ObscuraKit] envelope loop error: %@", "\(error)")
                     break
                 }
             }
-            NSLog("[ObscuraKit] envelope loop ended")
         }
     }
 
     private func processEnvelope(_ raw: (id: Data, senderID: Data, timestamp: UInt64, message: Data)) async {
-        guard let messenger = _messenger else {
-            NSLog("[ObscuraKit] processEnvelope: messenger is nil, dropping envelope")
-            return
-        }
+        guard let messenger = _messenger else { return }
 
         let sourceUserId = bytesToUuid(raw.senderID)
 
@@ -903,12 +894,11 @@ public class ObscuraClient {
 
             // Ack
             do {
-                try gateway.acknowledge([raw.id])
+                try await gateway.acknowledge([raw.id])
             } catch {
                 logger.ackFailed(envelopeId: raw.id.map { String(format: "%02x", $0) }.joined(), error: "\(error)")
             }
         } catch {
-            NSLog("[ObscuraKit] decrypt/route failed for %@: %@", sourceUserId, "\(error)")
             let entry = decryptFailures[sourceUserId] ?? (count: 0, windowStart: Date())
             decryptFailures[sourceUserId] = (count: entry.count + 1, windowStart: entry.windowStart)
             logger.decryptFailed(sourceUserId: sourceUserId, error: "\(error)")
@@ -918,15 +908,13 @@ public class ObscuraClient {
     // MARK: - Internal: Message Routing
 
     private func routeMessage(_ msg: Obscura_V2_ClientMessage, sourceUserId: String) async {
-        NSLog("[ObscuraKit] routeMessage type=%d from %@", msg.type.rawValue, sourceUserId)
         switch msg.type {
         case .friendRequest:
-            NSLog("[ObscuraKit] friend request from %@ username=%@", sourceUserId, msg.username)
             await friends.add(sourceUserId, msg.username, status: .pendingReceived)
 
         case .friendResponse:
             if msg.accepted {
-                await friends.updateStatus(sourceUserId, .accepted)
+                await friends.add(sourceUserId, msg.username, status: .accepted)
             }
 
         case .text, .image, .video, .audio, .file:
@@ -1231,6 +1219,7 @@ public class ObscuraClient {
         case noMessenger
         case noMessage
         case timeout
+        case notFriends(String)
 
         public var errorDescription: String? {
             switch self {
@@ -1240,6 +1229,7 @@ public class ObscuraClient {
             case .noMessenger: return "Messenger not initialized (call register first)"
             case .noMessage: return "No message received"
             case .timeout: return "Operation timed out"
+            case .notFriends(let userId): return "Not friends with \(userId)"
             }
         }
     }

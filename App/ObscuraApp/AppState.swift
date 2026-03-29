@@ -1,26 +1,34 @@
 import SwiftUI
 import ObscuraKit
 
-/// App-level state — owns the ObscuraClient for the process lifetime.
-/// iOS equivalent of Kotlin's ObscuraApp.kt.
-/// Session credentials stored in Keychain (iOS Keychain Services).
 @MainActor
 class AppState: ObservableObject {
-    let client: ObscuraClient
+    private(set) var client: ObscuraClient
 
     @Published var isAuthenticated: Bool = false
     @Published var statusText: String = "Ready"
     @Published var friends: [Friend] = []
     @Published var pendingRequests: [Friend] = []
 
-    init() {
-        // Use file-backed storage so Signal keys persist across app launches
-        let dataDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ObscuraData").path
-        self.client = try! ObscuraClient(apiURL: "https://obscura.barrelmaker.dev", dataDirectory: dataDir)
+    private var observationTasks: [Task<Void, Never>] = []
 
-        // Restore session if saved
+    private static var baseDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ObscuraData")
+    }
+
+    /// User-scoped data directory: ObscuraData/{userId}/
+    private static func userDir(for userId: String) -> String {
+        baseDir.appendingPathComponent(userId).path
+    }
+
+    init() {
         if let saved = KeychainSession.load() {
+            // Open existing user-scoped DB — pick up where they left off
+            self.client = try! ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: Self.userDir(for: saved.userId)
+            )
             Task {
                 await client.restoreSession(
                     token: saved.token,
@@ -29,19 +37,13 @@ class AppState: ObservableObject {
                     deviceId: saved.deviceId,
                     username: saved.username
                 )
-
-                // Refresh token if expired before connecting
                 let tokenOk = await client.ensureFreshToken()
                 guard tokenOk else {
-                    // Both token and refresh token are dead — re-login required
                     KeychainSession.clear()
                     isAuthenticated = false
                     return
                 }
-
-                // Update saved token after refresh
                 saveSession()
-
                 do {
                     try await client.connect()
                     isAuthenticated = true
@@ -49,35 +51,54 @@ class AppState: ObservableObject {
                     isAuthenticated = false
                 }
             }
+        } else {
+            // No session — lightweight in-memory client for auth only
+            self.client = try! ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
         }
-
-        // Start GRDB observation for reactive friend list
         startObserving()
     }
 
-    private func startObserving() {
-        // Friends (accepted)
-        Task {
-            for await updated in client.friends.observeAccepted().values {
-                self.friends = updated
-            }
-        }
-
-        // Pending requests
-        Task {
-            for await updated in client.friends.observePending().values {
-                self.pendingRequests = updated
-            }
-        }
-    }
+    // MARK: - Auth
 
     func register(_ username: String, _ password: String) async {
-        statusText = "Registering '\(username)'..."
+        statusText = "Registering..."
         do {
-            try await client.register(username, password)
+            // Register into a temp directory (userId unknown until API responds)
+            let tempDir = Self.baseDir.appendingPathComponent("_pending").path
+            try? FileManager.default.removeItem(atPath: tempDir)
+            let tempClient = try ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: tempDir
+            )
+            try await tempClient.register(username, password)
+
+            guard let userId = tempClient.userId else {
+                statusText = "Error: no userId"
+                return
+            }
+
+            // Move temp DB to user-scoped path: ObscuraData/{userId}/
+            let userDir = Self.userDir(for: userId)
+            try? FileManager.default.removeItem(atPath: userDir)
+            try FileManager.default.moveItem(atPath: tempDir, toPath: userDir)
+
+            // Open the real client from the user's DB
+            let userClient = try ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: userDir
+            )
+            await userClient.restoreSession(
+                token: tempClient.token!,
+                refreshToken: tempClient.refreshToken,
+                userId: userId,
+                deviceId: tempClient.deviceId,
+                username: username
+            )
+
+            replaceClient(userClient)
             isAuthenticated = true
             saveSession()
-            try? await Task.sleep(nanoseconds: 600_000_000) // rate limit
+            try? await Task.sleep(nanoseconds: 600_000_000)
             try await client.connect()
             statusText = "Registered and connected"
         } catch {
@@ -88,9 +109,38 @@ class AppState: ObservableObject {
     func login(_ username: String, _ password: String) async {
         statusText = "Logging in..."
         do {
-            // loginAndProvision creates a new device with Signal keys.
-            // Plain login() only sets credentials — no Signal store, no messenger.
-            try await client.loginAndProvision(username, password)
+            // Provision new device into temp directory
+            let tempDir = Self.baseDir.appendingPathComponent("_pending").path
+            try? FileManager.default.removeItem(atPath: tempDir)
+            let tempClient = try ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: tempDir
+            )
+            try await tempClient.loginAndProvision(username, password)
+
+            guard let userId = tempClient.userId else {
+                statusText = "Error: no userId"
+                return
+            }
+
+            // Move to user-scoped path (overwrites any stale DB)
+            let userDir = Self.userDir(for: userId)
+            try? FileManager.default.removeItem(atPath: userDir)
+            try FileManager.default.moveItem(atPath: tempDir, toPath: userDir)
+
+            let userClient = try ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: userDir
+            )
+            await userClient.restoreSession(
+                token: tempClient.token!,
+                refreshToken: tempClient.refreshToken,
+                userId: userId,
+                deviceId: tempClient.deviceId,
+                username: username
+            )
+
+            replaceClient(userClient)
             isAuthenticated = true
             saveSession()
             try await client.connect()
@@ -101,26 +151,27 @@ class AppState: ObservableObject {
     }
 
     func logout() async {
-        do {
-            try await client.logout()
-        } catch {}
+        do { try await client.logout() } catch {}
         isAuthenticated = false
         KeychainSession.clear()
+        // DB stays on disk — user can log back in and pick up where they left off
         statusText = "Logged out"
     }
 
-    func befriend(_ userId: String) async {
+    // MARK: - Actions
+
+    func befriend(_ userId: String, username: String = "") async {
         do {
-            try await client.befriend(userId)
+            try await client.befriend(userId, username: username)
             statusText = "Friend request sent!"
         } catch {
             statusText = "Error: \(error.localizedDescription)"
         }
     }
 
-    func acceptFriend(_ userId: String) async {
+    func acceptFriend(_ userId: String, username: String = "") async {
         do {
-            try await client.acceptFriend(userId)
+            try await client.acceptFriend(userId, username: username)
             statusText = "Accepted!"
         } catch {
             statusText = "Error: \(error.localizedDescription)"
@@ -134,6 +185,30 @@ class AppState: ObservableObject {
         } catch {
             statusText = "Error: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Private
+
+    private func replaceClient(_ newClient: ObscuraClient) {
+        client.disconnect()
+        client = newClient
+        startObserving()
+    }
+
+    private func startObserving() {
+        for task in observationTasks { task.cancel() }
+        observationTasks.removeAll()
+
+        observationTasks.append(Task {
+            for await updated in client.friends.observeAccepted().values {
+                self.friends = updated
+            }
+        })
+        observationTasks.append(Task {
+            for await updated in client.friends.observePending().values {
+                self.pendingRequests = updated
+            }
+        })
     }
 
     private func saveSession() {

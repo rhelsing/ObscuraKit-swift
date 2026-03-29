@@ -45,13 +45,7 @@ final class EdgeCaseTests: XCTestCase {
     }
 
     func testProfileDataSyncsViaModelSync() async throws {
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-
-        try await bob.connectWebSocket()
-        await rateLimitDelay()
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
         let profileData = try JSONSerialization.data(withJSONObject: [
             "displayName": "Alice Display",

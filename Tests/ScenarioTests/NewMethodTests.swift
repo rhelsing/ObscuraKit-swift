@@ -73,13 +73,7 @@ final class NewMethodTests: XCTestCase {
     // MARK: - getMessages (convenience)
 
     func testGetMessages() async throws {
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-
-        try await bob.connectWebSocket()
-        await rateLimitDelay()
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
         try await alice.send(to: bob.userId!, "test message 1")
         _ = try await bob.waitForMessage(timeout: 10)
@@ -88,6 +82,7 @@ final class NewMethodTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(aliceMsgs.count, 1)
         XCTAssertEqual(aliceMsgs.first?.content, "test message 1")
 
+        alice.disconnectWebSocket()
         bob.disconnectWebSocket()
     }
 

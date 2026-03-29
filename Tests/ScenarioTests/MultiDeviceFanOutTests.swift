@@ -49,6 +49,20 @@ final class MultiDeviceFanOutTests: XCTestCase {
         XCTAssertEqual(msg2.type, 0, "Bob2 should get TEXT")
         XCTAssertEqual(msg2.text, "Hello both Bobs!")
 
+        // Verify message persisted in both Bob devices' stores
+        let bob1Msgs = await bob1.messages.getMessages(alice.userId!)
+        XCTAssertEqual(bob1Msgs.count, 1, "Bob1 store should have 1 message")
+        XCTAssertEqual(bob1Msgs[0].content, "Hello both Bobs!")
+
+        let bob2Msgs = await bob2.messages.getMessages(alice.userId!)
+        XCTAssertEqual(bob2Msgs.count, 1, "Bob2 store should have 1 message")
+        XCTAssertEqual(bob2Msgs[0].content, "Hello both Bobs!")
+
+        // Alice's store should also have the sent message
+        let aliceMsgs = await alice.messages.getMessages(bob1.userId!)
+        XCTAssertEqual(aliceMsgs.count, 1)
+        XCTAssertTrue(aliceMsgs[0].isSent)
+
         alice.disconnectWebSocket()
         bob1.disconnectWebSocket()
         bob2.disconnectWebSocket()
