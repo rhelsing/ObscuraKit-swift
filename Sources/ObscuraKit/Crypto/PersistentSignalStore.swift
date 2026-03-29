@@ -27,6 +27,13 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
     private func createTables() throws {
         try db.write { db in
             try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS signal_local_identity (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    key_pair BLOB NOT NULL,
+                    registration_id INTEGER NOT NULL
+                )
+            """)
+            try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS signal_identities (
                     address TEXT PRIMARY KEY,
                     key_data BLOB NOT NULL
@@ -57,13 +64,43 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
                 )
             """)
         }
+
+        // Restore persisted identity if available
+        if let (keyPair, regId) = try loadPersistedIdentity() {
+            _identityKeyPair = keyPair
+            _registrationId = regId
+        }
     }
 
     // MARK: - Identity Management
 
+    /// Initialize with a keypair and persist to DB.
     public func initialize(keyPair: IdentityKeyPair, registrationId: UInt32) {
         _identityKeyPair = keyPair
         _registrationId = registrationId
+        try? db.write { db in
+            try db.execute(sql: """
+                INSERT OR REPLACE INTO signal_local_identity (id, key_pair, registration_id)
+                VALUES (1, ?, ?)
+            """, arguments: [Data(keyPair.serialize()), registrationId])
+        }
+    }
+
+    /// True if this store has a persisted identity (survives restart).
+    public var hasPersistedIdentity: Bool {
+        _identityKeyPair != nil
+    }
+
+    private func loadPersistedIdentity() throws -> (IdentityKeyPair, UInt32)? {
+        try db.read { db -> (IdentityKeyPair, UInt32)? in
+            guard let row = try Row.fetchOne(db, sql: "SELECT key_pair, registration_id FROM signal_local_identity WHERE id = 1") else {
+                return nil
+            }
+            let keyPairData: Data = row["key_pair"]
+            let regId = UInt32(row["registration_id"] as Int64)
+            let keyPair = try IdentityKeyPair(bytes: Array(keyPairData))
+            return (keyPair, regId)
+        }
     }
 
     public func generateIdentity() -> (IdentityKeyPair, UInt32) {
@@ -236,5 +273,21 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
 
     public func markKyberPreKeyUsed(id: UInt32, context: StoreContext) throws {
         // Not implemented
+    }
+
+    // MARK: - Clear All
+
+    /// Wipe all Signal state (logout). Identity, sessions, keys — everything.
+    public func clearAll() {
+        _identityKeyPair = nil
+        _registrationId = 0
+        try? db.write { db in
+            try db.execute(sql: "DELETE FROM signal_local_identity")
+            try db.execute(sql: "DELETE FROM signal_identities")
+            try db.execute(sql: "DELETE FROM signal_prekeys")
+            try db.execute(sql: "DELETE FROM signal_signed_prekeys")
+            try db.execute(sql: "DELETE FROM signal_sessions")
+            try db.execute(sql: "DELETE FROM signal_sender_keys")
+        }
     }
 }

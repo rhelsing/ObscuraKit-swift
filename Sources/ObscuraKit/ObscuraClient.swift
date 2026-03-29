@@ -115,13 +115,47 @@ public class ObscuraClient {
 
     // MARK: - Init
 
+    /// The shared database — nil for in-memory (tests), file-backed for production.
+    private let sharedDb: DatabaseQueue?
+
+    /// In-memory client (tests). All state lost on dealloc.
     public init(apiURL: String, logger: ObscuraLogger = PrintLogger()) throws {
         self.logger = logger
+        self.sharedDb = nil
         self.api = APIClient(baseURL: apiURL)
         self.friends = try FriendActor()
         self.messages = try MessageActor()
         self.devices = try DeviceActor()
         self.gateway = GatewayConnection(api: api, logger: logger)
+    }
+
+    /// File-backed client (production). All state persists to `dataDirectory/obscura.sqlite`.
+    /// On init, restores Signal identity from DB if one exists.
+    public init(apiURL: String, dataDirectory: String, logger: ObscuraLogger = PrintLogger()) throws {
+        self.logger = logger
+
+        // Ensure directory exists
+        try FileManager.default.createDirectory(atPath: dataDirectory, withIntermediateDirectories: true)
+        let dbPath = (dataDirectory as NSString).appendingPathComponent("obscura.sqlite")
+
+        let db = try DatabaseQueue(path: dbPath)
+        try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
+        self.sharedDb = db
+
+        self.api = APIClient(baseURL: apiURL)
+        self.friends = try FriendActor(db: db)
+        self.messages = try MessageActor(db: db)
+        self.devices = try DeviceActor(db: db)
+        self.gateway = GatewayConnection(api: api, logger: logger)
+
+        // Restore Signal store from persisted DB if identity exists
+        let store = try PersistentSignalStore(db: db)
+        store.logger = logger
+        if store.hasPersistedIdentity {
+            self.persistentSignalStore = store
+            self.identityKeyPair = try store.identityKeyPair(context: NullContext())
+            self.registrationId = try store.localRegistrationId(context: NullContext())
+        }
     }
 
     deinit {
@@ -136,8 +170,8 @@ public class ObscuraClient {
     public var hasSession: Bool { token != nil && userId != nil }
 
     /// Restore a previously saved session without re-authenticating.
-    /// If a PersistentSignalStore is available, also restores the messenger.
-    /// Call `connect()` after this to start the envelope loop.
+    /// If a PersistentSignalStore exists (file-backed client), rebuilds the MessengerActor
+    /// so decrypt/encrypt work immediately. Call `connect()` after this.
     public func restoreSession(token: String, refreshToken: String?, userId: String,
                                deviceId: String?, username: String?, registrationId: UInt32 = 0) async {
         self.token = token
@@ -145,11 +179,19 @@ public class ObscuraClient {
         self.userId = userId
         self.deviceId = deviceId
         self.username = username
-        self.registrationId = registrationId
         await api.setToken(token)
 
-        if let deviceId = deviceId {
-            await _messenger?.mapDevice(deviceId, userId: userId, registrationId: registrationId)
+        // Rebuild messenger from persisted Signal store if available
+        if let store = persistentSignalStore, store.hasPersistedIdentity {
+            self.identityKeyPair = try? store.identityKeyPair(context: NullContext())
+            self.registrationId = (try? store.localRegistrationId(context: NullContext())) ?? registrationId
+            self._messenger = MessengerActor(api: api, store: store, ownUserId: userId)
+        } else {
+            self.registrationId = registrationId
+        }
+
+        if let deviceId = deviceId, let regId = self.registrationId {
+            await _messenger?.mapDevice(deviceId, userId: userId, registrationId: regId)
         }
         _authState = .authenticated
     }
@@ -296,7 +338,9 @@ public class ObscuraClient {
                 Task { [weak self] in await self?.replenishPreKeys() }
             }
         }
+        NSLog("[ObscuraKit] connecting gateway...")
         try await gateway.connect()
+        NSLog("[ObscuraKit] gateway connected, starting envelope loop")
         _connectionState = .connected
         startEnvelopeLoop()
         startTokenRefresh()
@@ -729,23 +773,31 @@ public class ObscuraClient {
 
     // MARK: - Logout
 
+    /// Logout — clears credentials and disconnects. Data (friends, messages, Signal sessions) is preserved.
+    /// Call `restoreSession()` + `connect()` to resume, or `login()`/`loginAndProvision()` for a fresh session.
     public func logout() async throws {
         disconnect()
         if let rt = refreshToken { try? await api.logout(rt) }
-        // Clear all in-memory credentials
         token = nil
         refreshToken = nil
         userId = nil
         username = nil
         deviceId = nil
-        identityKeyPair = nil
-        registrationId = nil
         _recoveryPhrase = nil
         recoveryPublicKey = nil
         _messenger = nil
         _authState = .loggedOut
         await api.clearToken()
-        // Wipe all persistent stores
+    }
+
+    /// Nuclear wipe — clears ALL data from this device. Use for device revocation or account deletion.
+    /// After this, the device must re-register or loginAndProvision.
+    public func wipeDevice() async throws {
+        try await logout()
+        identityKeyPair = nil
+        registrationId = nil
+        persistentSignalStore?.clearAll()
+        persistentSignalStore = nil
         await friends.clearAll()
         await messages.clearAll()
         await devices.clearAll()
@@ -755,7 +807,9 @@ public class ObscuraClient {
 
     private func sendToAllDevices(_ targetUserId: String, _ msg: Obscura_V2_ClientMessage) async throws {
         let messenger = try requireMessenger()
+        NSLog("[ObscuraKit] sendToAllDevices to %@, fetching bundles...", targetUserId)
         let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
+        NSLog("[ObscuraKit] got %d bundles for %@", bundles.count, targetUserId)
         await rateLimitDelay()
 
         let msgData = try msg.serializedData()
@@ -763,39 +817,51 @@ public class ObscuraClient {
             do {
                 try await messenger.processServerBundle(bundle, userId: targetUserId)
             } catch {
+                NSLog("[ObscuraKit] session establish failed for %@: %@", targetUserId, "\(error)")
                 logger.sessionEstablishFailed(userId: targetUserId, error: "\(error)")
                 continue
             }
             let targetDeviceId = bundle.deviceId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: msgData, targetUserId: targetUserId)
         }
-        _ = try await messenger.flushMessages()
+        let result = try await messenger.flushMessages()
+        NSLog("[ObscuraKit] flushMessages result: %@", "\(result)")
     }
 
     // MARK: - Internal: Envelope Loop
 
     private func startEnvelopeLoop() {
+        NSLog("[ObscuraKit] startEnvelopeLoop — messenger exists: \(_messenger != nil)")
         envelopeTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
                 do {
                     let raw = try await self.gateway.waitForRawEnvelope(timeout: 30)
+                    NSLog("[ObscuraKit] envelope received from %@", bytesToUuid(raw.senderID))
                     await self.processEnvelope(raw)
                 } catch {
                     if Task.isCancelled { break }
                     if error is CancellationError { break }
                     if let gwError = error as? GatewayConnection.GatewayError {
-                        if case .notConnected = gwError { break }
+                        if case .notConnected = gwError {
+                            NSLog("[ObscuraKit] envelope loop: not connected, exiting")
+                            break
+                        }
                         if case .timeout = gwError { continue }
                     }
+                    NSLog("[ObscuraKit] envelope loop error: %@", "\(error)")
                     break
                 }
             }
+            NSLog("[ObscuraKit] envelope loop ended")
         }
     }
 
     private func processEnvelope(_ raw: (id: Data, senderID: Data, timestamp: UInt64, message: Data)) async {
-        guard let messenger = _messenger else { return }
+        guard let messenger = _messenger else {
+            NSLog("[ObscuraKit] processEnvelope: messenger is nil, dropping envelope")
+            return
+        }
 
         let sourceUserId = bytesToUuid(raw.senderID)
 
@@ -842,7 +908,7 @@ public class ObscuraClient {
                 logger.ackFailed(envelopeId: raw.id.map { String(format: "%02x", $0) }.joined(), error: "\(error)")
             }
         } catch {
-            // Track decrypt failures per sender
+            NSLog("[ObscuraKit] decrypt/route failed for %@: %@", sourceUserId, "\(error)")
             let entry = decryptFailures[sourceUserId] ?? (count: 0, windowStart: Date())
             decryptFailures[sourceUserId] = (count: entry.count + 1, windowStart: entry.windowStart)
             logger.decryptFailed(sourceUserId: sourceUserId, error: "\(error)")
@@ -852,8 +918,10 @@ public class ObscuraClient {
     // MARK: - Internal: Message Routing
 
     private func routeMessage(_ msg: Obscura_V2_ClientMessage, sourceUserId: String) async {
+        NSLog("[ObscuraKit] routeMessage type=%d from %@", msg.type.rawValue, sourceUserId)
         switch msg.type {
         case .friendRequest:
+            NSLog("[ObscuraKit] friend request from %@ username=%@", sourceUserId, msg.username)
             await friends.add(sourceUserId, msg.username, status: .pendingReceived)
 
         case .friendResponse:
@@ -1132,7 +1200,7 @@ public class ObscuraClient {
     private func initializeSignalStore(identity: IdentityKeyPair, regId: UInt32,
                                        spkPrivate: PrivateKey, spkSig: [UInt8],
                                        preKeyRecords: [(id: UInt32, privateKey: PrivateKey)]) throws -> PersistentSignalStore {
-        let store = try PersistentSignalStore()
+        let store = try sharedDb.map { try PersistentSignalStore(db: $0) } ?? PersistentSignalStore()
         store.logger = self.logger
         store.initialize(keyPair: identity, registrationId: regId)
         try store.storeSignedPreKey(

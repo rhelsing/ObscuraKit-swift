@@ -75,7 +75,12 @@ public class GatewayConnection {
         return try await withThrowingTaskGroup(of: (id: Data, senderID: Data, timestamp: UInt64, message: Data).self) { group in
             group.addTask {
                 try await withCheckedThrowingContinuation { continuation in
-                    self.waiters.append(continuation)
+                    // Check queue again inside continuation to close the race window
+                    if !self.envelopeQueue.isEmpty {
+                        continuation.resume(returning: self.envelopeQueue.removeFirst())
+                    } else {
+                        self.waiters.append(continuation)
+                    }
                 }
             }
             group.addTask {
@@ -119,6 +124,7 @@ public class GatewayConnection {
 
     private func startReceiveLoop() {
         guard let ws = wsTask else { return }
+        NSLog("[ObscuraKit] WS receive loop started")
         receiveTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -126,14 +132,17 @@ public class GatewayConnection {
                     guard let self = self else { break }
                     switch message {
                     case .data(let data):
+                        NSLog("[ObscuraKit] WS frame received: %d bytes", data.count)
                         self.handleFrame(data)
-                    case .string(_):
+                    case .string(let str):
+                        NSLog("[ObscuraKit] WS string received: %@", str)
                         break
                     @unknown default:
                         break
                     }
                 } catch {
                     guard let self = self else { break }
+                    NSLog("[ObscuraKit] WS receive error: %@", "\(error)")
                     self.isConnected = false
                     self.flushWaiters()
                     if !Task.isCancelled {
@@ -142,6 +151,7 @@ public class GatewayConnection {
                     break
                 }
             }
+            NSLog("[ObscuraKit] WS receive loop ended")
         }
     }
 

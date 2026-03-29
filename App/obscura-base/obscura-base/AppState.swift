@@ -14,8 +14,10 @@ class AppState: ObservableObject {
     @Published var pendingRequests: [Friend] = []
 
     init() {
-        // Safe to force-try: only fails if URL is not HTTPS
-        self.client = try! ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        // Use file-backed storage so Signal keys persist across app launches
+        let dataDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ObscuraData").path
+        self.client = try! ObscuraClient(apiURL: "https://obscura.barrelmaker.dev", dataDirectory: dataDir)
 
         // Restore session if saved
         if let saved = KeychainSession.load() {
@@ -27,11 +29,23 @@ class AppState: ObservableObject {
                     deviceId: saved.deviceId,
                     username: saved.username
                 )
+
+                // Refresh token if expired before connecting
+                let tokenOk = await client.ensureFreshToken()
+                guard tokenOk else {
+                    // Both token and refresh token are dead — re-login required
+                    KeychainSession.clear()
+                    isAuthenticated = false
+                    return
+                }
+
+                // Update saved token after refresh
+                saveSession()
+
                 do {
                     try await client.connect()
                     isAuthenticated = true
                 } catch {
-                    // Session expired — need to re-login
                     isAuthenticated = false
                 }
             }
@@ -63,6 +77,7 @@ class AppState: ObservableObject {
             try await client.register(username, password)
             isAuthenticated = true
             saveSession()
+            try? await Task.sleep(nanoseconds: 600_000_000) // rate limit
             try await client.connect()
             statusText = "Registered and connected"
         } catch {
@@ -73,7 +88,9 @@ class AppState: ObservableObject {
     func login(_ username: String, _ password: String) async {
         statusText = "Logging in..."
         do {
-            try await client.login(username, password)
+            // loginAndProvision creates a new device with Signal keys.
+            // Plain login() only sets credentials — no Signal store, no messenger.
+            try await client.loginAndProvision(username, password)
             isAuthenticated = true
             saveSession()
             try await client.connect()
