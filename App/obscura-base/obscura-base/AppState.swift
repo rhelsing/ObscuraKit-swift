@@ -114,28 +114,29 @@ class AppState: ObservableObject {
             let userDir = Self.userDir(for: creds.userId)
             let existingDB = FileManager.default.fileExists(atPath: userDir)
 
+            // Open (or create) user-scoped encrypted DB
+            let userClient = try ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: userDir,
+                userId: creds.userId
+            )
+
             if existingDB {
-                // Returning user — reuse their encrypted DB
-                let userClient = try ObscuraClient(
-                    apiURL: "https://obscura.barrelmaker.dev",
-                    dataDirectory: userDir,
-                    userId: creds.userId
+                // Returning user — reuse DB. Login again WITH deviceId to get device-scoped token.
+                // (Matches JS EXISTING_DEVICE scenario: login with stored device identity)
+                let savedDeviceId = KeychainSession.load()?.deviceId
+                let deviceCreds = try await ObscuraClient.loginAccount(
+                    username, password, deviceId: savedDeviceId
                 )
                 await userClient.restoreSession(
-                    token: creds.token,
-                    refreshToken: creds.refreshToken,
+                    token: deviceCreds.token,
+                    refreshToken: deviceCreds.refreshToken,
                     userId: creds.userId,
-                    deviceId: nil,
+                    deviceId: savedDeviceId,
                     username: username
                 )
-                replaceClient(userClient)
             } else {
-                // New user on this device — create encrypted DB + provision
-                let userClient = try ObscuraClient(
-                    apiURL: "https://obscura.barrelmaker.dev",
-                    dataDirectory: userDir,
-                    userId: creds.userId
-                )
+                // New user on this device
                 await userClient.restoreSession(
                     token: creds.token,
                     refreshToken: creds.refreshToken,
@@ -144,8 +145,9 @@ class AppState: ObservableObject {
                     username: username
                 )
                 try await userClient.provisionCurrentDevice()
-                replaceClient(userClient)
             }
+
+            replaceClient(userClient)
 
             isAuthenticated = true
             saveSession()

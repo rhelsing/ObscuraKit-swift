@@ -248,9 +248,10 @@ public class ObscuraClient {
     }
 
     /// Lightweight login — API call only, returns credentials.
-    public static func loginAccount(_ username: String, _ password: String, apiURL: String = "https://obscura.barrelmaker.dev") async throws -> (token: String, refreshToken: String?, userId: String) {
+    /// Pass deviceId to get a device-scoped token (required for messaging).
+    public static func loginAccount(_ username: String, _ password: String, deviceId: String? = nil, apiURL: String = "https://obscura.barrelmaker.dev") async throws -> (token: String, refreshToken: String?, userId: String) {
         let api = APIClient(baseURL: apiURL)
-        let result = try await api.loginWithDevice(username, password, deviceId: nil)
+        let result = try await api.loginWithDevice(username, password, deviceId: deviceId)
         let userId = APIClient.extractUserId(result.token) ?? ""
         return (token: result.token, refreshToken: result.refreshToken, userId: userId)
     }
@@ -535,6 +536,11 @@ public class ObscuraClient {
         msg.resetReason = reason
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await sendToAllDevices(targetUserId, msg)
+
+        // Delete the session that was just rebuilt to send the reset message.
+        // Forces next send to use a fresh PreKey exchange, which the receiver
+        // can handle after they also cleared their session.
+        try? persistentSignalStore?.deleteAllSessions(for: targetUserId)
     }
 
     /// Reset Signal sessions with all accepted friends.
@@ -652,6 +658,12 @@ public class ObscuraClient {
             ),
             oneTimePreKeys: otpKeys
         )
+
+        // Clear all old sessions — identity key changed, old sessions are invalid.
+        // Next send will do a fresh PreKey exchange with the new identity.
+        for friend in await friends.getAccepted() {
+            try? persistentSignalStore?.deleteAllSessions(for: friend.userId)
+        }
 
         let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
         self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
@@ -1070,8 +1082,7 @@ public class ObscuraClient {
             }
 
         case .sessionReset:
-            // Delete all sessions for this user
-            break
+            try? persistentSignalStore?.deleteAllSessions(for: sourceUserId)
 
         default:
             break
