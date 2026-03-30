@@ -10,7 +10,16 @@ public enum ConnectionState: String, Sendable {
 }
 
 public enum AuthState: String, Sendable {
-    case loggedOut, authenticated
+    case loggedOut, authenticated, pendingApproval
+}
+
+/// Result of a login attempt — tells the app what to do next.
+public enum LoginScenario: Sendable {
+    case existingDevice       // Known device, session restored. Call connect().
+    case newDevice            // New device, needs link approval from existing device.
+    case deviceMismatch       // DB exists but stored device doesn't match server. Re-provision needed.
+    case invalidCredentials   // Wrong password.
+    case userNotFound         // Username doesn't exist.
 }
 
 public struct ReceivedMessage: Sendable {
@@ -58,6 +67,11 @@ public class ObscuraClient {
     /// Buffered message queue for waitForMessage
     private var messageQueue: [ReceivedMessage] = []
     // messageWaiters removed — waitForMessage now polls messageQueue directly
+
+    /// ORM sync manager — routes MODEL_SYNC messages to correct model.
+    internal var _ormSyncManager: SyncManager?
+    internal var _ormModels: [String: Model] = [:]
+    internal var _ormTTLManager: TTLManager?
 
     /// Events stream — every received message after routing (multi-observer)
     private var eventContinuations: [AsyncStream<ReceivedMessage>.Continuation] = []
@@ -350,6 +364,66 @@ public class ObscuraClient {
         self._authState = .authenticated
     }
 
+    /// Smart login — returns a scenario telling the app what to do next.
+    /// File-backed clients: checks for existing DB + stored device identity.
+    ///
+    /// ```swift
+    /// let scenario = try await client.loginSmart(username, password)
+    /// switch scenario {
+    /// case .existingDevice: try await client.connect()
+    /// case .newDevice:      // show link code screen
+    /// case .invalidCredentials: // show error
+    /// }
+    /// ```
+    public func loginSmart(_ username: String, _ password: String) async throws -> LoginScenario {
+        // Step 1: User-scoped login (no deviceId) to check credentials
+        do {
+            let result = try await api.loginWithDevice(username, password, deviceId: nil)
+            self.token = result.token
+            self.refreshToken = result.refreshToken
+            self.userId = APIClient.extractUserId(result.token)
+            self.username = username
+            await api.setToken(result.token)
+        } catch let error as APIClient.APIError {
+            if error.status == 401 { return .invalidCredentials }
+            if error.status == 404 { return .userNotFound }
+            throw error
+        }
+
+        await rateLimitDelay()
+
+        // Step 2: Check for existing device identity in DB
+        let storedIdentity = await devices.getIdentity()
+
+        if let identity = storedIdentity, !identity.deviceId.isEmpty {
+            // We have a stored device — try to login with it
+            do {
+                let deviceResult = try await api.loginWithDevice(username, password, deviceId: identity.deviceId)
+                self.token = deviceResult.token
+                self.refreshToken = deviceResult.refreshToken
+                self.deviceId = identity.deviceId
+                await api.setToken(deviceResult.token)
+
+                // Restore messenger from persisted Signal store
+                if let store = persistentSignalStore, store.hasPersistedIdentity {
+                    self.identityKeyPair = try? store.identityKeyPair(context: NullContext())
+                    self.registrationId = try? store.localRegistrationId(context: NullContext())
+                    self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
+                    await _messenger?.mapDevice(identity.deviceId, userId: self.userId!, registrationId: self.registrationId ?? 0)
+                }
+                self._authState = .authenticated
+                return .existingDevice
+            } catch {
+                // Device might have been revoked — fall through to new device flow
+                return .deviceMismatch
+            }
+        } else {
+            // No stored device — this is a new device, needs linking
+            self._authState = .pendingApproval
+            return .newDevice
+        }
+    }
+
     // MARK: - Login + Provision (device linking)
 
     /// Combined login + new device provisioning for device linking.
@@ -587,10 +661,21 @@ public class ObscuraClient {
         _ = try await messenger.flushMessages()
     }
 
-    /// Approve a device link request — send DEVICE_LINK_APPROVAL, push history, announce.
+    /// Approve a device link request — fetch bundles, send DEVICE_LINK_APPROVAL, push history, announce.
     public func approveLink(newDeviceId: String, challengeResponse: Data) async throws {
         let messenger = try requireMessenger()
         guard let uid = userId else { throw ObscuraError.notAuthenticated }
+
+        // Fetch prekey bundles so we can encrypt to the new device
+        let bundles = try await messenger.fetchPreKeyBundles(uid)
+        await rateLimitDelay()
+        for bundle in bundles {
+            do {
+                try await messenger.processServerBundle(bundle, userId: uid)
+            } catch {
+                logger.sessionEstablishFailed(userId: uid, error: "\(error)")
+            }
+        }
 
         let identity = await devices.getIdentity()
         let ownDevices = await devices.getOwnDevices()
@@ -621,6 +706,59 @@ public class ObscuraClient {
 
         try await pushHistoryToDevice(newDeviceId)
         try await announceDevices()
+    }
+
+    // MARK: - Device Linking (QR Code / Link Code)
+
+    /// Generate a link code for this device. Display as QR code or copyable text.
+    /// The new device calls this, the existing device scans/validates it.
+    public func generateLinkCode() -> String? {
+        guard let deviceId = deviceId,
+              let identityKeyPair = identityKeyPair else { return nil }
+        let deviceUUID = deviceId // Use deviceId as UUID for now
+        return DeviceLink.generateLinkCode(
+            deviceId: deviceId,
+            deviceUUID: deviceUUID,
+            signalIdentityKey: Data(identityKeyPair.publicKey.serialize())
+        )
+    }
+
+    /// Validate a link code and approve the device link.
+    /// The existing device calls this after scanning the QR code.
+    /// Validates the code, then sends DEVICE_LINK_APPROVAL + SYNC_BLOB + DEVICE_ANNOUNCE.
+    public func validateAndApproveLink(_ linkCodeString: String) async throws {
+        let result = DeviceLink.validateLinkCode(linkCodeString)
+
+        switch result {
+        case .valid(let code):
+            guard let challenge = DeviceLink.extractChallenge(code) else {
+                throw ObscuraError.deviceLinkFailed("invalid challenge in link code")
+            }
+
+            // Fetch prekey bundles for the new device so we can encrypt to it
+            let messenger = try requireMessenger()
+            let bundles = try await messenger.fetchPreKeyBundles(userId!)
+            await rateLimitDelay()
+
+            // Find the bundle for the new device
+            guard let newDeviceBundle = bundles.first(where: { $0.deviceId == code.deviceId }) else {
+                throw ObscuraError.deviceLinkFailed("no prekey bundle for device \(code.deviceId)")
+            }
+            try await messenger.processServerBundle(newDeviceBundle, userId: userId!)
+
+            // Add new device to own device list
+            let newDevice = OwnDevice(deviceUUID: code.deviceUUID, deviceId: code.deviceId, deviceName: code.deviceId)
+            await devices.addOwnDevice(newDevice)
+
+            // Approve: send DEVICE_LINK_APPROVAL + SYNC_BLOB + announce
+            try await approveLink(newDeviceId: code.deviceId, challengeResponse: challenge)
+
+        case .expired:
+            throw ObscuraError.deviceLinkFailed("link code expired")
+
+        case .invalid(let reason):
+            throw ObscuraError.deviceLinkFailed(reason)
+        }
     }
 
     /// Announce device revocation to a specific friend with remaining device IDs.
@@ -734,6 +872,102 @@ public class ObscuraClient {
         try await sendToAllDevices(friendUserId, msg)
     }
 
+    /// SyncManager-friendly overload with all fields.
+    public func sendModelSync(to friendUserId: String? = nil, toSelf: Bool = false, model: String, entryId: String, op: String = "CREATE", data: Data, timestamp: UInt64 = 0, authorDeviceId: String = "", signature: Data = Data()) async throws {
+        var sync = Obscura_V2_ModelSync()
+        sync.model = model
+        sync.id = entryId
+        sync.op = {
+            switch op.uppercased() {
+            case "UPDATE": return .update
+            case "DELETE": return .delete
+            default: return .create
+            }
+        }()
+        sync.timestamp = timestamp != 0 ? timestamp : UInt64(Date().timeIntervalSince1970 * 1000)
+        sync.data = data
+        sync.authorDeviceID = authorDeviceId.isEmpty ? (deviceId ?? "") : authorDeviceId
+        sync.signature = signature
+
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .modelSync
+        msg.modelSync = sync
+
+        if let targetUserId = friendUserId {
+            guard await friends.isFriend(targetUserId) else { throw ObscuraError.notFriends(targetUserId) }
+            try await sendToAllDevices(targetUserId, msg)
+        }
+
+        if toSelf {
+            // Self-sync: send to all own devices except this one
+            let messenger = try requireMessenger()
+            guard let uid = userId else { throw ObscuraError.notAuthenticated }
+            let ownDevices = await devices.getOwnDevices()
+            let msgData = try msg.serializedData()
+
+            for device in ownDevices where device.deviceId != self.deviceId {
+                do {
+                    try await messenger.queueMessage(targetDeviceId: device.deviceId, clientMessageData: msgData, targetUserId: uid)
+                } catch {
+                    logger.log("self-sync failed for device \(device.deviceId): \(error)")
+                }
+            }
+            if !ownDevices.filter({ $0.deviceId != self.deviceId }).isEmpty {
+                _ = try await messenger.flushMessages()
+            }
+        }
+    }
+
+    // MARK: - ORM Schema
+
+    /// Define ORM models. Call once after login, before connect.
+    /// Attaches models to client as `client.model("story")` etc.
+    public func schema(_ definitions: [ModelDefinition]) {
+        let store: ModelStore
+        if let db = sharedDb {
+            store = (try? ModelStore(db: db)) ?? (try! ModelStore())
+        } else {
+            store = (try? ModelStore()) ?? (try! ModelStore())
+        }
+
+        let syncManager = SyncManager(client: self)
+        let ttlManager = TTLManager(store: store)
+
+        for def in definitions {
+            let model = Model(name: def.name, definition: def, store: store)
+            model.deviceId = self.deviceId ?? ""
+            model.ttlManager = ttlManager
+            syncManager.register(def.name, model)
+            _ormModels[def.name] = model
+        }
+
+        ttlManager.setModelResolver { [weak self] name in self?._ormModels[name] }
+        _ormSyncManager = syncManager
+        _ormTTLManager = ttlManager
+    }
+
+    /// Define models from typed SyncModel types. Call once after auth, like a Rails migration.
+    ///
+    /// ```swift
+    /// client.defineModels(DirectMessage.self, Story.self, Profile.self, AppSettings.self)
+    /// ```
+    public func defineModels(_ types: any SyncModel.Type...) {
+        let definitions = types.map { type in
+            ModelDefinition(
+                name: type.modelName,
+                sync: type.sync,
+                syncScope: type.scope,
+                ttl: type.ttl
+            )
+        }
+        schema(definitions)
+    }
+
+    /// Access a registered ORM model by name.
+    public func model(_ name: String) -> Model? {
+        _ormModels[name]
+    }
+
     // MARK: - Query Helpers
 
     /// Convenience: get messages for a conversation (delegates to MessageActor).
@@ -746,9 +980,19 @@ public class ObscuraClient {
         try await api.checkBackup()
     }
 
-    // MARK: - Recovery
+    // MARK: - Recovery (Optional)
+    //
+    // BIP39 recovery is opt-in. If you never call generateRecoveryPhrase(), everything
+    // works without it — device linking, messaging, sync. The only features that require
+    // a recovery phrase are:
+    //   - revokeDevice() — remote device revocation with signed proof
+    //   - announceRecovery() — signed device announcements
+    // Without a recovery phrase, device revocation requires physical access to a linked device.
+    //
+    // Device announce signature verification is automatic: if the sender has a recovery
+    // public key stored, announcements are verified. If not, they're accepted on trust.
 
-    /// Generate a 12-word recovery phrase. Store it securely — it's the only way to recover.
+    /// Generate a 12-word recovery phrase. Store it securely.
     /// Access via getRecoveryPhrase() which clears the in-memory copy after read.
     private var _recoveryPhrase: String?
     public var recoveryPublicKey: Data?
@@ -1036,8 +1280,18 @@ public class ObscuraClient {
             }
 
         case .modelSync:
-            // ORM would handle this: orm.handleSync(msg.modelSync, from: sourceUserId)
-            break
+            if let syncManager = _ormSyncManager {
+                let syncMsg = ModelSyncMessage(
+                    model: msg.modelSync.model,
+                    id: msg.modelSync.id,
+                    op: msg.modelSync.op == .delete ? "DELETE" : (msg.modelSync.op == .update ? "UPDATE" : "CREATE"),
+                    timestamp: msg.modelSync.timestamp,
+                    data: msg.modelSync.data,
+                    signature: msg.modelSync.signature,
+                    authorDeviceId: msg.modelSync.authorDeviceID
+                )
+                _ = await syncManager.handleIncoming(syncMsg, sourceUserId: sourceUserId)
+            }
 
         case .syncBlob:
             // Import state from linked device — only accept from own devices
@@ -1301,6 +1555,7 @@ public class ObscuraClient {
         case noMessage
         case timeout
         case notFriends(String)
+        case deviceLinkFailed(String)
 
         public var errorDescription: String? {
             switch self {
@@ -1311,6 +1566,7 @@ public class ObscuraClient {
             case .noMessage: return "No message received"
             case .timeout: return "Operation timed out"
             case .notFriends(let userId): return "Not friends with \(userId)"
+            case .deviceLinkFailed(let reason): return "Device link failed: \(reason)"
             }
         }
     }

@@ -5,13 +5,28 @@ import ObscuraKit
 class AppState: ObservableObject {
     private(set) var client: ObscuraClient
 
-    @Published var isAuthenticated: Bool = false
-    @Published var statusText: String = "Ready"
+    // Auth
+    @Published var isAuthenticated = false
+    @Published var statusText = "Ready"
+
+    // Infrastructure (reactive — GRDB observation)
     @Published var friends: [Friend] = []
     @Published var pendingRequests: [Friend] = []
     @Published var pendingSent: [Friend] = []
 
+    // ORM typed models (set after schema registration)
+    var messages: TypedModel<DirectMessage>!
+    var profiles: TypedModel<Profile>!
+    var settings: TypedModel<AppSettings>!
+    var stories: TypedModel<Story>!
+
+    // Device linking
+    @Published var needsDeviceLink = false
+    @Published var linkCode: String?
+
     private var observationTasks: [Task<Void, Never>] = []
+
+    // MARK: - Storage
 
     private static var baseDir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -22,14 +37,16 @@ class AppState: ObservableObject {
         baseDir.appendingPathComponent(userId).path
     }
 
+    // MARK: - Init
+
     init() {
         if let saved = KeychainSession.load() {
-            // Open existing user-scoped encrypted DB
             self.client = try! ObscuraClient(
                 apiURL: "https://obscura.barrelmaker.dev",
                 dataDirectory: Self.userDir(for: saved.userId),
                 userId: saved.userId
             )
+            defineModels()
             Task {
                 await client.restoreSession(
                     token: saved.token,
@@ -58,19 +75,27 @@ class AppState: ObservableObject {
         startObserving()
     }
 
+    // MARK: - ORM Registration (like a Rails migration — call once after auth)
+
+    private func defineModels() {
+        client.defineModels(DirectMessage.self, Story.self, Profile.self, AppSettings.self)
+        messages = client.register(DirectMessage.self)
+        profiles = client.register(Profile.self)
+        settings = client.register(AppSettings.self)
+        stories = client.register(Story.self)
+    }
+
     // MARK: - Auth
 
     func register(_ username: String, _ password: String) async {
         statusText = "Registering..."
         do {
-            // Phase 1: API call only — get userId (no DB needed)
             let creds = try await ObscuraClient.registerAccount(username, password)
             guard !creds.userId.isEmpty else {
                 statusText = "Error: no userId"
                 return
             }
 
-            // Phase 2: Create encrypted user-scoped client and register fully
             let userDir = Self.userDir(for: creds.userId)
             try? FileManager.default.removeItem(atPath: userDir)
             let userClient = try ObscuraClient(
@@ -78,8 +103,6 @@ class AppState: ObservableObject {
                 dataDirectory: userDir,
                 userId: creds.userId
             )
-
-            // Set auth tokens from phase 1 via restoreSession
             await userClient.restoreSession(
                 token: creds.token,
                 refreshToken: creds.refreshToken,
@@ -87,12 +110,17 @@ class AppState: ObservableObject {
                 deviceId: nil,
                 username: username
             )
-            // Now provision device (generate Signal keys + register with server)
+            // First device — provision directly (no link needed)
             try await userClient.provisionCurrentDevice()
 
             replaceClient(userClient)
             isAuthenticated = true
             saveSession()
+
+            // Set initial profile
+            try? await profiles.upsert("\(creds.userId)_profile",
+                Profile(displayName: username, bio: nil, avatarUrl: nil))
+
             try? await Task.sleep(nanoseconds: 600_000_000)
             try await client.connect()
             statusText = "Registered and connected"
@@ -104,69 +132,80 @@ class AppState: ObservableObject {
     func login(_ username: String, _ password: String) async {
         statusText = "Logging in..."
         do {
-            // Step 1: User-scoped login (no deviceId) to get userId
+            // Step 1: Get userId to create user-scoped DB
             let shellCreds = try await ObscuraClient.loginAccount(username, password)
             guard !shellCreds.userId.isEmpty else {
                 statusText = "Error: no userId"
                 return
             }
 
+            // Step 2: Create file-backed client with user-scoped encrypted DB
             let userDir = Self.userDir(for: shellCreds.userId)
-            let existingDB = FileManager.default.fileExists(atPath: userDir)
+            let userClient = try ObscuraClient(
+                apiURL: "https://obscura.barrelmaker.dev",
+                dataDirectory: userDir,
+                userId: shellCreds.userId
+            )
+            replaceClient(userClient)
 
-            if existingDB {
-                // EXISTING_DEVICE — open DB, read stored deviceId, login with it
-                let userClient = try ObscuraClient(
-                    apiURL: "https://obscura.barrelmaker.dev",
-                    dataDirectory: userDir,
-                    userId: shellCreds.userId
-                )
-                // Read saved deviceId from the encrypted DB (persisted across logout)
-                let savedIdentity = await userClient.devices.getIdentity()
-                let savedDeviceId = savedIdentity?.deviceId
+            // Step 3: Smart login — returns what to do next
+            let scenario = try await client.loginSmart(username, password)
 
-                // Login with deviceId to get device-scoped token (matches Kotlin/JS)
-                let deviceCreds = try await ObscuraClient.loginAccount(
-                    username, password, deviceId: savedDeviceId
-                )
-                await userClient.restoreSession(
-                    token: deviceCreds.token,
-                    refreshToken: deviceCreds.refreshToken,
-                    userId: shellCreds.userId,
-                    deviceId: savedDeviceId,
-                    username: username
-                )
-                replaceClient(userClient)
-            } else {
-                // NEW_DEVICE — create encrypted DB, provision new device
-                let userClient = try ObscuraClient(
-                    apiURL: "https://obscura.barrelmaker.dev",
-                    dataDirectory: userDir,
-                    userId: shellCreds.userId
-                )
-                await userClient.restoreSession(
-                    token: shellCreds.token,
-                    refreshToken: shellCreds.refreshToken,
-                    userId: shellCreds.userId,
-                    deviceId: nil,
-                    username: username
-                )
-                try await userClient.provisionCurrentDevice()
-                replaceClient(userClient)
+            switch scenario {
+            case .existingDevice:
+                defineModels()
+                try await client.connect()
+                isAuthenticated = true
+                saveSession()
+                statusText = "Logged in and connected"
+
+            case .newDevice, .deviceMismatch:
+                // Provision Signal keys so we can generate a link code
+                try await client.loginAndProvision(username, password,
+                    deviceName: "iOS-\(UUID().uuidString.prefix(4))")
+                defineModels()
+                saveSession()
+
+                // Generate link code and show QR screen
+                linkCode = client.generateLinkCode()
+                needsDeviceLink = true
+                statusText = "Scan this code on your existing device"
+
+                // Connect and wait for approval
+                try await client.connect()
+                let approval = try await client.waitForMessage(timeout: 300)
+                if approval.type == 11 { // DEVICE_LINK_APPROVAL
+                    needsDeviceLink = false
+                    isAuthenticated = true
+                    statusText = "Device linked!"
+                }
+
+            case .invalidCredentials:
+                statusText = "Wrong password"
+
+            case .userNotFound:
+                statusText = "User not found"
             }
-
-            isAuthenticated = true
-            saveSession()
-            try await client.connect()
-            statusText = "Logged in and connected"
         } catch {
             statusText = "Error: \(error.localizedDescription)"
+        }
+    }
+
+    /// Approve a device link from this device (existing device scans new device's code)
+    func approveDeviceLink(_ code: String) async {
+        statusText = "Approving link..."
+        do {
+            try await client.validateAndApproveLink(code)
+            statusText = "Device linked!"
+        } catch {
+            statusText = "Link failed: \(error.localizedDescription)"
         }
     }
 
     func logout() async {
         do { try await client.logout() } catch {}
         isAuthenticated = false
+        needsDeviceLink = false
         KeychainSession.clear()
         statusText = "Logged out"
     }
@@ -183,15 +222,12 @@ class AppState: ObservableObject {
     }
 
     func addFriendByCode(_ code: String) async {
-        // Decode base64 friend code: {"n":"username","u":"userId"}
-        guard let data = Data(base64Encoded: code),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-              let userId = json["u"] else {
+        do {
+            let decoded = try FriendCode.decode(code)
+            await befriend(decoded.userId, username: decoded.username)
+        } catch {
             statusText = "Invalid friend code"
-            return
         }
-        let username = json["n"] ?? ""
-        await befriend(userId, username: username)
     }
 
     func acceptFriend(_ userId: String, username: String = "") async {
@@ -203,10 +239,36 @@ class AppState: ObservableObject {
         }
     }
 
-    func send(to friendUserId: String, _ text: String) async {
+    func sendMessage(to friendUserId: String, _ text: String) async {
+        guard let username = client.username else { return }
         do {
-            try await client.send(to: friendUserId, text)
+            try await messages.create(DirectMessage(
+                conversationId: friendUserId,
+                content: text,
+                senderUsername: username
+            ))
             statusText = "Sent!"
+        } catch {
+            statusText = "Error: \(error.localizedDescription)"
+        }
+    }
+
+    func postStory(_ content: String) async {
+        guard let username = client.username else { return }
+        do {
+            try await stories.create(Story(content: content, authorUsername: username))
+            statusText = "Story posted!"
+        } catch {
+            statusText = "Error: \(error.localizedDescription)"
+        }
+    }
+
+    func updateProfile(displayName: String, bio: String?) async {
+        guard let userId = client.userId else { return }
+        do {
+            try await profiles.upsert("\(userId)_profile",
+                Profile(displayName: displayName, bio: bio, avatarUrl: nil))
+            statusText = "Profile updated!"
         } catch {
             statusText = "Error: \(error.localizedDescription)"
         }
@@ -217,6 +279,7 @@ class AppState: ObservableObject {
     private func replaceClient(_ newClient: ObscuraClient) {
         client.disconnect()
         client = newClient
+        defineModels()
         startObserving()
     }
 
@@ -224,6 +287,7 @@ class AppState: ObservableObject {
         for task in observationTasks { task.cancel() }
         observationTasks.removeAll()
 
+        // Friends (infrastructure — still uses FriendActor directly, it's not ORM)
         observationTasks.append(Task {
             for await updated in client.friends.observeAccepted().values {
                 self.friends = updated

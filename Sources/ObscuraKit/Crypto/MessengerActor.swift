@@ -196,7 +196,14 @@ public actor MessengerActor {
         }
 
         let data = try request.serializedData()
-        try await api.sendMessage(data)
+
+        do {
+            try await api.sendMessage(data)
+        } catch {
+            // Restore batch to queue so retry is possible
+            queue.insert(contentsOf: batch, at: 0)
+            throw error
+        }
 
         return (sent: batch.count, failed: 0)
     }

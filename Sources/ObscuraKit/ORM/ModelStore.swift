@@ -6,6 +6,9 @@ import GRDB
 public class ModelStore {
     private let db: DatabaseQueue
 
+    /// Exposed for GRDB ValueObservation (read-only observation)
+    public var dbQueue: DatabaseQueue { db }
+
     public init(db: DatabaseQueue) throws {
         self.db = db
         try Self.createTables(db)

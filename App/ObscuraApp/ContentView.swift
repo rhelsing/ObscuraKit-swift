@@ -5,37 +5,37 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Auth: \(appState.isAuthenticated ? "authenticated" : "logged_out")")
-                .font(.caption)
-            Text(appState.statusText)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-
-            Divider()
-
-            if !appState.isAuthenticated {
-                RegisterScreen()
-            } else {
-                ConnectedScreen()
+        NavigationStack {
+            Group {
+                if appState.needsDeviceLink {
+                    DeviceLinkView()
+                } else if !appState.isAuthenticated {
+                    AuthView()
+                } else {
+                    MainView()
+                }
+            }
+            .navigationTitle("Obscura")
+            .toolbar {
+                ToolbarItem(placement: .bottomBar) {
+                    Text(appState.statusText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
         }
-        .padding()
     }
 }
 
-// MARK: - Register / Login
+// MARK: - Auth
 
-struct RegisterScreen: View {
+struct AuthView: View {
     @EnvironmentObject var appState: AppState
     @State private var username = ""
     @State private var password = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Register / Login")
-                .font(.headline)
-
+        VStack(spacing: 16) {
             TextField("Username", text: $username)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
@@ -44,7 +44,7 @@ struct RegisterScreen: View {
             SecureField("Password (12+ chars)", text: $password)
                 .textFieldStyle(.roundedBorder)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Button("Register") {
                     Task { await appState.register(username, password) }
                 }
@@ -56,16 +56,91 @@ struct RegisterScreen: View {
                 .buttonStyle(.bordered)
             }
         }
+        .padding()
     }
 }
 
-// MARK: - Connected Screen
+// MARK: - Device Link (enforced for new devices)
 
-struct ConnectedScreen: View {
+struct DeviceLinkView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var scanInput = ""
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if let code = appState.linkCode {
+                // This device needs approval — show code for existing device to scan
+                Text("Link This Device")
+                    .font(.headline)
+                Text("Show this code to your existing device:")
+                    .font(.caption)
+
+                Text(code)
+                    .font(.system(.caption2, design: .monospaced))
+                    .padding(12)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+                    .onTapGesture {
+                        UIPasteboard.general.string = code
+                        appState.statusText = "Link code copied!"
+                    }
+
+                Text("Waiting for approval...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                ProgressView()
+            } else {
+                // This is the existing device — scan new device's code
+                Text("Approve New Device")
+                    .font(.headline)
+
+                TextField("Paste link code from new device", text: $scanInput)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+
+                Button("Approve") {
+                    let code = scanInput
+                    scanInput = ""
+                    Task { await appState.approveDeviceLink(code) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(scanInput.isEmpty)
+            }
+        }
+        .padding()
+    }
+}
+
+// MARK: - Main (tabbed)
+
+struct MainView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        TabView {
+            FriendsTab()
+                .tabItem { Label("Friends", systemImage: "person.2") }
+
+            StoriesTab()
+                .tabItem { Label("Stories", systemImage: "book") }
+
+            ProfileTab()
+                .tabItem { Label("Profile", systemImage: "person.circle") }
+
+            SettingsTab()
+                .tabItem { Label("Settings", systemImage: "gear") }
+        }
+    }
+}
+
+// MARK: - Friends Tab
+
+struct FriendsTab: View {
     @EnvironmentObject var appState: AppState
     @State private var friendCodeInput = ""
     @State private var selectedFriend: Friend?
-    @State private var codeCopied = false
+    @State private var linkCodeInput = ""
 
     private var myCode: String? {
         guard let userId = appState.client.userId,
@@ -74,175 +149,330 @@ struct ConnectedScreen: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // My friend code — tap to copy
+        List {
+            // My friend code
             if let code = myCode {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("My Friend Code")
-                        .font(.caption)
-                        .bold()
+                Section("My Friend Code") {
                     Text(code)
                         .font(.system(.caption2, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(Color(.systemGray6))
-                        .cornerRadius(6)
                         .onTapGesture {
                             UIPasteboard.general.string = code
-                            codeCopied = true
-                            appState.statusText = "Friend code copied!"
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { codeCopied = false }
+                            appState.statusText = "Copied!"
                         }
-                    Text(codeCopied ? "Copied!" : "Tap to copy")
-                        .font(.caption2)
-                        .foregroundColor(codeCopied ? .green : .secondary)
                 }
             }
 
-            Divider()
-
-            // Add friend by code
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Add Friend")
-                    .font(.caption)
-                    .bold()
-                HStack(spacing: 4) {
+            // Add friend
+            Section("Add Friend") {
+                HStack {
                     TextField("Paste friend code", text: $friendCodeInput)
-                        .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-
                     Button("Add") {
                         let code = friendCodeInput
                         friendCodeInput = ""
                         Task { await appState.addFriendByCode(code) }
                     }
-                    .buttonStyle(.borderedProminent)
                     .disabled(friendCodeInput.isEmpty)
                 }
             }
 
-            // Sent requests (pending outgoing)
-            if !appState.pendingSent.isEmpty {
-                Text("Sent (\(appState.pendingSent.count)):")
-                    .font(.caption)
-                    .bold()
-                    .foregroundColor(.orange)
-                ForEach(appState.pendingSent, id: \.userId) { req in
-                    HStack {
-                        Text(req.username.isEmpty ? req.userId.prefix(8) + "..." : req.username)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("pending")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
+            // Link a new device
+            Section("Link Device") {
+                HStack {
+                    TextField("Paste device link code", text: $linkCodeInput)
+                        .autocorrectionDisabled()
+                    Button("Approve") {
+                        let code = linkCodeInput
+                        linkCodeInput = ""
+                        Task { await appState.approveDeviceLink(code) }
                     }
+                    .disabled(linkCodeInput.isEmpty)
                 }
             }
 
-            // Incoming requests (pending received)
+            // Pending received
             if !appState.pendingRequests.isEmpty {
-                Text("Requests (\(appState.pendingRequests.count)):")
-                    .font(.caption)
-                    .bold()
-                    .foregroundColor(.blue)
-                ForEach(appState.pendingRequests, id: \.userId) { req in
-                    HStack {
-                        Text(req.username)
-                        Spacer()
-                        Button("Accept") {
-                            Task { await appState.acceptFriend(req.userId, username: req.username) }
+                Section("Requests") {
+                    ForEach(appState.pendingRequests, id: \.userId) { req in
+                        HStack {
+                            Text(req.username)
+                            Spacer()
+                            Button("Accept") {
+                                Task { await appState.acceptFriend(req.userId, username: req.username) }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
                 }
             }
 
-            // Friends list
-            Text("Friends (\(appState.friends.count)):")
-                .font(.caption)
-                .bold()
-            ForEach(appState.friends, id: \.userId) { friend in
-                Button {
-                    selectedFriend = friend
-                } label: {
-                    Text(selectedFriend?.userId == friend.userId ? "> \(friend.username)" : friend.username)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            // Pending sent
+            if !appState.pendingSent.isEmpty {
+                Section("Sent") {
+                    ForEach(appState.pendingSent, id: \.userId) { req in
+                        HStack {
+                            Text(req.username.isEmpty ? String(req.userId.prefix(8)) + "..." : req.username)
+                            Spacer()
+                            Text("pending").font(.caption2).foregroundColor(.orange)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
             }
 
-            // Chat with selected friend
-            if let friend = selectedFriend {
-                Divider()
-                ChatView(friend: friend)
+            // Friends
+            Section("Friends (\(appState.friends.count))") {
+                ForEach(appState.friends, id: \.userId) { friend in
+                    NavigationLink(value: friend.userId) {
+                        Text(friend.username)
+                    }
+                }
             }
-
-            Spacer()
-
-            // Logout
-            Button("Logout") {
-                Task { await appState.logout() }
+        }
+        .navigationDestination(for: String.self) { friendUserId in
+            let friend = appState.friends.first { $0.userId == friendUserId }
+            ChatView(friendUserId: friendUserId, friendUsername: friend?.username ?? "")
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Logout") {
+                    Task { await appState.logout() }
+                }
+                .foregroundColor(.red)
             }
-            .buttonStyle(.bordered)
-            .foregroundColor(.red)
         }
     }
 }
 
-// MARK: - Chat View
+// MARK: - Chat (ORM messages)
 
 struct ChatView: View {
     @EnvironmentObject var appState: AppState
-    let friend: Friend
+    let friendUserId: String
+    let friendUsername: String
     @State private var messageText = ""
-    @State private var messages: [Message] = []
+    @State private var messages: [DirectMessage] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Chat: \(friend.username)")
-                .font(.subheadline)
-                .bold()
-
-            List(messages, id: \.messageId) { msg in
-                HStack {
-                    if msg.isSent {
-                        Spacer()
-                        Text(msg.content)
-                            .padding(8)
-                            .background(Color.blue.opacity(0.2))
-                            .cornerRadius(8)
-                    } else {
-                        Text(msg.content)
-                            .padding(8)
-                            .background(Color.gray.opacity(0.2))
-                            .cornerRadius(8)
-                        Spacer()
+        VStack(spacing: 0) {
+            // Messages
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(messages, id: \.content) { msg in
+                        let isMine = msg.senderUsername == appState.client.username
+                        HStack {
+                            if isMine { Spacer() }
+                            Text(msg.content)
+                                .padding(10)
+                                .background(isMine ? Color.blue.opacity(0.2) : Color.gray.opacity(0.15))
+                                .cornerRadius(12)
+                            if !isMine { Spacer() }
+                        }
+                        .padding(.horizontal, 12)
                     }
                 }
-                .listRowSeparator(.hidden)
+                .padding(.vertical, 8)
             }
-            .listStyle(.plain)
             .task {
-                for await updated in appState.client.messages.observeMessages(friend.userId).values {
+                // Filtered observation — only this conversation, sorted by time
+                for await updated in appState.messages
+                    .where { "conversationId" == friendUserId }
+                    .orderBy("timestamp", .asc)
+                    .observe()
+                    .values
+                {
                     messages = updated
                 }
             }
 
-            HStack(spacing: 4) {
+            Divider()
+
+            // Compose
+            HStack(spacing: 8) {
                 TextField("Message", text: $messageText)
                     .textFieldStyle(.roundedBorder)
 
                 Button("Send") {
                     let text = messageText
                     messageText = ""
-                    Task { await appState.send(to: friend.userId, text) }
+                    Task { await appState.sendMessage(to: friendUserId, text) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(messageText.isEmpty)
+            }
+            .padding(12)
+        }
+        .navigationTitle(friendUsername)
+    }
+}
+
+// MARK: - Stories Tab (GSet, ephemeral)
+
+struct StoriesTab: View {
+    @EnvironmentObject var appState: AppState
+    @State private var storyText = ""
+    @State private var storyEntries: [Story] = []
+
+    var body: some View {
+        List {
+            Section("Post Story") {
+                HStack {
+                    TextField("What's happening?", text: $storyText)
+                    Button("Post") {
+                        let text = storyText
+                        storyText = ""
+                        Task { await appState.postStory(text) }
+                    }
+                    .disabled(storyText.isEmpty)
+                }
+            }
+
+            Section("Feed") {
+                if storyEntries.isEmpty {
+                    Text("No stories yet")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(storyEntries, id: \.content) { story in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(story.authorUsername).font(.caption).bold()
+                            Text(story.content)
+                        }
+                    }
+                }
+            }
+        }
+        .task {
+            for await updated in appState.stories.observe().values {
+                storyEntries = updated
+            }
+        }
+    }
+}
+
+// MARK: - Profile Tab (LWWMap, .friends scope)
+
+struct ProfileTab: View {
+    @EnvironmentObject var appState: AppState
+    @State private var displayName = ""
+    @State private var bio = ""
+    @State private var loaded = false
+
+    var body: some View {
+        List {
+            Section("Edit Profile") {
+                TextField("Display Name", text: $displayName)
+                TextField("Bio", text: $bio)
+                Button("Save") {
+                    Task {
+                        await appState.updateProfile(displayName: displayName, bio: bio.isEmpty ? nil : bio)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
             }
+
+            Section("Friend Profiles") {
+                // Shows profiles synced from friends
+                FriendProfilesList()
+            }
+        }
+        .task {
+            guard !loaded else { return }
+            // Load own profile
+            if let userId = appState.client.userId {
+                let entry = await appState.profiles.find("\(userId)_profile")
+                if let p = entry {
+                    displayName = p.value.displayName
+                    bio = p.value.bio ?? ""
+                }
+            }
+            loaded = true
+        }
+    }
+}
+
+struct FriendProfilesList: View {
+    @EnvironmentObject var appState: AppState
+    @State private var friendProfiles: [Profile] = []
+
+    var body: some View {
+        Group {
+            if friendProfiles.isEmpty {
+                Text("No profiles synced yet").foregroundColor(.secondary)
+            } else {
+                ForEach(friendProfiles, id: \.displayName) { profile in
+                    VStack(alignment: .leading) {
+                        Text(profile.displayName).bold()
+                        if let bio = profile.bio {
+                            Text(bio).font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .task {
+            for await updated in appState.profiles.observe().values {
+                friendProfiles = updated
+            }
+        }
+    }
+}
+
+// MARK: - Settings Tab (LWWMap, .ownDevices — private)
+
+struct SettingsTab: View {
+    @EnvironmentObject var appState: AppState
+    @State private var darkMode = false
+    @State private var notificationsEnabled = true
+    @State private var loaded = false
+
+    var body: some View {
+        List {
+            Section("Preferences") {
+                Toggle("Dark Mode", isOn: $darkMode)
+                    .onChange(of: darkMode) { _ in saveSettings() }
+                Toggle("Notifications", isOn: $notificationsEnabled)
+                    .onChange(of: notificationsEnabled) { _ in saveSettings() }
+            }
+
+            Section("Account") {
+                if let userId = appState.client.userId {
+                    LabeledContent("User ID", value: String(userId.prefix(12)) + "...")
+                }
+                if let username = appState.client.username {
+                    LabeledContent("Username", value: username)
+                }
+                if let deviceId = appState.client.deviceId {
+                    LabeledContent("Device", value: String(deviceId.prefix(12)) + "...")
+                }
+            }
+
+            Section {
+                Button("Logout", role: .destructive) {
+                    Task { await appState.logout() }
+                }
+            }
+        }
+        .task {
+            guard !loaded else { return }
+            if let userId = appState.client.userId {
+                let entry = await appState.settings.find("\(userId)_settings")
+                if let s = entry {
+                    darkMode = s.value.theme == "dark"
+                    notificationsEnabled = s.value.notificationsEnabled
+                }
+            }
+            loaded = true
+        }
+    }
+
+    private func saveSettings() {
+        guard let userId = appState.client.userId else { return }
+        Task {
+            try? await appState.settings.upsert("\(userId)_settings",
+                AppSettings(theme: darkMode ? "dark" : "light", notificationsEnabled: notificationsEnabled))
         }
     }
 }
