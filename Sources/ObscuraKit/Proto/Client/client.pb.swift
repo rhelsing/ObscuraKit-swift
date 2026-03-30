@@ -299,6 +299,7 @@ struct Obscura_V2_ClientMessage {
 
     /// ORM Layer (30-39)
     case modelSync // = 30
+    case modelSignal // = 31
     case UNRECOGNIZED(Int)
 
     init() {
@@ -328,6 +329,7 @@ struct Obscura_V2_ClientMessage {
       case 27: self = .friendSync
       case 28: self = .chunkedContentReference
       case 30: self = .modelSync
+      case 31: self = .modelSignal
       default: self = .UNRECOGNIZED(rawValue)
       }
     }
@@ -355,6 +357,7 @@ struct Obscura_V2_ClientMessage {
       case .friendSync: return 27
       case .chunkedContentReference: return 28
       case .modelSync: return 30
+      case .modelSignal: return 31
       case .UNRECOGNIZED(let i): return i
       }
     }

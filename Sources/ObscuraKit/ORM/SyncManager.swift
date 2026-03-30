@@ -23,6 +23,24 @@ public class SyncManager {
         model.modelResolver = { [weak self] childName in
             self?.models[childName]
         }
+
+        // Wire up signal sending
+        model.onSignalSend = { [weak self] msgData in
+            await self?.broadcastSignal(msgData)
+        }
+    }
+
+    /// Broadcast a signal (MODEL_SIGNAL) to all friends.
+    private func broadcastSignal(_ msgData: Data) async {
+        guard let client = client else { return }
+        let friends = await client.friends.getAccepted()
+        for friend in friends {
+            do {
+                try await client.sendRawMessage(to: friend.userId, clientMessageData: msgData)
+            } catch {
+                // Signals are best-effort — don't crash on failure
+            }
+        }
     }
 
     /// Get a registered model by name.

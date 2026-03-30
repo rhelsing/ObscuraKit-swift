@@ -243,6 +243,11 @@ struct ChatView: View {
     let friendUsername: String
     @State private var messageText = ""
     @State private var messages: [DirectMessage] = []
+    @State private var friendIsTyping = false
+
+    private var convId: String {
+        appState.conversationId(with: friendUserId)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -263,6 +268,15 @@ struct ChatView: View {
                             .padding(.horizontal, 12)
                             .id(i)
                         }
+
+                        // Typing bubble (animated three dots)
+                        if friendIsTyping {
+                            HStack {
+                                TypingBubble()
+                                    .padding(.horizontal, 12)
+                                Spacer()
+                            }
+                        }
                     }
                     .padding(.vertical, 8)
                 }
@@ -273,15 +287,18 @@ struct ChatView: View {
                 }
             }
             .task {
-                // Filtered observation — canonical conversation ID (same from both sides)
-                let convId = appState.conversationId(with: friendUserId)
+                // Filtered observation — canonical conversation ID
                 let query = appState.messages
                     .where { "conversationId" == convId }
                 let observation = query.observe()
                 for await updated in observation.values {
-                    // Sort handled by the raw observation (DESC by default),
-                    // reverse to get oldest-first for chat
                     messages = updated.reversed()
+                }
+            }
+            .task {
+                // Typing indicator observation
+                for await who in appState.messages.observeTyping(conversationId: convId).values {
+                    friendIsTyping = !who.isEmpty
                 }
             }
 
@@ -291,10 +308,16 @@ struct ChatView: View {
             HStack(spacing: 8) {
                 TextField("Message", text: $messageText)
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: messageText) { newValue in
+                        if !newValue.isEmpty {
+                            Task { await appState.messages.typing(conversationId: convId) }
+                        }
+                    }
 
                 Button("Send") {
                     let text = messageText
                     messageText = ""
+                    Task { await appState.messages.stopTyping(conversationId: convId) }
                     Task { await appState.sendMessage(to: friendUserId, text) }
                 }
                 .buttonStyle(.borderedProminent)
@@ -471,5 +494,37 @@ struct SettingsTab: View {
             try? await appState.settings.upsert("\(userId)_settings",
                 AppSettings(theme: darkMode ? "dark" : "light", notificationsEnabled: notificationsEnabled))
         }
+    }
+}
+
+// MARK: - Typing Bubble (animated three dots)
+
+struct TypingBubble: View {
+    @State private var phase: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3) { index in
+                Circle()
+                    .fill(Color.gray)
+                    .frame(width: 8, height: 8)
+                    .opacity(dotOpacity(for: index))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.gray.opacity(0.15))
+        .cornerRadius(12)
+        .onAppear {
+            withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                phase = 1
+            }
+        }
+    }
+
+    private func dotOpacity(for index: Int) -> Double {
+        let delay = Double(index) * 0.33
+        let t = (phase + delay).truncatingRemainder(dividingBy: 1.0)
+        return 0.3 + 0.7 * abs(sin(t * .pi))
     }
 }

@@ -1234,6 +1234,7 @@ public class ObscuraClient {
     // MARK: - Internal: Message Routing
 
     private func routeMessage(_ msg: Obscura_V2_ClientMessage, sourceUserId: String) async {
+        NSLog("[ObscuraKit] routeMessage type=%d from=%@", msg.type.rawValue, String(sourceUserId.prefix(8)))
         switch msg.type {
         case .friendRequest:
             await friends.add(sourceUserId, msg.username, status: .pendingReceived)
@@ -1291,6 +1292,29 @@ public class ObscuraClient {
                     authorDeviceId: msg.modelSync.authorDeviceID
                 )
                 _ = await syncManager.handleIncoming(syncMsg, sourceUserId: sourceUserId)
+            }
+
+        case .modelSignal:
+            // Ephemeral signal — don't persist, don't CRDT merge
+            NSLog("[ObscuraKit] MODEL_SIGNAL received text=%@", String(msg.text.prefix(200)))
+            if let payloadData = msg.text.data(using: .utf8),
+               let payload = try? JSONDecoder().decode(ModelSignalPayload.self, from: payloadData) {
+                NSLog("[ObscuraKit] MODEL_SIGNAL decoded model=%@ signal=%@", payload.model, payload.signal)
+                // Always store as "typing" — let auto-expire handle cleanup.
+                // stoppedTyping just means don't refresh the timer.
+                if payload.signal != SignalType.stoppedTyping.rawValue {
+                    await SignalStoreRegistry.shared.store.receive(payload)
+                    SignalStoreRegistry.shared.notifyObservers()
+                }
+            } else {
+                NSLog("[ObscuraKit] MODEL_SIGNAL decode FAILED text=%@", String(msg.text.prefix(300)))
+                if let payloadData = msg.text.data(using: .utf8) {
+                    do {
+                        _ = try JSONDecoder().decode(ModelSignalPayload.self, from: payloadData)
+                    } catch {
+                        NSLog("[ObscuraKit] MODEL_SIGNAL decode error: %@", "\(error)")
+                    }
+                }
             }
 
         case .syncBlob:

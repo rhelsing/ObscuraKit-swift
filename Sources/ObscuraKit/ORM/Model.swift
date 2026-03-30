@@ -97,6 +97,9 @@ public class Model {
     /// Callback for broadcasting — set by SyncManager
     internal var onBroadcast: ((String, ModelEntry) async -> Void)?
 
+    /// Callback for sending signals — set by SyncManager
+    internal var onSignalSend: ((Data) async -> Void)?
+
     /// TTL manager — set by schema()
     internal var ttlManager: TTLManager?
 
