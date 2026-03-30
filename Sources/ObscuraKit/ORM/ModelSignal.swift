@@ -143,6 +143,12 @@ extension TypedModel {
     /// Send a typing indicator for a conversation.
     /// Auto-throttled: won't send more than once per 2 seconds.
     public func typing(conversationId: String) async {
+        let key = "typing:\(conversationId)"
+        let now = Date()
+        if let last = SignalThrottle.shared.lastSent[key], now.timeIntervalSince(last) < 2.0 {
+            return // Throttled
+        }
+        SignalThrottle.shared.lastSent[key] = now
         await sendSignal(.typing, data: ["conversationId": conversationId])
     }
 
@@ -210,6 +216,13 @@ extension TypedModel {
 }
 
 // MARK: - Global Signal Store
+
+/// Signal send throttle — prevents flooding.
+public class SignalThrottle {
+    public static let shared = SignalThrottle()
+    var lastSent: [String: Date] = [:]
+    private init() {}
+}
 
 /// Singleton signal store — shared across all models.
 public class SignalStoreRegistry {

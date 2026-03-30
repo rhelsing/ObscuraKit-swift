@@ -27,7 +27,16 @@ final class AppLogger: ObscuraLogger, @unchecked Sendable {
     }
 
     func tokenRefreshFailed(attempt: Int, error: String) {
-        emit("TOKEN REFRESH FAIL #\(attempt): \(error)")
+        // Extract just the useful part from verbose NSError dumps
+        if error.contains("offline") || error.contains("-1009") {
+            emit("TOKEN REFRESH FAIL #\(attempt): offline")
+        } else if error.contains("401") || error.contains("Unauthorized") {
+            emit("TOKEN REFRESH FAIL #\(attempt): unauthorized")
+        } else if error.contains("cancelled") || error.contains("-999") {
+            emit("TOKEN REFRESH FAIL #\(attempt): cancelled")
+        } else {
+            emit("TOKEN REFRESH FAIL #\(attempt): \(String(error.prefix(80)))")
+        }
     }
 
     func frameParseFailed(byteCount: Int, error: String) {

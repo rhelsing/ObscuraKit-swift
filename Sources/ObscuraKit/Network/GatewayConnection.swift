@@ -10,6 +10,10 @@ public actor GatewayConnection {
     private var wsSession: URLSession?
     private var isConnected = false
     private var receiveTask: Task<Void, Never>?
+    private var pingTask: Task<Void, Never>?
+
+    /// Ping interval in seconds — keeps connection alive through proxies/NATs.
+    private static let pingIntervalSeconds: UInt64 = 30
 
     private var envelopeQueue: [(id: Data, senderID: Data, timestamp: UInt64, message: Data)] = []
     private var waiters: [(id: Int, continuation: CheckedContinuation<(id: Data, senderID: Data, timestamp: UInt64, message: Data), Error>)] = []
@@ -51,12 +55,15 @@ public actor GatewayConnection {
         self.wsTask = task
         self.isConnected = true
         startReceiveLoop()
+        startPingLoop()
     }
 
     public func disconnect() {
         isConnected = false
         receiveTask?.cancel()
         receiveTask = nil
+        pingTask?.cancel()
+        pingTask = nil
         wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
         wsSession?.invalidateAndCancel()
@@ -120,6 +127,40 @@ public actor GatewayConnection {
         for waiter in pending {
             waiter.continuation.resume(throwing: GatewayError.notConnected)
         }
+    }
+
+    /// Send WebSocket ping every 30 seconds to keep the connection alive.
+    /// If ping fails (no pong), mark as disconnected so the envelope loop triggers reconnect.
+    private func startPingLoop() {
+        pingTask?.cancel()
+        guard let ws = wsTask else { return }
+        pingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.pingIntervalSeconds * 1_000_000_000)
+                guard !Task.isCancelled, let self = self else { break }
+                ws.sendPing { [weak self] error in
+                    if let error = error {
+                        NSLog("[ObscuraKit] ping failed (connection dead): %@", "\(error)")
+                        Task { await self?.handlePingFailure() }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ping failed — connection is dead. Disconnect so the envelope loop detects it.
+    private func handlePingFailure() {
+        guard isConnected else { return }
+        isConnected = false
+        receiveTask?.cancel()
+        receiveTask = nil
+        pingTask?.cancel()
+        pingTask = nil
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+        wsSession?.invalidateAndCancel()
+        wsSession = nil
+        flushWaiters() // This wakes the envelope loop with .notConnected error
     }
 
     private func startReceiveLoop() {

@@ -2,6 +2,9 @@ import Foundation
 import GRDB
 import LibSignalClient
 import SwiftProtobuf
+#if os(iOS)
+import UIKit
+#endif
 
 // MARK: - Public Types
 
@@ -106,6 +109,14 @@ public class ObscuraClient {
     // Background tasks
     private var envelopeTask: Task<Void, Never>?
     private var tokenRefreshTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+
+    // Reconnection state (matches JS client)
+    private var shouldReconnect = false
+    private var reconnectAttempts = 0
+    private static let reconnectDelayMs: UInt64 = 1_000
+    private static let reconnectMaxDelayMs: UInt64 = 30_000
+    private static let pingIntervalSeconds: TimeInterval = 30
 
     // Decrypt rate limiting: track failures per sender
     private var decryptFailures: [String: (count: Int, windowStart: Date)] = [:]
@@ -467,37 +478,99 @@ public class ObscuraClient {
         await rateLimitDelay()
     }
 
-    // MARK: - Connect (WebSocket + envelope loop + token refresh)
+    // MARK: - Connect (WebSocket + envelope loop + token refresh + auto-reconnect)
 
     public func connect() async throws {
-        // Cancel any existing loops from a previous connection
+        // Cancel any existing loops (but not reconnectTask — it called us)
         envelopeTask?.cancel()
         envelopeTask = nil
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
 
+        shouldReconnect = true
         _connectionState = .connecting
+
         // Listen for PreKeyStatus frames from server
         await gateway.setOnPreKeyStatus { [weak self] count, threshold in
             if count < threshold {
                 Task { [weak self] in await self?.replenishPreKeys() }
             }
         }
+
+        // Ensure fresh token before connecting
+        await ensureFreshToken()
+
         try await gateway.connect()
         _connectionState = .connected
+        reconnectAttempts = 0
         logger.log("gateway connected (messenger: \(_messenger != nil))")
         startEnvelopeLoop()
         startTokenRefresh()
+        startForegroundObserver()
     }
 
+    /// Re-check connection when app returns to foreground.
+    /// Matches JS client's visibilitychange handler.
+    private func startForegroundObserver() {
+        #if os(iOS)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            Task {
+                if self.shouldReconnect && self._connectionState != .connected {
+                    self.logger.log("app foregrounded — reconnecting")
+                    await self.ensureFreshToken()
+                    try? await self.connect()
+                }
+            }
+        }
+        #endif
+    }
+
+    /// Intentional disconnect — stops reconnection.
     public func disconnect() {
+        shouldReconnect = false
         envelopeTask?.cancel()
         envelopeTask = nil
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
         gateway.disconnectSync()
         _connectionState = .disconnected
         messageQueue.removeAll()
+    }
+
+    /// Schedule auto-reconnect with exponential backoff.
+    /// 1s → 2s → 4s → 8s → 16s → 30s cap. Matches JS client.
+    private func scheduleReconnect() {
+        guard shouldReconnect else { return }
+
+        let delay = min(
+            Self.reconnectDelayMs * (1 << UInt64(min(reconnectAttempts, 5))),
+            Self.reconnectMaxDelayMs
+        )
+        reconnectAttempts += 1
+        _connectionState = .reconnecting
+        logger.log("reconnecting in \(delay)ms (attempt \(reconnectAttempts))")
+
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay * 1_000_000)
+            guard let self = self, self.shouldReconnect, !Task.isCancelled else { return }
+
+            do {
+                // Refresh token before reconnecting
+                await self.ensureFreshToken()
+                try await self.connect()
+                self.logger.log("reconnected after \(self.reconnectAttempts) attempts")
+            } catch {
+                // connect() failed — onClose in envelope loop will schedule next attempt
+                self.logger.log("reconnect failed: \(error.localizedDescription)")
+                self.scheduleReconnect()
+            }
+        }
     }
 
     // MARK: - High-Level Operations
@@ -1168,9 +1241,19 @@ public class ObscuraClient {
                     if Task.isCancelled { break }
                     if error is CancellationError { break }
                     if let gwError = error as? GatewayConnection.GatewayError {
-                        if case .notConnected = gwError { break }
-                        if case .timeout = gwError { continue }
+                        if case .timeout = gwError { continue } // Normal idle timeout, keep looping
+                        if case .notConnected = gwError {
+                            // Connection dropped — trigger reconnect
+                            self._connectionState = .disconnected
+                            self.logger.log("gateway disconnected, scheduling reconnect")
+                            self.scheduleReconnect()
+                            break
+                        }
                     }
+                    // Unknown error — also trigger reconnect
+                    self._connectionState = .disconnected
+                    self.logger.log("envelope loop error: \(error.localizedDescription)")
+                    self.scheduleReconnect()
                     break
                 }
             }

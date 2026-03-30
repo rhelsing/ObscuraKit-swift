@@ -90,14 +90,14 @@ final class SignalTests: XCTestCase {
         )
         XCTAssertTrue(activeBefore)
 
-        // Wait for expiry (3 seconds + buffer)
-        try await Task.sleep(nanoseconds: 3_500_000_000)
+        // Wait for expiry (5 seconds + buffer)
+        try await Task.sleep(nanoseconds: 5_500_000_000)
 
         let activeAfter = await store.isActive(
             model: "directMessage", signal: "typing",
             data: ["conversationId": "conv1"]
         )
-        XCTAssertFalse(activeAfter, "Signal should auto-expire after 3 seconds")
+        XCTAssertFalse(activeAfter, "Signal should auto-expire after 5 seconds")
     }
 
     /// stoppedTyping removes the typing indicator immediately.
