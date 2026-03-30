@@ -1281,6 +1281,10 @@ public class ObscuraClient {
             }
 
         case .modelSync:
+            // Clear all typing indicators — a real message arrived
+            await SignalStoreRegistry.shared.store.clearAll()
+            SignalStoreRegistry.shared.notifyObservers()
+
             if let syncManager = _ormSyncManager {
                 let syncMsg = ModelSyncMessage(
                     model: msg.modelSync.model,

@@ -281,6 +281,7 @@ struct ChatView: View {
                     .padding(.vertical, 8)
                 }
                 .onChange(of: messages.count) { _ in
+                    friendIsTyping = false
                     if !messages.isEmpty {
                         withAnimation { proxy.scrollTo(messages.count - 1, anchor: .bottom) }
                     }

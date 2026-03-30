@@ -72,6 +72,11 @@ public actor SignalStore {
         active[key] = entries
     }
 
+    /// Clear all active signals (e.g., when a real message arrives).
+    public func clearAll() {
+        active.removeAll()
+    }
+
     /// Remove a signal explicitly (e.g., stoppedTyping).
     public func remove(model: String, signal: String, data: [String: String], authorDeviceId: String) {
         let key = signalKey(model: model, signal: signal, data: data)
