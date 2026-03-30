@@ -1,297 +1,109 @@
 # ObscuraKit
 
-**Rails for Signal.** Define a model, get encrypted sync for free.
+Rails-like framework for Signal-powered apps. E2E encrypted data sync with CRDT conflict resolution and reactive observation. Library only — no views.
 
-ObscuraKit is a Swift library — not an app — that gives any iOS/macOS application end-to-end encrypted data sync powered by Signal Protocol. A developer defines models, calls `.create()` and `.observe()`, and the encryption, multi-device fan-out, CRDT conflict resolution, and reactive UI updates happen automatically. No one touches a protobuf, a Signal session, or a WebSocket frame.
+## What it does
 
-## North Star
-
-The API should be so simple that a Rails developer feels at home building any kind of app on this library — and gets all the Obscura and Signal magic for free.
+You define a model, the library handles encryption, sync to friends' devices, conflict resolution, and reactive UI updates.
 
 ```swift
-// Define a model. That's it.
 struct Story: SyncModel {
     static let modelName = "story"
-    static let sync: SyncStrategy = .gset       // immutable, append-only
-    static let scope: SyncScope = .friends      // broadcast to all friends
-    static let ttl: TTL? = .hours(24)           // ephemeral, auto-expires
+    static let sync: SyncStrategy = .gset
+    static let scope: SyncScope = .friends
+    static let ttl: TTL? = .hours(24)
 
     var content: String
-    var mediaUrl: String?
     var authorUsername: String
 }
 
-struct Profile: SyncModel {
-    static let modelName = "profile"
-    static let sync: SyncStrategy = .lwwMap     // mutable, last-write-wins
-
-    var displayName: String
-    var avatarUrl: String?
-    var bio: String?
-}
-
-struct Settings: SyncModel {
-    static let modelName = "settings"
-    static let sync: SyncStrategy = .lwwMap
-    static let scope: SyncScope = .ownDevices   // private, never leaves your devices
-
-    var theme: String
-    var notificationsEnabled: Bool
-}
-
-// Register and use. Encryption and sync are invisible.
 let stories = client.register(Story.self)
 try await stories.create(Story(content: "sunset", authorUsername: "alice"))
-let feed = await stories.where { "authorUsername" == "alice" }.exec()
-for await updated in stories.observe().values { /* SwiftUI re-renders */ }
+
+for await updated in stories.observe().values {
+    // SwiftUI re-renders
+}
 ```
+
+The developer never touches protobufs, Signal sessions, or WebSocket frames.
 
 ## Architecture
 
-Three protocol layers, like a network stack. Each layer is a reliable, boring protocol that the layer above never looks inside.
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        YOUR APP / VIEWS                         │
-│  client.story.create(...)    client.profile.observe()           │
-│  client.befriend(userId)     client.friends.observeAccepted()   │
-├─────────────────────────────────────────────────────────────────┤
-│                     ObscuraClient (facade)                       │
-│  Wires layers together. Envelope loop. Message routing.          │
-│  App code never goes below this line.                           │
-╞═════════════════════════════════════════════════════════════════╡
-│                                                                 │
-│  LAYER 3: APPLICATION                                          │
-│                                                                 │
-│  ┌─ ORM ─────────────────────────────────────────────────────┐ │
-│  │  The freeform layer. Define any model, get CRUD + sync.   │ │
-│  │  Messages, stories, profiles, settings, groups — all ORM. │ │
-│  │  CRDT conflict resolution (GSet / LWWMap).                │ │
-│  │  Auto fan-out based on SyncScope.                         │ │
-│  │  TTL expiration for ephemeral content.                    │ │
-│  │  Reactive observation (GRDB → AsyncStream).               │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│  ┌─ Infrastructure ──────────────────────────────────────────┐ │
-│  │  Friends — the social graph. Who you sync to.             │ │
-│  │  Devices — your device set. Where you sync to.            │ │
-│  │  These are the routing table, not content.                │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│                                                                 │
-╞═════════════════════════════════════════════════════════════════╡
-│                                                                 │
-│  LAYER 2: ENCRYPTION                                           │
-│  Signal Protocol encrypt/decrypt. Plaintext in, ciphertext out.│
-│  Auto-session establishment. Key management.                    │
-│  Nothing above this layer ever sees a Signal session.           │
-│                                                                 │
-╞═════════════════════════════════════════════════════════════════╡
-│                                                                 │
-│  LAYER 1: TRANSPORT                                            │
-│  WebSocket (protobuf frames) + REST API.                       │
-│  Server is a dumb relay of opaque encrypted blobs.             │
-│  Nothing above this layer ever sees a protobuf or HTTP call.   │
-│                                                                 │
-╞═════════════════════════════════════════════════════════════════╡
-│  STORAGE: GRDB/SQLite (encrypted at rest via SQLCipher)        │
-│  OBSERVATION: ValueObservation → AsyncStream (reactive, no poll)│
-└─────────────────────────────────────────────────────────────────┘
+YOUR APP
+  ↕
+ObscuraClient (facade)
+  ↕
+Layer 3: ORM (models, CRDT, sync, observation) + Infrastructure (friends, devices)
+  ↕
+Layer 2: Signal Protocol (encrypt/decrypt, sessions, keys)
+  ↕
+Layer 1: Transport (WebSocket + REST, protobuf frames)
+  ↕
+Storage: GRDB/SQLite (SQLCipher encrypted at rest)
 ```
 
-**Why Friends and Devices are not ORM models:**
-They are the *destinations* for sync, not the *content* being synced. Friends define who gets your data. Devices define where your data lives. Everything else — messages, stories, profiles, reactions, groups — is content that rides the ORM.
+Friends and Devices are infrastructure — they define who and where you sync to. Everything else (messages, stories, profiles, settings) is ORM content.
 
-**Abstraction boundaries:**
-- Layer 1 never sees what's inside an encrypted message
-- Layer 2 never sees ORM models or how CRDTs merge
-- Layer 3 never sees Signal sessions, WebSocket frames, or HTTP calls
-- ObscuraClient is the only thing that crosses all three
+## API
 
-## ORM — The Core Idea
-
-The ORM is where new features get built. It's the equivalent of ActiveRecord for encrypted sync. The model declaration drives everything:
-
-| Property | Controls | Options |
-|----------|----------|---------|
-| `sync` | CRDT strategy | `.gset` (immutable, append-only) / `.lwwMap` (mutable, last-write-wins) |
-| `syncScope` | Fan-out targeting | `.friends` (all friends) / `.ownDevices` (private) / `.group(memberKey:)` (targeted) |
-| `ttl` | Ephemeral expiry | `.seconds(n)` / `.minutes(n)` / `.hours(n)` / `.days(n)` / `nil` (permanent) |
-| `belongs_to` | Parent association | Links to parent model for eager loading and group targeting |
-| `has_many` | Child associations | Declares children for eager loading |
-
-**Sync scopes determine fan-out:**
-- `.friends` — broadcast to all accepted friends' devices (stories, profiles, reactions)
-- `.ownDevices` — only sync across your own devices, never to friends (settings, local state)
-- `.group(memberKey:)` — look up members from a parent model, sync only to those users (group messages)
-
-**CRDTs handle conflicts without coordination:**
-- **GSet** — grow-only set. Add-only, merge = union. For immutable content (stories, comments, messages). Two devices create content simultaneously? Both entries exist. No conflict.
-- **LWWMap** — last-writer-wins map. Highest timestamp wins. For mutable state (profiles, settings). Two devices edit a profile? Most recent write wins. Deterministic, no coordination needed.
-
-## Public API
-
-### Auth & Connection
 ```swift
-let client = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
-try await client.register(username, password)  // user + device + Signal keys
-try await client.login(username, password)     // restore session
-try await client.connect()                     // WebSocket + envelope loop (runs in background)
-client.disconnect()
-try await client.logout()
-```
+// Auth
+try await client.register(username, password)
+let scenario = try await client.loginSmart(username, password) // .existingDevice, .newDevice, etc.
+try await client.connect()
 
-### Friends (Infrastructure)
-```swift
-try await client.befriend(userId)        // encrypted FRIEND_REQUEST
-try await client.acceptFriend(userId)    // encrypted FRIEND_RESPONSE
-
+// Friends
+try await client.befriend(userId)
+try await client.acceptFriend(userId)
 for await friends in client.friends.observeAccepted().values { ... }
-for await pending in client.friends.observePending().values { ... }
-```
 
-### Devices (Infrastructure)
-```swift
-try await client.announceDevices()
-try await client.revokeDevice(recoveryPhrase, targetDeviceId: deviceId)
-
-for await devices in client.devices.observeOwnDevices().values { ... }
-```
-
-### ORM Models (Content)
-```swift
-// Register typed models
+// ORM
 let stories = client.register(Story.self)
-let profiles = client.register(Profile.self)
-
-// CRUD — typed, validated, auto-syncs
 try await stories.create(Story(content: "hello", authorUsername: "alice"))
-try await profiles.upsert("p1", Profile(displayName: "Alice", bio: "hello"))
-
-// Query — DSL reads like English
-let all = await stories.all()
-let filtered = await stories.where { "authorUsername" == "alice" }.exec()
-let sorted = await stories.allSorted(order: .desc)
-let top = await stories.where { "likes" >= 0 }.orderBy("likes", .desc).limit(10).exec()
-
-// Observe (SwiftUI-ready, reactive, no polling)
+await stories.where { "authorUsername" == "alice" }.exec()
+await stories.where { "likes" >= 5 }.orderBy("likes", .desc).limit(10).exec()
 for await updated in stories.observe().values { ... }
 
-// Delete (LWWMap models only — creates tombstone)
-try await profiles.delete("p1")
+// Filtered observation (query-scoped, not observe-all-then-filter)
+for await msgs in messages.where { "conversationId" == convId }.observe().values { ... }
+
+// ECS signals (typing indicators, read receipts — ephemeral, not persisted)
+messages.typing(conversationId: convId)
+for await who in messages.observeTyping(conversationId: convId).values { ... }
+
+// Device linking (QR/code approval, enforced for new devices)
+let code = client.generateLinkCode()
+try await existingClient.validateAndApproveLink(code)
 ```
 
-### Attachments
-```swift
-let result = try await client.api.uploadAttachment(data)
-let bytes = try await client.api.fetchAttachment(id)
-```
+## What works
 
-### Recovery & Backup
-```swift
-let phrase = client.generateRecoveryPhrase()  // 12-word BIP39
-try await client.announceRecovery(phrase)
-try await client.uploadBackup()
-let data = try await client.downloadBackup()
-```
+Tested with 123 unit tests (offline, <1s) and 17 integration tests (live server). Cross-platform interop proven with Kotlin/Android client.
 
-### SwiftUI Example
-```swift
-struct FeedView: View {
-    let stories: TypedModel<Story>
-    @State private var items: [Story] = []
+- Register, login, friend handshake, encrypted messaging
+- ORM: typed models, create/find/upsert/delete, validation
+- Queries: 11 operators, orderBy, limit, include() eager loading
+- Query DSL: `"field" == value`, `"field" >= n`, `"field".oneOf([...])`, `"field".contains("x")`
+- Auto-sync: create a model entry, friends receive it encrypted
+- Private models: `.ownDevices` scope never leaves your devices
+- Offline/reconnect: server queues messages, CRDT merges on arrival
+- LWW conflict resolution: newer timestamp wins, deterministic
+- Reactive observation: GRDB ValueObservation, no polling
+- Filtered observation: per-query scoped streams
+- TTL: ephemeral content with configurable expiry
+- Device linking: QR/code generation, validation, approval flow
+- ECS signals: typing indicators, read receipts (ephemeral, in-memory only)
+- Self-sync: own devices get your content too
+- Cross-platform: iOS ↔ Android proven with shared ORM wire format
 
-    var body: some View {
-        List(items, id: \.content) { story in
-            VStack(alignment: .leading) {
-                Text(story.authorUsername).bold()
-                Text(story.content)
-            }
-        }
-        .task {
-            for await updated in stories.observe().values {
-                items = updated
-            }
-        }
-    }
-}
-```
+## What doesn't work yet
 
-## Current Status
-
-Layer 1 (Transport) and Layer 2 (Encryption) are complete and tested. Layer 3 is partially built:
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Friends (infrastructure) | **Done** | Actors + GRDB + reactive observation |
-| Devices (infrastructure) | **Done** | Actors + GRDB + reactive observation |
-| ORM storage (ModelStore, GRDB) | **Done** | Persistence + associations + TTL |
-| ORM CRDTs (GSet, LWWMap) | **Done** | 20 unit tests |
-| ORM send path (sendModelSync) | **Done** | Auto fan-out by scope |
-| ORM receive path | **Done** | SyncManager routes MODEL_SYNC to correct model |
-| SyncModel protocol + TypedModel | **Done** | Typed CRUD, Codable round-trip, 11 unit tests |
-| SyncManager (auto fan-out) | **Done** | .friends, .ownDevices, .group scopes |
-| TTLManager | **Done** | Schedule on create, cleanup expired, 11 unit tests |
-| QueryBuilder + DSL | **Done** | 11 operators, orderBy, limit, 21 unit tests |
-| SchemaBuilder (client.schema/register) | **Done** | Wires models + TTL + sync at init |
-| ORM reactive observation | **Done** | GRDB ValueObservation, excludes tombstones |
-| Self-sync (own devices) | **Done** | MODEL_SYNC to own devices, tested on server |
-| Device link code (QR/code) | **Done** | Generate, parse, validate, challenge verify |
-| Device link approval flow | **Partial** | Facade wired, needs E2E enforcement in tests |
-| Messages as ORM model | **Proven** | ORM directMessage works; MessageActor still exists |
-| `include()` eager loading | **Not built** | Model.loadInto() exists for manual loading |
-| Group-targeted sync | **Built** | Resolves members from parent; needs server test |
-
-The JS web client (`../obscura-client-web`) has a complete ORM implementation that serves as the reference. The Swift ORM should match its capabilities with Swift-native ergonomics (protocols, actors, GRDB observation).
-
-## File Structure
-
-```
-Sources/ObscuraKit/
-├── ObscuraClient.swift          Public API facade. Envelope loop, routing, token refresh
-├── ObscuraTestClient.swift      Thin test wrapper (register/login convenience)
-├── ObscuraKit.swift             Module entry
-├── Crypto/                      LAYER 2 — Encryption
-│   ├── MessengerActor.swift     Signal encrypt/decrypt, auto-session, queue/flush
-│   ├── SignalStore.swift        GRDB-backed Signal store (15-method protocol interface)
-│   ├── RecoveryKeys.swift       BIP39 phrase → Curve25519 keypair, sign/verify
-│   ├── VerificationCode.swift   SHA-256 based 4-digit safety numbers
-│   ├── SyncBlob.swift           Device linking state export/import
-│   └── Bip39Wordlist.swift      2048-word BIP39 English wordlist
-├── Network/                     LAYER 1 — Transport
-│   ├── APIClient.swift          URLSession REST: auth, devices, messages, attachments, backup
-│   ├── GatewayConnection.swift  URLSessionWebSocketTask: ticket auth, envelopes, ACK
-│   └── Constants.swift          Rate limit delay
-├── ORM/                         LAYER 3 — ORM (in progress)
-│   ├── CRDT/
-│   │   ├── GSet.swift           Grow-only set. Add, merge (union), filter, sort
-│   │   └── LWWMap.swift         Last-writer-wins map. Timestamp conflict, tombstone delete
-│   ├── ModelStore.swift         GRDB persistence + associations + TTL
-│   └── ModelEntry.swift         Universal entry (id, data, timestamp, author, signature)
-│   # TODO: SyncModel protocol, SyncManager, TTLManager, QueryBuilder, SchemaBuilder
-└── Stores/                      LAYER 3 — Infrastructure
-    ├── FriendStore.swift        Friend actor + GRDB + reactive observation (sync destinations)
-    ├── DeviceStore.swift        Device actor + GRDB + reactive observation (sync destinations)
-    ├── MessageStore.swift       Message actor (to be replaced by ORM model)
-    └── Observation.swift        AsyncValueObservation bridge (GRDB → AsyncStream)
-```
-
-## Concurrency Model
-
-**Swift Actors** — each domain runs in its own actor with compiler-enforced isolation:
-- `FriendActor` — social graph, fan-out targets (infrastructure)
-- `DeviceActor` — device identity, own device list (infrastructure)
-- `MessengerActor` — Signal encrypt/decrypt (order-sensitive ratchet state)
-
-No locks. No race conditions. The compiler prevents cross-actor mutable access.
-
-## Documentation
-
-| Doc | What it covers |
-|-----|---------------|
-| [docs/ORM.md](docs/ORM.md) | ORM guide: models, CRUD, queries, DSL, observation, offline, TTL |
-| [docs/CLIENT_API.md](docs/CLIENT_API.md) | Auth, connection, friends, devices, device linking, backup |
-| [docs/MESSAGE_FLOW.md](docs/MESSAGE_FLOW.md) | Complete send/receive data flow with ASCII diagrams |
-| [docs/PITFALLS.md](docs/PITFALLS.md) | Every gotcha that wastes hours — libsignal version, WebSocket, server quirks |
-| [docs/AGENT_NOTES.md](docs/AGENT_NOTES.md) | Hard-won lessons: race conditions, version gotchas, tech debt priorities |
+- Group-targeted sync has no server test
+- TTL cleanup must be called manually
+- The old `MessageActor` still exists alongside the ORM
+- `include()` works locally but not tested over the wire
+- Session desync happens occasionally under load (investigating)
 
 ## Build & Test
 
@@ -301,22 +113,39 @@ No locks. No race conditions. The compiler prevents cross-actor mutable access.
 ./dev.sh test --filter CoreFlowTests
 ```
 
-Native builds on macOS 13+ with Swift 6.1 toolchain. No Docker. `dev.sh` sets the `LIBRARY_PATH` for libsignal FFI.
+Requires macOS 13+, Xcode 16+. `dev.sh` sets `LIBRARY_PATH` for the vendored libsignal Rust FFI.
+
+## iOS App
+
+Demo app at `App/`. Register two users on two simulators, befriend via friend codes, chat with encrypted ORM messages, see typing indicators cross-platform.
+
+```bash
+# Build libsignal for iOS simulator first:
+cd vendored/libsignal
+RUSTUP_TOOLCHAIN=stable CARGO_BUILD_TARGET=aarch64-apple-ios-sim ./swift/build_ffi.sh -r
+
+# Then open in Xcode:
+open App/obscura-base/obscura-base.xcodeproj
+```
+
+See `App/README.md` for details.
 
 ## Dependencies
 
 - `signalapp/libsignal` v0.40.0 — Signal Protocol (vendored, Rust FFI)
 - `apple/swift-protobuf` — protobuf codegen
-- `groue/GRDB.swift` — SQLite persistence + ValueObservation
-- `CryptoKit` — SHA-256, HMAC (system framework)
-- `URLSessionWebSocketTask` — WebSocket (system framework)
+- `groue/GRDB.swift` — SQLite persistence + ValueObservation (SQLCipher fork)
+- `CryptoKit` — SHA-256, HMAC (system)
+- `URLSessionWebSocketTask` — WebSocket (system)
+
+## Docs
+
+- [docs/ORM.md](docs/ORM.md) — ORM usage: models, queries, observation, offline behavior
+- [docs/CLIENT_API.md](docs/CLIENT_API.md) — Auth, friends, devices, device linking, backup
+- [docs/MESSAGE_FLOW.md](docs/MESSAGE_FLOW.md) — Send/receive data flow diagrams
+- [docs/PITFALLS.md](docs/PITFALLS.md) — Gotchas that waste hours
 
 ## Server
 
 - **API:** https://obscura.barrelmaker.dev
-- **OpenAPI Spec:** https://obscura.barrelmaker.dev/openapi.yaml
 - **Server Repo:** https://github.com/barrelmaker97/obscura-server
-
-## Reference Implementation
-
-The JS web client at `../obscura-client-web` has a complete ORM with all the pieces: `BaseModel` class with declarative schema, `SyncManager` with targeting, `TTLManager`, `QueryBuilder`, and 9 model types (Story, Comment, Reaction, Profile, Pix, PixRegistry, Settings, Group, GroupMessage). The Swift port should match capabilities with native ergonomics.

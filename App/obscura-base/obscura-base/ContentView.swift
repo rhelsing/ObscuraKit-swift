@@ -458,6 +458,11 @@ struct SettingsTab: View {
                     .onChange(of: notificationsEnabled) { _ in saveSettings() }
             }
 
+            Section("Status") {
+                LabeledContent("Connection", value: "\(appState.client.connectionState)")
+                LabeledContent("Auth", value: "\(appState.client.authState)")
+            }
+
             Section("Account") {
                 if let userId = appState.client.userId {
                     LabeledContent("User ID", value: String(userId.prefix(12)) + "...")
@@ -467,6 +472,21 @@ struct SettingsTab: View {
                 }
                 if let deviceId = appState.client.deviceId {
                     LabeledContent("Device", value: String(deviceId.prefix(12)) + "...")
+                }
+            }
+
+            Section("Debug Log (\(appState.debugLog.count))") {
+                if appState.debugLog.isEmpty {
+                    Text("No events yet").foregroundColor(.secondary)
+                } else {
+                    Button("Copy Log") {
+                        UIPasteboard.general.string = appState.debugLogText
+                    }
+                    ForEach(appState.debugLog.reversed(), id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 

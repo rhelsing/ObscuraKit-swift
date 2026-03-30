@@ -9,6 +9,10 @@ class AppState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var statusText = "Ready"
 
+    // Debug log — visible on Settings tab
+    @Published var debugLog: [String] = []
+    private let maxLogLines = 200
+
     // Infrastructure (reactive — GRDB observation)
     @Published var friends: [Friend] = []
     @Published var pendingRequests: [Friend] = []
@@ -23,6 +27,9 @@ class AppState: ObservableObject {
     // Device linking
     @Published var needsDeviceLink = false
     @Published var linkCode: String?
+
+    // Logger
+    private let appLogger = AppLogger()
 
     private var observationTasks: [Task<Void, Never>] = []
 
@@ -46,6 +53,8 @@ class AppState: ObservableObject {
                 dataDirectory: Self.userDir(for: saved.userId),
                 userId: saved.userId
             )
+            client.logger = appLogger
+            log("Restored session for \(saved.username ?? "?")")
             defineModels()
             Task {
                 await client.restoreSession(
@@ -71,7 +80,10 @@ class AppState: ObservableObject {
             }
         } else {
             self.client = try! ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+            client.logger = appLogger
+            log("Fresh client (no saved session)")
         }
+        appLogger.appState = self
         startObserving()
     }
 
@@ -253,6 +265,7 @@ class AppState: ObservableObject {
                 content: text,
                 senderUsername: username
             ))
+            log("SENT msg to \(friendUserId.prefix(8)): \(text.prefix(30))")
             statusText = "Sent!"
         } catch {
             statusText = "Error: \(error.localizedDescription)"
@@ -280,11 +293,25 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Debug Logging
+
+    func log(_ message: String) {
+        let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        let line = "[\(ts)] \(message)"
+        debugLog.append(line)
+        if debugLog.count > maxLogLines { debugLog.removeFirst() }
+    }
+
+    var debugLogText: String {
+        debugLog.joined(separator: "\n")
+    }
+
     // MARK: - Private
 
     private func replaceClient(_ newClient: ObscuraClient) {
         client.disconnect()
         client = newClient
+        client.logger = appLogger
         defineModels()
         startObserving()
     }
