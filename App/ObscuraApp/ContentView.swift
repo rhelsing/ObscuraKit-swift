@@ -5,23 +5,13 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if appState.needsDeviceLink {
-                    DeviceLinkView()
-                } else if !appState.isAuthenticated {
-                    AuthView()
-                } else {
-                    MainView()
-                }
-            }
-            .navigationTitle("Obscura")
-            .toolbar {
-                ToolbarItem(placement: .bottomBar) {
-                    Text(appState.statusText)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
+        Group {
+            if appState.needsDeviceLink {
+                DeviceLinkView()
+            } else if !appState.isAuthenticated {
+                AuthView()
+            } else {
+                MainView()
             }
         }
     }
@@ -149,18 +139,14 @@ struct FriendsTab: View {
     }
 
     var body: some View {
+        NavigationStack {
         List {
-            // My friend code
+            // My friend code — selectable so Cmd+C works in simulator
             if let code = myCode {
                 Section("My Friend Code") {
-                    Text(code)
+                    TextField("", text: .constant(code))
                         .font(.system(.caption2, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .onTapGesture {
-                            UIPasteboard.general.string = code
-                            appState.statusText = "Copied!"
-                        }
+                        .textSelection(.enabled)
                 }
             }
 
@@ -236,6 +222,7 @@ struct FriendsTab: View {
             let friend = appState.friends.first { $0.userId == friendUserId }
             ChatView(friendUserId: friendUserId, friendUsername: friend?.username ?? "")
         }
+        .navigationTitle("Friends")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Logout") {
@@ -244,6 +231,7 @@ struct FriendsTab: View {
                 .foregroundColor(.red)
             }
         }
+        } // NavigationStack
     }
 }
 
@@ -258,33 +246,42 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Messages
-            ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(messages, id: \.content) { msg in
-                        let isMine = msg.senderUsername == appState.client.username
-                        HStack {
-                            if isMine { Spacer() }
-                            Text(msg.content)
-                                .padding(10)
-                                .background(isMine ? Color.blue.opacity(0.2) : Color.gray.opacity(0.15))
-                                .cornerRadius(12)
-                            if !isMine { Spacer() }
+            // Messages — newest at bottom
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(Array(messages.enumerated()), id: \.offset) { i, msg in
+                            let isMine = msg.senderUsername == appState.client.username
+                            HStack {
+                                if isMine { Spacer() }
+                                Text(msg.content)
+                                    .padding(10)
+                                    .background(isMine ? Color.blue.opacity(0.2) : Color.gray.opacity(0.15))
+                                    .cornerRadius(12)
+                                if !isMine { Spacer() }
+                            }
+                            .padding(.horizontal, 12)
+                            .id(i)
                         }
-                        .padding(.horizontal, 12)
+                    }
+                    .padding(.vertical, 8)
+                }
+                .onChange(of: messages.count) { _ in
+                    if !messages.isEmpty {
+                        withAnimation { proxy.scrollTo(messages.count - 1, anchor: .bottom) }
                     }
                 }
-                .padding(.vertical, 8)
             }
             .task {
-                // Filtered observation — only this conversation, sorted by time
-                for await updated in appState.messages
-                    .where { "conversationId" == friendUserId }
-                    .orderBy("timestamp", .asc)
-                    .observe()
-                    .values
-                {
-                    messages = updated
+                // Filtered observation — canonical conversation ID (same from both sides)
+                let convId = appState.conversationId(with: friendUserId)
+                let query = appState.messages
+                    .where { "conversationId" == convId }
+                let observation = query.observe()
+                for await updated in observation.values {
+                    // Sort handled by the raw observation (DESC by default),
+                    // reverse to get oldest-first for chat
+                    messages = updated.reversed()
                 }
             }
 

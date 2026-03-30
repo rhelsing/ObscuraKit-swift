@@ -239,11 +239,17 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Canonical conversation ID — same from both sides.
+    func conversationId(with friendUserId: String) -> String {
+        guard let myId = client.userId else { return friendUserId }
+        return [myId, friendUserId].sorted().joined(separator: "_")
+    }
+
     func sendMessage(to friendUserId: String, _ text: String) async {
         guard let username = client.username else { return }
         do {
             try await messages.create(DirectMessage(
-                conversationId: friendUserId,
+                conversationId: conversationId(with: friendUserId),
                 content: text,
                 senderUsername: username
             ))
