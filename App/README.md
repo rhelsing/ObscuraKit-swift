@@ -70,6 +70,28 @@ App/
     └── obscura-base/      ← Xcode's auto-synced source directory
 ```
 
+## Simulator Workflow
+
+```bash
+# FIRST TIME ONLY — install the app:
+xcodebuild -project obscura-base.xcodeproj -scheme obscura-base \
+  -destination 'platform=iOS Simulator,name=iPhone 17e' -configuration Debug build
+xcrun simctl install booted ~/Library/Developer/Xcode/DerivedData/obscura-base-*/Build/Products/Debug-iphonesimulator/obscura-base.app
+xcrun simctl launch booted ryanhelsing.obscura-base
+
+# AFTER CODE CHANGES — rebuild and relaunch (DO NOT reinstall):
+xcodebuild -project obscura-base.xcodeproj -scheme obscura-base \
+  -destination 'platform=iOS Simulator,name=iPhone 17e' -configuration Debug build
+xcrun simctl terminate booted ryanhelsing.obscura-base
+xcrun simctl launch booted ryanhelsing.obscura-base
+```
+
+**Never use `simctl install` after the first time.** It resets the Keychain, which wipes the saved session. The app will think it's a new device and show the link code screen. The SQLite database survives installs, but the Keychain doesn't.
+
+`xcodebuild` writes the new binary to DerivedData. `simctl launch` picks it up automatically — no install needed.
+
+If you accidentally reinstall and lose the session, just register a new user. The old user's data is still in the DB but the Keychain session is gone.
+
 ## Troubleshooting
 
 **"No such module 'ObscuraKit'"** — SPM hasn't resolved yet. Close and reopen the project, or File → Packages → Resolve Package Versions.

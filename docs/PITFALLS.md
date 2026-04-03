@@ -26,7 +26,11 @@
 
 ## Server
 
-**500ms minimum delay between API requests.** The server rate-limits aggressively. Use `await rateLimitDelay()` between every server call. Tests must run serially, not in parallel.
+**Server rate limits are per-instance (3 instances behind load balancer):**
+- General endpoints: 10 req/s sustained, 20 req/s burst
+- Auth endpoints (register, login, refresh): 1 req/s sustained, 3 req/s burst
+
+Use `await rateLimitDelay()` (100ms) between general calls and `await authRateLimitDelay()` (1000ms) between auth calls. Both delays are configurable via `SERVER_REQUEST_DELAY_MS` and `AUTH_REQUEST_DELAY_MS` in Constants.swift. Tests must run serially, not in parallel.
 
 **Password must be ≥12 characters.** The server rejects shorter passwords with HTTP 400.
 

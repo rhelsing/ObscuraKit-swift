@@ -46,7 +46,7 @@ public class TypedModel<T: SyncModel> {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
-    internal init(model: Model) {
+    public init(model: Model) {
         self.model = model
     }
 

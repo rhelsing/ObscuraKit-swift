@@ -20,6 +20,7 @@ public enum AuthState: String, Sendable {
 public enum LoginScenario: Sendable {
     case existingDevice       // Known device, session restored. Call connect().
     case newDevice            // New device, needs link approval from existing device.
+    case onlyDevice           // Lost local data but no other devices exist. Re-provision directly, no linking.
     case deviceMismatch       // DB exists but stored device doesn't match server. Re-provision needed.
     case invalidCredentials   // Wrong password.
     case userNotFound         // Username doesn't exist.
@@ -403,7 +404,7 @@ public class ObscuraClient {
 
         await rateLimitDelay()
 
-        // Step 2: Check for existing device identity in DB
+        // Step 2: Check for existing device identity in local DB
         let storedIdentity = await devices.getIdentity()
 
         if let identity = storedIdentity, !identity.deviceId.isEmpty {
@@ -425,11 +426,21 @@ public class ObscuraClient {
                 self._authState = .authenticated
                 return .existingDevice
             } catch {
-                // Device might have been revoked — fall through to new device flow
+                // Device might have been revoked
                 return .deviceMismatch
             }
+        }
+
+        // No local device identity. Check if user has other devices on the server.
+        // If they have 0 or 1 device (the stale one), re-provision directly — no linking needed.
+        // If they have 2+ devices, this is genuinely a new device that needs linking.
+        await rateLimitDelay()
+        let serverDevices = try await api.listDevices()
+        if serverDevices.count <= 1 {
+            // Only device (or no devices) — re-provision directly, no QR needed
+            return .onlyDevice
         } else {
-            // No stored device — this is a new device, needs linking
+            // Multiple devices exist — need approval from an existing one
             self._authState = .pendingApproval
             return .newDevice
         }

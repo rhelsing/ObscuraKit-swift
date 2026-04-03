@@ -17,6 +17,13 @@ ObscuraKit — Swift package for the Obscura encrypted messaging data layer. Act
 
 All smoke/scenario tests run against the live server.
 
+### Rate Limits (per-instance, 3 instances load balanced)
+- **General endpoints:** 10 req/s sustained, 20 req/s burst
+- **Auth endpoints** (register, login, refresh): 1 req/s sustained, 3 req/s burst
+- Use `await rateLimitDelay()` (100ms) between general calls
+- Use `await authRateLimitDelay()` (1000ms) between auth calls
+- Both configurable via `SERVER_REQUEST_DELAY_MS` and `AUTH_REQUEST_DELAY_MS` in `Constants.swift`
+
 ## Web Client (reference implementation)
 
 The JS web client at `../obscura-client-web` is the reference for porting. Key source files:
