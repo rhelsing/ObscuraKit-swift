@@ -140,7 +140,7 @@ public actor GatewayConnection {
                 guard !Task.isCancelled, let self = self else { break }
                 ws.sendPing { [weak self] error in
                     if let error = error {
-                        NSLog("[ObscuraKit] ping failed (connection dead): %@", "\(error)")
+                        NSLog("[ObscuraKit] ping FAILED — connection dead: %@", "\(error)")
                         Task { await self?.handlePingFailure() }
                     }
                 }

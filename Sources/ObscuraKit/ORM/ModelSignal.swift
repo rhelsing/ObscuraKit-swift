@@ -48,8 +48,8 @@ public struct ModelSignalPayload: Codable, Sendable {
 /// Holds active signals in memory. Auto-expires after timeout.
 /// Thread-safe via actor isolation.
 public actor SignalStore {
-    /// Key: "\(model):\(signal):\(contextKey)" → set of active author device IDs
-    private var active: [String: [(authorDeviceId: String, expiresAt: UInt64)]] = [:]
+    /// Key: "\(model):\(signal):\(contextKey)" → active signalers with username + expiry
+    private var active: [String: [(authorDeviceId: String, senderUsername: String, expiresAt: UInt64)]] = [:]
 
     /// Signal expiry in milliseconds (default 5 seconds)
     private let expiryMs: UInt64 = 5_000
@@ -57,18 +57,18 @@ public actor SignalStore {
     /// Record an incoming signal. Auto-expires after 5 seconds.
     public func receive(_ payload: ModelSignalPayload) {
         let key = signalKey(model: payload.model, signal: payload.signal, data: payload.data)
-        NSLog("[ObscuraKit] SignalStore.receive key=%@ signal=%@", key, payload.signal)
 
         // Drop stale signals (older than 5 seconds)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        if now - payload.timestamp > 5_000 { NSLog("[ObscuraKit] SignalStore DROPPED stale"); return }
+        if now - payload.timestamp > 5_000 { return }
 
         let expiresAt = now + expiryMs
+        let username = payload.data["senderUsername"] ?? payload.authorDeviceId
 
         // Remove existing entry from same author, add fresh
         var entries = active[key] ?? []
         entries.removeAll { $0.authorDeviceId == payload.authorDeviceId }
-        entries.append((authorDeviceId: payload.authorDeviceId, expiresAt: expiresAt))
+        entries.append((authorDeviceId: payload.authorDeviceId, senderUsername: username, expiresAt: expiresAt))
         active[key] = entries
     }
 
@@ -83,17 +83,14 @@ public actor SignalStore {
         active[key]?.removeAll { $0.authorDeviceId == authorDeviceId }
     }
 
-    /// Get all active (non-expired) author device IDs for a signal.
+    /// Get active usernames for a signal. Returns usernames (not device IDs).
     public func getActive(model: String, signal: String, data: [String: String]) -> [String] {
         let key = signalKey(model: model, signal: signal, data: data)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
         let entries = active[key] ?? []
         let live = entries.filter { $0.expiresAt > now }
         active[key] = live
-        if !live.isEmpty {
-            NSLog("[ObscuraKit] SignalStore.getActive key=%@ count=%d", key, live.count)
-        }
-        return live.map(\.authorDeviceId)
+        return live.map(\.senderUsername)
     }
 
     /// Check if any signals are active for a given context.
@@ -149,7 +146,7 @@ extension TypedModel {
             return // Throttled
         }
         SignalThrottle.shared.lastSent[key] = now
-        await sendSignal(.typing, data: ["conversationId": conversationId])
+        await sendSignal(.typing, data: ["conversationId": conversationId, "senderUsername": senderUsername])
     }
 
     /// Explicitly stop typing.
@@ -184,6 +181,10 @@ extension TypedModel {
     }
 
     // MARK: - Internal
+
+    private var senderUsername: String {
+        model.username.isEmpty ? model.deviceId : model.username
+    }
 
     private var signalStore: SignalStore {
         SignalStoreRegistry.shared.store

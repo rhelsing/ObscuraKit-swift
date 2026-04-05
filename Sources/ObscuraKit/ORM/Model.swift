@@ -90,6 +90,7 @@ public class Model {
     private let crdt: AnyCRDT
     private let store: ModelStore
     public var deviceId: String = ""
+    public var username: String = ""
 
     /// Exposed for QueryBuilder observation
     internal var storeDB: DatabaseQueue { store.dbQueue }

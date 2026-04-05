@@ -60,6 +60,15 @@ public class SyncManager {
         let scope = model.definition.syncScope
         let isPrivate = model.definition.isPrivate
 
+        // Check connection health before attempting broadcast
+        if client.connectionState == .disconnected {
+            client.logger.log("BROADCAST: connection dead, attempting reconnect before send")
+            try? await client.connect()
+            if client.connectionState != .connected {
+                client.logger.log("BROADCAST: reconnect failed, message saved locally only")
+            }
+        }
+
         // Build the serialized data
         let data: Data
         if let jsonData = try? JSONSerialization.data(withJSONObject: entry.data) {
@@ -152,9 +161,9 @@ public class SyncManager {
                 )
             }
         } catch {
-            // Log but don't crash — sync is best-effort.
-            // flushMessages() now restores the queue on failure, so messages aren't lost.
-            print("[ObscuraKit] sync broadcast failed for \(modelName)/\(entry.id): \(error)")
+            // Log through the client's logger so the app can see failures in the debug log.
+            // flushMessages() restores the queue on failure, so messages aren't lost locally.
+            client.logger.log("BROADCAST FAILED \(modelName)/\(entry.id.prefix(20)): \(error.localizedDescription)")
         }
     }
 

@@ -59,14 +59,56 @@ public class ObscuraClient {
     /// Security logger — set your own implementation or use the default PrintLogger.
     public var logger: ObscuraLogger = PrintLogger()
 
+    /// Session storage — kit persists session internally. Set before register/login.
+    public var sessionStorage: SessionStorage?
+
     // MARK: - Observable State
 
-    private var _connectionState: ConnectionState = .disconnected
-    private var _authState: AuthState = .loggedOut
+    private var _connectionState: ConnectionState = .disconnected {
+        didSet {
+            if _connectionState != oldValue {
+                for c in connectionContinuations { c.yield(_connectionState) }
+            }
+        }
+    }
+    private var _authState: AuthState = .loggedOut {
+        didSet {
+            if _authState != oldValue {
+                for c in authContinuations { c.yield(_authState) }
+                // Auto-persist session when authenticated
+                if _authState == .authenticated { persistSession() }
+            }
+        }
+    }
 
-    /// Connection state stream — views bind to this
+    private var connectionContinuations: [AsyncStream<ConnectionState>.Continuation] = []
+    private var authContinuations: [AsyncStream<AuthState>.Continuation] = []
+
+    /// Connection state — current value
     public var connectionState: ConnectionState { _connectionState }
     public var authState: AuthState { _authState }
+
+    /// Observe connection state changes. Push-based, no polling.
+    public func observeConnectionState() -> AsyncStream<ConnectionState> {
+        AsyncStream { continuation in
+            continuation.yield(_connectionState)
+            connectionContinuations.append(continuation)
+            continuation.onTermination = { [weak self] _ in
+                self?.connectionContinuations.removeAll { $0 as AnyObject === continuation as AnyObject }
+            }
+        }
+    }
+
+    /// Observe auth state changes. Push-based, no polling.
+    public func observeAuthState() -> AsyncStream<AuthState> {
+        AsyncStream { continuation in
+            continuation.yield(_authState)
+            authContinuations.append(continuation)
+            continuation.onTermination = { [weak self] _ in
+                self?.authContinuations.removeAll { $0 as AnyObject === continuation as AnyObject }
+            }
+        }
+    }
 
     /// Buffered message queue for waitForMessage
     private var messageQueue: [ReceivedMessage] = []
@@ -514,6 +556,7 @@ public class ObscuraClient {
         try await gateway.connect()
         _connectionState = .connected
         reconnectAttempts = 0
+        persistSession() // save refreshed tokens on connect/reconnect
         logger.log("gateway connected (messenger: \(_messenger != nil))")
         startEnvelopeLoop()
         startTokenRefresh()
@@ -1020,6 +1063,7 @@ public class ObscuraClient {
         for def in definitions {
             let model = Model(name: def.name, definition: def, store: store)
             model.deviceId = self.deviceId ?? ""
+            model.username = self.username ?? ""
             model.ttlManager = ttlManager
             syncManager.register(def.name, model)
             _ormModels[def.name] = model
@@ -1062,6 +1106,212 @@ public class ObscuraClient {
     /// Check if a backup exists on the server (HEAD request).
     public func checkBackup() async throws -> (exists: Bool, etag: String?, size: Int?) {
         try await api.checkBackup()
+    }
+
+    // MARK: - Facade (high-level methods for thin bridges)
+
+    /// Typed event for the unified event stream.
+    public enum ObscuraEvent {
+        case friendsUpdated([Friend])
+        case connectionChanged(ConnectionState)
+        case authChanged(AuthState)
+        case messageReceived(model: String, entryId: String)
+        case typingChanged(conversationId: String, typers: [String])
+        case debugLog(String)
+    }
+
+    /// Unified event stream — bridge subscribes once and relays all events.
+    public func observeEvents() -> AsyncStream<ObscuraEvent> {
+        AsyncStream { continuation in
+            // Friends
+            let friendTask = Task {
+                for await allFriends in friends.observeAll().values {
+                    continuation.yield(.friendsUpdated(allFriends))
+                }
+            }
+            // Connection
+            let connTask = Task {
+                for await state in observeConnectionState() {
+                    continuation.yield(.connectionChanged(state))
+                }
+            }
+            // Auth
+            let authTask = Task {
+                for await state in observeAuthState() {
+                    continuation.yield(.authChanged(state))
+                }
+            }
+            // Incoming messages
+            let msgTask = Task {
+                for await event in events() {
+                    if event.type == 30 { // MODEL_SYNC
+                        continuation.yield(.messageReceived(model: "directMessage", entryId: ""))
+                    }
+                }
+            }
+
+            continuation.onTermination = { _ in
+                friendTask.cancel()
+                connTask.cancel()
+                authTask.cancel()
+                msgTask.cancel()
+            }
+        }
+    }
+
+    /// Parse schema JSON from JS and define ORM models. Caches for cold start.
+    public func defineModelsFromJson(_ jsonString: String) throws {
+        guard let data = jsonString.data(using: .utf8),
+              let schema = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else {
+            throw ObscuraError.provisionFailed("Invalid schema JSON")
+        }
+
+        var definitions: [ModelDefinition] = []
+        for (name, config) in schema {
+            let syncStr = config["sync"] as? String ?? "gset"
+            let sync: SyncStrategy = syncStr == "lww" ? .lwwMap : .gset
+            let isPrivate = config["private"] as? Bool ?? false
+            let scope: SyncScope = isPrivate ? .ownDevices : .friends
+
+            var ttl: TTL? = nil
+            if let ttlStr = config["ttl"] as? String {
+                ttl = parseTTLString(ttlStr)
+            }
+
+            var fields: [String: FieldType] = [:]
+            if let fieldMap = config["fields"] as? [String: String] {
+                for (fieldName, fieldType) in fieldMap {
+                    switch fieldType {
+                    case "string": fields[fieldName] = .string
+                    case "number": fields[fieldName] = .number
+                    case "boolean": fields[fieldName] = .boolean
+                    case "string?": fields[fieldName] = .optionalString
+                    case "number?": fields[fieldName] = .optionalNumber
+                    case "boolean?": fields[fieldName] = .optionalBoolean
+                    default: fields[fieldName] = .string
+                    }
+                }
+            }
+
+            definitions.append(ModelDefinition(name: name, sync: sync, syncScope: scope, ttl: ttl, fields: fields, isPrivate: isPrivate))
+        }
+
+        self.schema(definitions)
+
+        // Cache for cold start
+        sessionStorage?.save(["cachedSchema": jsonString])
+        logger.log("models defined from JSON (\(definitions.count) models)")
+    }
+
+    private func parseTTLString(_ str: String) -> TTL? {
+        guard str.count >= 2, let value = Int(str.dropLast()) else { return nil }
+        switch str.last {
+        case "s": return .seconds(value)
+        case "m": return .minutes(value)
+        case "h": return .hours(value)
+        case "d": return .days(value)
+        default: return nil
+        }
+    }
+
+    /// Decode a friend code and send a friend request.
+    public func addFriendByCode(_ code: String) async throws {
+        let cleaned = code.replacingOccurrences(of: "\u{00AD}", with: "")
+        let decoded = try FriendCode.decode(cleaned)
+        try await befriend(decoded.userId, username: decoded.username)
+    }
+
+    /// Generate a shareable friend code for this user.
+    public func friendCode() -> String? {
+        guard let userId = userId, let username = username else { return nil }
+        return FriendCode.encode(userId: userId, username: username)
+    }
+
+    /// Full logout — handles ALL teardown. Bridge calls this one method.
+    public func fullLogout() async {
+        // Cancel all background tasks
+        envelopeTask?.cancel()
+        envelopeTask = nil
+        tokenRefreshTask?.cancel()
+        tokenRefreshTask = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        shouldReconnect = false
+
+        // Disconnect
+        gateway.disconnectSync()
+
+        // Clear auth state
+        try? await api.clearToken()
+        token = nil
+        refreshToken = nil
+        userId = nil
+        username = nil
+        deviceId = nil
+        _messenger = nil
+        _connectionState = .disconnected
+        _authState = .loggedOut
+        _ormModels.removeAll()
+        _ormSyncManager = nil
+        _ormTTLManager = nil
+        messageQueue.removeAll()
+
+        // Clear persisted session
+        sessionStorage?.clear()
+        logger.log("full logout complete")
+    }
+
+    /// Persist current session. Called internally after register, login, connect, reconnect.
+    public func persistSession() {
+        guard let token = token, let userId = userId else { return }
+        var data: [String: Any] = [
+            "token": token,
+            "refreshToken": refreshToken ?? "",
+            "userId": userId,
+            "deviceId": deviceId ?? "",
+            "username": username ?? "",
+            "registrationId": registrationId ?? 0,
+        ]
+        // Include cached schema if available
+        if let existing = sessionStorage?.load(), let cached = existing["cachedSchema"] as? String {
+            data["cachedSchema"] = cached
+        }
+        sessionStorage?.save(data)
+    }
+
+    /// Restore session from storage, define cached models, connect.
+    public func restorePersistedSession() async throws {
+        guard let storage = sessionStorage, let saved = storage.load(),
+              let token = saved["token"] as? String, !token.isEmpty,
+              let userId = saved["userId"] as? String, !userId.isEmpty else {
+            throw ObscuraError.notAuthenticated
+        }
+
+        let regId = UInt32(saved["registrationId"] as? Int ?? 0)
+        await restoreSession(
+            token: token,
+            refreshToken: saved["refreshToken"] as? String,
+            userId: userId,
+            deviceId: saved["deviceId"] as? String,
+            username: saved["username"] as? String,
+            registrationId: regId
+        )
+
+        // Define models from cached schema
+        if let cachedSchema = saved["cachedSchema"] as? String {
+            try? defineModelsFromJson(cachedSchema)
+        }
+
+        // Refresh token and connect
+        let fresh = await ensureFreshToken()
+        guard fresh else {
+            storage.clear()
+            throw ObscuraError.notAuthenticated
+        }
+
+        try await connect()
+        persistSession() // save refreshed tokens
+        logger.log("session restored from storage")
     }
 
     // MARK: - Recovery (Optional)
