@@ -62,6 +62,9 @@ public class ObscuraClient {
     /// Session storage — kit persists session internally. Set before register/login.
     public var sessionStorage: SessionStorage?
 
+    /// Attachment cache — decrypted bytes cached in the encrypted DB.
+    private var attachmentCache: AttachmentCache?
+
     // MARK: - Observable State
 
     private var _connectionState: ConnectionState = .disconnected {
@@ -229,6 +232,7 @@ public class ObscuraClient {
             ofItemAtPath: dbPath
         )
         self.sharedDb = db
+        self.attachmentCache = try? AttachmentCache(db: db)
 
         self.api = APIClient(baseURL: apiURL)
         self.friends = try FriendActor(db: db)
@@ -954,9 +958,17 @@ public class ObscuraClient {
     }
 
     /// Download ciphertext and decrypt with provided key material.
+    /// Checks in-DB cache first — returns instantly on hit.
     public func downloadDecryptedAttachment(id: String, contentKey: Data, nonce: Data, expectedHash: Data? = nil) async throws -> Data {
+        // Cache hit — return immediately, zero network
+        if let cached = await attachmentCache?.get(id) {
+            return cached
+        }
+        // Cache miss — fetch, decrypt, cache
         let ciphertext = try await api.fetchAttachment(id)
-        return try AttachmentCrypto.decrypt(ciphertext, contentKey: contentKey, nonce: nonce, expectedHash: expectedHash)
+        let plaintext = try AttachmentCrypto.decrypt(ciphertext, contentKey: contentKey, nonce: nonce, expectedHash: expectedHash)
+        await attachmentCache?.put(id, plaintext: plaintext)
+        return plaintext
     }
 
     /// Send a CONTENT_REFERENCE message to a friend (attachment already uploaded). Throws if not friends.
@@ -1258,6 +1270,7 @@ public class ObscuraClient {
 
         // Clear persisted session
         sessionStorage?.clear()
+        Task { await attachmentCache?.clearAll() }
         logger.log("full logout complete")
     }
 
