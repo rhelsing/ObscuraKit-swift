@@ -37,6 +37,22 @@ public struct ReceivedMessage: Sendable {
     public let rawBytes: Data
 }
 
+/// Result of `processPendingMessages(timeout:)` — counts of envelopes drained, by ORM model.
+/// The bridge uses these to pick generic notification text. `otherCount` is debug-only; the
+/// bridge ignores it. Shape is identical to Kotlin's `ProcessedCounts` so both platforms
+/// implement the same notification logic.
+public struct ProcessedCounts: Sendable {
+    public let pixCount: Int
+    public let messageCount: Int
+    public let otherCount: Int
+
+    public init(pixCount: Int = 0, messageCount: Int = 0, otherCount: Int = 0) {
+        self.pixCount = pixCount
+        self.messageCount = messageCount
+        self.otherCount = otherCount
+    }
+}
+
 // MARK: - ObscuraClient
 
 /// ObscuraClient — the unified facade.
@@ -599,6 +615,62 @@ public class ObscuraClient {
         gateway.disconnectSync()
         _connectionState = .disconnected
         messageQueue.removeAll()
+    }
+
+    // MARK: - Push Notifications
+
+    /// Register APNS/FCM push token with server. Requires device-scoped JWT.
+    /// Safe to call multiple times — server upserts by deviceId.
+    public func registerPushToken(_ token: String) async throws {
+        try await api.registerPushToken(token)
+    }
+
+    /// Drain queued envelopes after a silent push wake. Connects if needed, waits up to `timeout`
+    /// seconds (returning early when the queue stays empty for 500ms), categorizes by ORM model,
+    /// and returns counts. Does NOT disconnect afterwards — the OS will freeze the app when done.
+    ///
+    /// The bridge layer uses the returned counts to post a generic local notification
+    /// ("New pix" / "New message"). Kit must NEVER post OS notifications itself.
+    public func processPendingMessages(timeout: TimeInterval) async -> ProcessedCounts {
+        if _connectionState != .connected {
+            do { try await connect() } catch { return ProcessedCounts() }
+        }
+
+        var pix = 0
+        var message = 0
+        var other = 0
+        let deadline = Date().addingTimeInterval(timeout)
+        let idleThreshold: TimeInterval = 0.5
+        var lastEnvelopeAt = Date()
+
+        while Date() < deadline {
+            if !messageQueue.isEmpty {
+                let received = messageQueue.removeFirst()
+                classifyForPushCounts(received, pix: &pix, message: &message, other: &other)
+                lastEnvelopeAt = Date()
+            } else if Date().timeIntervalSince(lastEnvelopeAt) > idleThreshold {
+                break
+            } else {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+
+        return ProcessedCounts(pixCount: pix, messageCount: message, otherCount: other)
+    }
+
+    private func classifyForPushCounts(
+        _ msg: ReceivedMessage, pix: inout Int, message: inout Int, other: inout Int
+    ) {
+        // MODEL_SYNC (type 30) carries the ORM model name — the authoritative categorization.
+        // Legacy TEXT/CONTENT_REFERENCE paths go to `other` since our app uses ORM exclusively.
+        if msg.type == 30, let clientMsg = try? Obscura_V2_ClientMessage(serializedBytes: msg.rawBytes) {
+            switch clientMsg.modelSync.model {
+            case "pix":            pix += 1; return
+            case "directMessage":  message += 1; return
+            default:               break
+            }
+        }
+        other += 1
     }
 
     /// Schedule auto-reconnect with exponential backoff.
