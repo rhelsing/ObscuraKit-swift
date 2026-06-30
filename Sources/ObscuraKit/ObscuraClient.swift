@@ -632,13 +632,18 @@ public class ObscuraClient {
     /// The bridge layer uses the returned counts to post a generic local notification
     /// ("New pix" / "New message"). Kit must NEVER post OS notifications itself.
     public func processPendingMessages(timeout: TimeInterval) async -> ProcessedCounts {
+        logger.log("[push] drain start (timeout=\(Int(timeout))s, connected=\(_connectionState == .connected))")
         if _connectionState != .connected {
-            do { try await connect() } catch { return ProcessedCounts() }
+            do { try await connect() } catch {
+                logger.log("[push] drain abort — connect failed: \(error)")
+                return ProcessedCounts()
+            }
         }
 
         var pix = 0
         var message = 0
         var other = 0
+        var drained = 0
         let deadline = Date().addingTimeInterval(timeout)
         let idleThreshold: TimeInterval = 0.5
         var lastEnvelopeAt = Date()
@@ -647,6 +652,8 @@ public class ObscuraClient {
             if !messageQueue.isEmpty {
                 let received = messageQueue.removeFirst()
                 classifyForPushCounts(received, pix: &pix, message: &message, other: &other)
+                drained += 1
+                logger.log("[push] drained #\(drained) type=\(received.type) → pix=\(pix) msg=\(message) other=\(other)")
                 lastEnvelopeAt = Date()
             } else if Date().timeIntervalSince(lastEnvelopeAt) > idleThreshold {
                 break
@@ -655,6 +662,7 @@ public class ObscuraClient {
             }
         }
 
+        logger.log("[push] drain done: pix=\(pix) msg=\(message) other=\(other)")
         return ProcessedCounts(pixCount: pix, messageCount: message, otherCount: other)
     }
 

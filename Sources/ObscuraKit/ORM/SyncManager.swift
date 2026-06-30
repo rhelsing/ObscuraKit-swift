@@ -105,6 +105,33 @@ public class SyncManager {
                         authorDeviceId: entry.authorDeviceId,
                         signature: entry.signature
                     )
+                } else if let scopedRecipients = await resolveScopedRecipients(entry) {
+                    // Scoped 1:1 / direct-recipient delivery (directMessage, pix).
+                    // These carry their intended audience in their own data; broadcasting
+                    // them to all friends leaks private 1:1 payloads to every mutual friend.
+                    for userId in scopedRecipients {
+                        try await client.sendModelSync(
+                            to: userId,
+                            model: modelName,
+                            entryId: entry.id,
+                            op: entry.isDeleted ? "DELETE" : "CREATE",
+                            data: data,
+                            timestamp: entry.timestamp,
+                            authorDeviceId: entry.authorDeviceId,
+                            signature: entry.signature
+                        )
+                    }
+                    // Self-sync so the sender's own other devices get it too.
+                    try await client.sendModelSync(
+                        toSelf: true,
+                        model: modelName,
+                        entryId: entry.id,
+                        op: entry.isDeleted ? "DELETE" : "CREATE",
+                        data: data,
+                        timestamp: entry.timestamp,
+                        authorDeviceId: entry.authorDeviceId,
+                        signature: entry.signature
+                    )
                 } else {
                     // Broadcast to all friends + self-sync to own devices
                     let friends = await client.friends.getAccepted()
@@ -165,6 +192,41 @@ public class SyncManager {
             // flushMessages() restores the queue on failure, so messages aren't lost locally.
             client.logger.log("BROADCAST FAILED \(modelName)/\(entry.id.prefix(20)): \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Scoped 1:1 / Direct Recipient Resolution
+
+    /// Recipients for an entry whose audience is a single user or a 1:1 conversation,
+    /// or nil if the entry declares no such scoping (→ caller broadcasts to all friends).
+    ///
+    ///  - data.recipientUsername (e.g. pix) → that friend's userId
+    ///  - data.conversationId "userIdA_userIdB" (canonical 1:1 id) → the participant(s) who are friends
+    ///
+    /// Self is always covered separately by the toSelf self-sync, so self ids are excluded here.
+    /// Mirrors Kotlin SyncManager.resolveScopedRecipients.
+    private func resolveScopedRecipients(_ entry: ModelEntry) async -> [String]? {
+        guard let client = client else { return nil }
+
+        // pix and similar: single recipient identified by username
+        if let username = entry.data["recipientUsername"] as? String, !username.isEmpty {
+            let accepted = await client.friends.getAccepted()
+            if let friend = accepted.first(where: { $0.username == username }) {
+                return [friend.userId]
+            }
+            return []  // recipient not an accepted friend → send to no one (never broadcast)
+        }
+
+        // directMessage: canonical 1:1 conversation id "userIdA_userIdB"
+        if let convId = entry.data["conversationId"] as? String {
+            let ids = convId.split(separator: "_").map(String.init).filter { !$0.isEmpty }
+            // Only canonical 1:1 conversations are scoped here; anything else falls through.
+            if ids.count == 2 {
+                let friendIds = Set(await client.friends.getAccepted().map { $0.userId })
+                return ids.filter { friendIds.contains($0) }
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Group Member Resolution

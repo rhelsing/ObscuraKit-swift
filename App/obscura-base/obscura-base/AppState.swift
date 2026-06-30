@@ -192,6 +192,16 @@ class AppState: ObservableObject {
                     statusText = "Device linked!"
                 }
 
+            case .onlyDevice:
+                // Lost local data but no other devices exist — re-provision directly, no linking
+                try await client.loginAndProvision(username, password,
+                    deviceName: "iOS-\(UUID().uuidString.prefix(4))")
+                defineModels()
+                try await client.connect()
+                isAuthenticated = true
+                saveSession()
+                statusText = "Re-provisioned and connected"
+
             case .invalidCredentials:
                 statusText = "Wrong password"
 
@@ -312,6 +322,7 @@ class AppState: ObservableObject {
         client.disconnect()
         client = newClient
         client.logger = appLogger
+        PushCoordinator.shared.client = newClient
         defineModels()
         startObserving()
     }
@@ -348,5 +359,10 @@ class AppState: ObservableObject {
             deviceId: client.deviceId,
             username: client.username
         ))
+        // Push: keep the coordinator on the live (device-scoped) client and register
+        // any token that arrived before we had a session.
+        PushCoordinator.shared.client = client
+        PushCoordinator.shared.log = { [weak self] m in self?.log(m) }
+        PushCoordinator.shared.registerPendingTokenIfReady()
     }
 }
