@@ -77,115 +77,57 @@ public class SyncManager {
             data = Data()
         }
 
+        // The single place that actually puts a copy on the wire — per recipient, or to self.
+        func deliver(to userId: String?, toSelf: Bool) async throws {
+            try await client.sendModelSync(
+                to: userId,
+                toSelf: toSelf,
+                model: modelName,
+                entryId: entry.id,
+                op: entry.isDeleted ? "DELETE" : "CREATE",
+                data: data,
+                timestamp: entry.timestamp,
+                authorDeviceId: entry.authorDeviceId,
+                signature: entry.signature
+            )
+        }
+
         do {
-            switch scope {
-            case .ownDevices:
-                // Private models — only sync to own devices via self-sync
-                try await client.sendModelSync(
-                    toSelf: true,
-                    model: modelName,
-                    entryId: entry.id,
-                    op: entry.isDeleted ? "DELETE" : "CREATE",
-                    data: data,
-                    timestamp: entry.timestamp,
-                    authorDeviceId: entry.authorDeviceId,
-                    signature: entry.signature
-                )
-
-            case .friends:
-                if isPrivate {
-                    // Private flag overrides — own devices only
-                    try await client.sendModelSync(
-                        toSelf: true,
-                        model: modelName,
-                        entryId: entry.id,
-                        op: entry.isDeleted ? "DELETE" : "CREATE",
-                        data: data,
-                        timestamp: entry.timestamp,
-                        authorDeviceId: entry.authorDeviceId,
-                        signature: entry.signature
-                    )
-                } else if let scopedRecipients = await resolveScopedRecipients(entry) {
-                    // Scoped 1:1 / direct-recipient delivery (directMessage, pix).
-                    // These carry their intended audience in their own data; broadcasting
-                    // them to all friends leaks private 1:1 payloads to every mutual friend.
-                    for userId in scopedRecipients {
-                        try await client.sendModelSync(
-                            to: userId,
-                            model: modelName,
-                            entryId: entry.id,
-                            op: entry.isDeleted ? "DELETE" : "CREATE",
-                            data: data,
-                            timestamp: entry.timestamp,
-                            authorDeviceId: entry.authorDeviceId,
-                            signature: entry.signature
-                        )
-                    }
-                    // Self-sync so the sender's own other devices get it too.
-                    try await client.sendModelSync(
-                        toSelf: true,
-                        model: modelName,
-                        entryId: entry.id,
-                        op: entry.isDeleted ? "DELETE" : "CREATE",
-                        data: data,
-                        timestamp: entry.timestamp,
-                        authorDeviceId: entry.authorDeviceId,
-                        signature: entry.signature
-                    )
-                } else {
-                    // Broadcast to all friends + self-sync to own devices
-                    let friends = await client.friends.getAccepted()
-                    for friend in friends {
-                        try await client.sendModelSync(
-                            to: friend.userId,
-                            model: modelName,
-                            entryId: entry.id,
-                            op: entry.isDeleted ? "DELETE" : "CREATE",
-                            data: data,
-                            timestamp: entry.timestamp,
-                            authorDeviceId: entry.authorDeviceId,
-                            signature: entry.signature
-                        )
-                    }
-                    // Also self-sync so other own devices get it
-                    try await client.sendModelSync(
-                        toSelf: true,
-                        model: modelName,
-                        entryId: entry.id,
-                        op: entry.isDeleted ? "DELETE" : "CREATE",
-                        data: data,
-                        timestamp: entry.timestamp,
-                        authorDeviceId: entry.authorDeviceId,
-                        signature: entry.signature
-                    )
-                }
-
-            case .group:
-                // Group-targeted: look up parent model's members field
+            // Group targeting needs an async parent-model lookup, so it stays out of the
+            // pure decision below.
+            if scope == .group {
                 let memberUserIds = await resolveGroupMembers(model: model, entry: entry)
-                for memberId in memberUserIds {
-                    try await client.sendModelSync(
-                        to: memberId,
-                        model: modelName,
-                        entryId: entry.id,
-                        op: entry.isDeleted ? "DELETE" : "CREATE",
-                        data: data,
-                        timestamp: entry.timestamp,
-                        authorDeviceId: entry.authorDeviceId,
-                        signature: entry.signature
-                    )
-                }
-                // Self-sync
-                try await client.sendModelSync(
-                    toSelf: true,
-                    model: modelName,
-                    entryId: entry.id,
-                    op: entry.isDeleted ? "DELETE" : "CREATE",
-                    data: data,
-                    timestamp: entry.timestamp,
-                    authorDeviceId: entry.authorDeviceId,
-                    signature: entry.signature
-                )
+                for memberId in memberUserIds { try await deliver(to: memberId, toSelf: false) }
+                try await deliver(to: nil, toSelf: true)   // self-sync to own devices
+                return
+            }
+
+            let acceptedFriends = await client.friends.getAccepted()
+            let resolution = SyncManager.resolveTargets(
+                scope: scope,
+                isPrivate: isPrivate,
+                entryData: entry.data,
+                acceptedFriends: acceptedFriends
+            )
+
+            switch resolution {
+            case .selfOnly:
+                try await deliver(to: nil, toSelf: true)
+
+            case .refuse(let reason):
+                // Direct payload with no resolvable recipient. FAIL LOUD + CLOSED: log and send
+                // to self only. Never fall through to the all-friends broadcast — a misrouted
+                // 1:1 payload reaching every mutual friend is a confidentiality breach.
+                client.logger.log("SYNC: refusing to broadcast direct \(modelName)/\(entry.id.prefix(20)) — \(reason); sending to self only")
+                try await deliver(to: nil, toSelf: true)
+
+            case .scoped(let userIds):
+                for userId in userIds { try await deliver(to: userId, toSelf: false) }
+                try await deliver(to: nil, toSelf: true)   // self-sync to own other devices
+
+            case .allFriends:
+                for friend in acceptedFriends { try await deliver(to: friend.userId, toSelf: false) }
+                try await deliver(to: nil, toSelf: true)   // self-sync to own other devices
             }
         } catch {
             // Log through the client's logger so the app can see failures in the debug log.
@@ -194,34 +136,73 @@ public class SyncManager {
         }
     }
 
-    // MARK: - Scoped 1:1 / Direct Recipient Resolution
+    // MARK: - Targeting decision (pure — unit testable)
 
-    /// Recipients for an entry whose audience is a single user or a 1:1 conversation,
-    /// or nil if the entry declares no such scoping (→ caller broadcasts to all friends).
-    ///
-    ///  - data.recipientUsername (e.g. pix) → that friend's userId
-    ///  - data.conversationId "userIdA_userIdB" (canonical 1:1 id) → the participant(s) who are friends
-    ///
-    /// Self is always covered separately by the toSelf self-sync, so self ids are excluded here.
-    /// Mirrors Kotlin SyncManager.resolveScopedRecipients.
-    private func resolveScopedRecipients(_ entry: ModelEntry) async -> [String]? {
-        guard let client = client else { return nil }
+    /// The delivery decision for an entry, independent of the network. `broadcast` turns this
+    /// into actual sends; tests assert it directly. Mirrors Kotlin SyncManager.getTargets.
+    enum Resolution: Equatable {
+        case selfOnly                 // own devices only (private / ownDevices)
+        case allFriends               // every accepted friend (+ self)
+        case scoped([String])         // explicit recipient userIds (+ self)
+        case refuse(String)           // direct payload, no resolvable recipient → fail loud + self only
+    }
 
-        // pix and similar: single recipient identified by username
-        if let username = entry.data["recipientUsername"] as? String, !username.isEmpty {
-            let accepted = await client.friends.getAccepted()
-            if let friend = accepted.first(where: { $0.username == username }) {
+    /// Pure targeting decision. No client, no network — fully unit testable. Group scope is
+    /// resolved separately by `broadcast` (it needs an async parent lookup) and is not decided here.
+    static func resolveTargets(
+        scope: SyncScope,
+        isPrivate: Bool,
+        entryData: [String: Any],
+        acceptedFriends: [Friend]
+    ) -> Resolution {
+        // Private always wins — never leaves own devices.
+        if isPrivate || scope == .ownDevices { return .selfOnly }
+
+        switch scope {
+        case .ownDevices:
+            return .selfOnly
+
+        case .direct:
+            // 1:1 — must resolve an explicit recipient, else fail loud. Never broadcast.
+            if let scoped = resolveScopedRecipientUserIds(entryData: entryData, acceptedFriends: acceptedFriends) {
+                return .scoped(scoped)
+            }
+            return .refuse("no recipientUsername or canonical 1:1 conversationId in entry data")
+
+        case .friends:
+            // Backward-compatible: opportunistically scope if the entry declares a recipient,
+            // otherwise broadcast to all friends.
+            if let scoped = resolveScopedRecipientUserIds(entryData: entryData, acceptedFriends: acceptedFriends) {
+                return .scoped(scoped)
+            }
+            return .allFriends
+
+        case .group:
+            // Resolved by the caller; if it ever reaches here, prefer the safe broadcast default.
+            return .allFriends
+        }
+    }
+
+    /// Recipient userIds for an entry whose audience is a single user or a canonical 1:1
+    /// conversation, or nil if the entry declares no such scoping.
+    ///
+    ///  - data.recipientUsername (e.g. pix) → that friend's userId (or [] if not an accepted friend)
+    ///  - data.conversationId "userIdA_userIdB" → the participant ids that are accepted friends
+    ///
+    /// Self is covered separately by the toSelf self-sync. Mirrors Kotlin resolveScopedRecipients.
+    static func resolveScopedRecipientUserIds(entryData: [String: Any], acceptedFriends: [Friend]) -> [String]? {
+        if let username = entryData["recipientUsername"] as? String, !username.isEmpty {
+            if let friend = acceptedFriends.first(where: { $0.username == username }) {
                 return [friend.userId]
             }
             return []  // recipient not an accepted friend → send to no one (never broadcast)
         }
 
-        // directMessage: canonical 1:1 conversation id "userIdA_userIdB"
-        if let convId = entry.data["conversationId"] as? String {
+        if let convId = entryData["conversationId"] as? String {
             let ids = convId.split(separator: "_").map(String.init).filter { !$0.isEmpty }
-            // Only canonical 1:1 conversations are scoped here; anything else falls through.
+            // Only canonical 1:1 conversations are scoped here.
             if ids.count == 2 {
-                let friendIds = Set(await client.friends.getAccepted().map { $0.userId })
+                let friendIds = Set(acceptedFriends.map { $0.userId })
                 return ids.filter { friendIds.contains($0) }
             }
         }

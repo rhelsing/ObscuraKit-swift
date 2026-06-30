@@ -13,6 +13,8 @@ public enum SyncScope: Sendable {
     case friends      // All accepted friends + own devices
     case ownDevices   // Only own devices (private models like settings)
     case group        // Look up members from parent model's data.members field
+    case direct       // 1:1 — an explicit recipient resolved from the entry (directMessage, pix).
+                      // MUST resolve a recipient or fail loud; never broadcasts to all friends.
 }
 
 /// TTL configuration for ephemeral models.
