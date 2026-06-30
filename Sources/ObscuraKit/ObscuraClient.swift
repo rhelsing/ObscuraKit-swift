@@ -1306,7 +1306,9 @@ public class ObscuraClient {
             let syncStr = config["sync"] as? String ?? "gset"
             let sync: SyncStrategy = syncStr == "lww" ? .lwwMap : .gset
             let isPrivate = config["private"] as? Bool ?? false
-            let scope: SyncScope = isPrivate ? .ownDevices : .friends
+            let isDirect = config["direct"] as? Bool ?? false
+            // private wins; then direct (1:1, fail-loud); else broadcast to friends.
+            let scope: SyncScope = isPrivate ? .ownDevices : (isDirect ? .direct : .friends)
 
             var ttl: TTL? = nil
             if let ttlStr = config["ttl"] as? String {
