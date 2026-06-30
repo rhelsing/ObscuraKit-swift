@@ -216,6 +216,58 @@ extension TypedModel {
     }
 }
 
+// MARK: - Untyped Model signal extensions
+//
+// The RN bridge works with untyped `Model` instances (via `client.model(name)`),
+// not `TypedModel<T>`, so it needs the same typing API the Kotlin untyped ORM
+// model exposes. Mirrors the `TypedModel` extension above, keyed on `self.name`.
+
+extension Model {
+    /// Send a typing indicator for a conversation. Auto-throttled (≤ once / 2s).
+    public func typing(conversationId: String) async {
+        let key = "typing:\(name):\(conversationId)"
+        let now = Date()
+        if let last = SignalThrottle.shared.lastSent[key], now.timeIntervalSince(last) < 2.0 {
+            return
+        }
+        SignalThrottle.shared.lastSent[key] = now
+        let sender = username.isEmpty ? deviceId : username
+        await sendSignal(.typing, data: ["conversationId": conversationId, "senderUsername": sender])
+    }
+
+    /// Explicitly stop typing.
+    public func stopTyping(conversationId: String) async {
+        await sendSignal(.stoppedTyping, data: ["conversationId": conversationId])
+    }
+
+    /// Observe the active typer set for a conversation (author device IDs).
+    public func observeTyping(conversationId: String) -> SignalObservation {
+        SignalObservation(
+            store: SignalStoreRegistry.shared.store,
+            model: name,
+            signal: SignalType.typing.rawValue,
+            data: ["conversationId": conversationId]
+        )
+    }
+
+    private func sendSignal(_ type: SignalType, data: [String: String]) async {
+        let payload = ModelSignalPayload(
+            model: name,
+            signal: type,
+            data: data,
+            authorDeviceId: deviceId
+        )
+        guard let jsonData = try? JSONEncoder().encode(payload),
+              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+        var msg = Obscura_V2_ClientMessage()
+        msg.type = .modelSignal
+        msg.text = jsonString
+        msg.timestamp = payload.timestamp
+        guard let msgData = try? msg.serializedData() else { return }
+        await onSignalSend?(msgData)
+    }
+}
+
 // MARK: - Global Signal Store
 
 /// Signal send throttle — prevents flooding.
