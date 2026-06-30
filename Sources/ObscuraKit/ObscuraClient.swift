@@ -35,6 +35,10 @@ public struct ReceivedMessage: Sendable {
     public let senderDeviceId: String?
     public let timestamp: UInt64
     public let rawBytes: Data
+    /// For MODEL_SYNC messages: the affected model name (e.g. "story", "profile").
+    /// nil for non-sync message types. Lets the bridge emit a model-accurate
+    /// `messageReceived` event instead of hardcoding "directMessage".
+    public let model: String?
 }
 
 /// Result of `processPendingMessages(timeout:)` — counts of envelopes drained, by ORM model.
@@ -127,6 +131,24 @@ public class ObscuraClient {
                 self?.authContinuations.removeAll { $0 as AnyObject === continuation as AnyObject }
             }
         }
+    }
+
+    private var authFailedContinuations: [AsyncStream<String>.Continuation] = []
+
+    /// Observe hard auth failures (token refresh exhausted its retry budget).
+    /// Distinct from `observeAuthState` going to `.loggedOut`: this is an event,
+    /// not a state, and carries a reason. Does not replay — only fires live.
+    public func observeAuthFailed() -> AsyncStream<String> {
+        AsyncStream { continuation in
+            authFailedContinuations.append(continuation)
+            continuation.onTermination = { [weak self] _ in
+                self?.authFailedContinuations.removeAll { $0 as AnyObject === continuation as AnyObject }
+            }
+        }
+    }
+
+    private func emitAuthFailed(_ reason: String) {
+        for c in authFailedContinuations { c.yield(reason) }
     }
 
     /// Buffered message queue for waitForMessage
@@ -1037,6 +1059,18 @@ public class ObscuraClient {
         )
     }
 
+    /// Encrypt plaintext and upload the ciphertext, returning the reference triple.
+    /// Unlike `sendEncryptedAttachment`, this does NOT send a CONTENT_REFERENCE to a
+    /// friend — the caller embeds `{id, contentKey, nonce}` in a synced model entry
+    /// (e.g. a Pix or Story) whose sync carries the reference. Mirrors the Kotlin
+    /// `uploadAttachment` primitive; returns key material so the bridge needn't reach
+    /// into `AttachmentCrypto` directly. Pair with `downloadDecryptedAttachment`.
+    public func uploadAttachment(_ plaintext: Data) async throws -> (id: String, contentKey: Data, nonce: Data) {
+        let encrypted = try AttachmentCrypto.encrypt(plaintext)
+        let result = try await api.uploadAttachment(encrypted.ciphertext)
+        return (id: result.id, contentKey: encrypted.contentKey, nonce: encrypted.nonce)
+    }
+
     /// Download ciphertext and decrypt with provided key material.
     /// Checks in-DB cache first — returns instantly on hit.
     public func downloadDecryptedAttachment(id: String, contentKey: Data, nonce: Data, expectedHash: Data? = nil) async throws -> Data {
@@ -1209,6 +1243,7 @@ public class ObscuraClient {
         case authChanged(AuthState)
         case messageReceived(model: String, entryId: String)
         case typingChanged(conversationId: String, typers: [String])
+        case authFailed(reason: String)
         case debugLog(String)
     }
 
@@ -1233,12 +1268,19 @@ public class ObscuraClient {
                     continuation.yield(.authChanged(state))
                 }
             }
-            // Incoming messages
+            // Incoming messages — surface the real model name for MODEL_SYNC so
+            // story/profile/pix syncs re-query, not just directMessage.
             let msgTask = Task {
                 for await event in events() {
                     if event.type == 30 { // MODEL_SYNC
-                        continuation.yield(.messageReceived(model: "directMessage", entryId: ""))
+                        continuation.yield(.messageReceived(model: event.model ?? "directMessage", entryId: ""))
                     }
+                }
+            }
+            // Auth failure (token refresh exhausted) — distinct from a clean logout.
+            let authFailedTask = Task {
+                for await reason in observeAuthFailed() {
+                    continuation.yield(.authFailed(reason: reason))
                 }
             }
 
@@ -1247,6 +1289,7 @@ public class ObscuraClient {
                 connTask.cancel()
                 authTask.cancel()
                 msgTask.cancel()
+                authFailedTask.cancel()
             }
         }
     }
@@ -1648,7 +1691,8 @@ public class ObscuraClient {
                 sourceUserId: sourceUserId,
                 senderDeviceId: nil,
                 timestamp: clientMsg.timestamp,
-                rawBytes: Data(plaintext)
+                rawBytes: Data(plaintext),
+                model: clientMsg.type == .modelSync ? clientMsg.modelSync.model : nil
             )
             emit(received)
 
@@ -1931,6 +1975,7 @@ public class ObscuraClient {
                         consecutiveFailures += 1
                         self.logger.tokenRefreshFailed(attempt: consecutiveFailures, error: "\(error)")
                         if consecutiveFailures >= 3 {
+                            self.emitAuthFailed("token refresh failed after \(consecutiveFailures) attempts: \(error)")
                             self._authState = .loggedOut
                             break
                         }
