@@ -82,6 +82,12 @@ public class ObscuraClient {
     /// Session storage — kit persists session internally. Set before register/login.
     public var sessionStorage: SessionStorage?
 
+    /// Fired whenever the access/refresh token is rotated by a refresh, so the
+    /// host can re-persist the session. Refresh tokens are single-use — without
+    /// re-persisting, a restored session uses a consumed refresh token and gets
+    /// a 401 (broadcasts fail, reconnect fails). See `refreshTokenNow()`.
+    public var onSessionChanged: (() -> Void)?
+
     /// Attachment cache — decrypted bytes cached in the encrypted DB.
     private var attachmentCache: AttachmentCache?
 
@@ -335,17 +341,28 @@ public class ObscuraClient {
               let exp = payload["exp"] as? Double else { return false }
         let now = Date().timeIntervalSince1970
         guard (exp - now) <= Self.tokenExpiryBufferSeconds else { return true }
-        guard let rt = refreshToken else { return false }
         do {
-            let result = try await api.refreshSession(rt)
-            self.token = result.token
-            await api.setToken(result.token)
-            if let newRT = result.refreshToken { self.refreshToken = newRT }
-            return true
+            return try await refreshTokenNow()
         } catch {
             logger.tokenRefreshFailed(attempt: 1, error: "\(error)")
             return false
         }
+    }
+
+    /// Refresh the access token using the (single-use) refresh token, update
+    /// both tokens, and fire `onSessionChanged` so the host can re-persist the
+    /// rotated refresh token. Returns false if there's no refresh token; throws
+    /// on API failure. Shared by `ensureFreshToken()` and the background
+    /// refresh loop so persistence-on-rotation happens on every path.
+    @discardableResult
+    internal func refreshTokenNow() async throws -> Bool {
+        guard let rt = refreshToken else { return false }
+        let result = try await api.refreshSession(rt)
+        self.token = result.token
+        await api.setToken(result.token)
+        if let newRT = result.refreshToken { self.refreshToken = newRT }
+        onSessionChanged?()
+        return true
     }
 
     /// Lightweight account registration — API call only, no Signal keys or DB.
@@ -1607,13 +1624,14 @@ public class ObscuraClient {
 
     // MARK: - Internal: Send to all devices of a user
 
-    private func sendToAllDevices(_ targetUserId: String, _ msg: Obscura_V2_ClientMessage) async throws {
+    private func sendToAllDevices(_ targetUserId: String, _ msg: Obscura_V2_ClientMessage, excludingDeviceId: String? = nil) async throws {
         let messenger = try requireMessenger()
         let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
         await rateLimitDelay()
 
         let msgData = try msg.serializedData()
         for bundle in bundles {
+            if let excluded = excludingDeviceId, bundle.deviceId == excluded { continue }
             do {
                 try await messenger.processServerBundle(bundle, userId: targetUserId)
             } catch {
@@ -1869,12 +1887,11 @@ public class ObscuraClient {
         payload.content = Data(content.utf8)
         syncMsg.sentSync = payload
 
-        for device in ownDevices where device.deviceId != self.deviceId {
-            do {
-                try await sendToAllDevices(self.userId!, syncMsg)
-            } catch {
-                logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "sentSync: \(error)")
-            }
+        guard ownDevices.contains(where: { $0.deviceId != self.deviceId }) else { return }
+        do {
+            try await sendToAllDevices(self.userId!, syncMsg, excludingDeviceId: self.deviceId)
+        } catch {
+            logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "sentSync: \(error)")
         }
     }
 
@@ -1893,12 +1910,11 @@ public class ObscuraClient {
         payload.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         syncMsg.friendSync = payload
 
-        for device in ownDevices where device.deviceId != self.deviceId {
-            do {
-                try await sendToAllDevices(self.userId!, syncMsg)
-            } catch {
-                logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "friendSync: \(error)")
-            }
+        guard ownDevices.contains(where: { $0.deviceId != self.deviceId }) else { return }
+        do {
+            try await sendToAllDevices(self.userId!, syncMsg, excludingDeviceId: self.deviceId)
+        } catch {
+            logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "friendSync: \(error)")
         }
     }
 
@@ -1964,14 +1980,9 @@ public class ObscuraClient {
                 let delayMs = self.getTokenRefreshDelay(token)
                 try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
 
-                if let rt = self.refreshToken {
+                if self.refreshToken != nil {
                     do {
-                        let result = try await self.api.refreshSession(rt)
-                        self.token = result.token
-                        await self.api.setToken(result.token)
-                        if let newRefresh = result.refreshToken {
-                            self.refreshToken = newRefresh
-                        }
+                        _ = try await self.refreshTokenNow()
                         consecutiveFailures = 0
                     } catch {
                         consecutiveFailures += 1
