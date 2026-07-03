@@ -24,6 +24,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      # Runner default Xcode is 15.4 (Swift 5.10); Package.swift needs tools 6.0.
+      - name: Select latest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
+
       - name: Cache libsignal (source + built FFI)
         id: libsignal
         uses: actions/cache@v4
@@ -44,19 +48,24 @@ jobs:
 
   # Integration suite against a CONTAINERIZED obscura-server (pinned) — the same
   # shape as Kotlin's lib-integration, with Colima providing Docker on macOS.
+  # Must run on an INTEL runner: arm64 macOS runners have nested virtualization
+  # disabled, so the Colima VM can never boot (colima's own CI uses macos-15-intel).
   integration:
     name: Kit (integration, containerized server)
-    runs-on: macos-14
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
 
       - name: Cache libsignal (source + built FFI)
         id: libsignal
         uses: actions/cache@v4
         with:
           path: vendored/libsignal
-          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos15-intel
 
       - name: Fetch + build libsignal FFI (host)
         if: steps.libsignal.outputs.cache-hit != 'true'
@@ -67,9 +76,7 @@ jobs:
           (cd vendored/libsignal && ./swift/build_ffi.sh -r)
 
       - name: Docker via Colima
-        run: |
-          brew install colima docker docker-compose
-          colima start --cpu 3 --memory 6
+        uses: douglascamata/setup-docker-macos-action@v1.1.0
 
       - name: Start obscura-server (pinned)
         run: |
