@@ -418,6 +418,10 @@ public class ObscuraClient {
         let deviceToken = deviceResult.token
 
         self.token = deviceToken
+        // Use the DEVICE provision's refresh token, not the user-scoped one from
+        // registerUser above — refreshing a user-scoped token drops device scope
+        // and 403s the gateway. (Matches Kotlin `session.refreshToken = provResult.refreshToken`.)
+        self.refreshToken = deviceResult.refreshToken
         self.deviceId = APIClient.extractDeviceId(deviceToken)
         await api.setToken(deviceToken)
 
@@ -454,6 +458,9 @@ public class ObscuraClient {
         )
 
         self.token = deviceResult.token
+        // Device-scoped refresh token (was left as the user-scoped one from the
+        // preceding registerAccount/loginAccount) — see register() for why.
+        self.refreshToken = deviceResult.refreshToken
         self.deviceId = APIClient.extractDeviceId(deviceResult.token)
         await api.setToken(deviceResult.token)
 
@@ -489,7 +496,42 @@ public class ObscuraClient {
     /// }
     /// ```
     public func loginSmart(_ username: String, _ password: String) async throws -> LoginScenario {
-        // Step 1: User-scoped login (no deviceId) to check credentials
+        let storedIdentity = await devices.getIdentity()
+
+        // Device-first (Android parity): if a local device exists, log in with it
+        // directly — a SINGLE device-scoped session, with no user-scoped login
+        // churned alongside it. The old user-scoped-first order left a competing
+        // user session so refreshes drifted to user-scoped → 403 on the gateway.
+        if let identity = storedIdentity, !identity.deviceId.isEmpty {
+            do {
+                let deviceResult = try await api.loginWithDevice(username, password, deviceId: identity.deviceId)
+                self.token = deviceResult.token
+                self.refreshToken = deviceResult.refreshToken
+                self.userId = APIClient.extractUserId(deviceResult.token)
+                self.deviceId = identity.deviceId
+                self.username = username
+                await api.setToken(deviceResult.token)
+
+                // Restore messenger from persisted Signal store
+                if let store = persistentSignalStore, store.hasPersistedIdentity {
+                    self.identityKeyPair = try? store.identityKeyPair(context: NullContext())
+                    self.registrationId = try? store.localRegistrationId(context: NullContext())
+                    self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
+                    await _messenger?.mapDevice(identity.deviceId, userId: self.userId!, registrationId: self.registrationId ?? 0)
+                }
+                self._authState = .authenticated
+                return .existingDevice
+            } catch let error as APIClient.APIError {
+                // 404 → no such user. 401/403 → wrong password OR the device was
+                // revoked; fall through to a user-scoped login to distinguish.
+                if error.status == 404 { return .userNotFound }
+                if error.status != 401 && error.status != 403 { throw error }
+                await rateLimitDelay()
+            }
+        }
+
+        // No local device (or the device login was rejected) — user-scoped login
+        // to verify credentials and decide the scenario.
         do {
             let result = try await api.loginWithDevice(username, password, deviceId: nil)
             self.token = result.token
@@ -503,45 +545,19 @@ public class ObscuraClient {
             throw error
         }
 
-        await rateLimitDelay()
-
-        // Step 2: Check for existing device identity in local DB
-        let storedIdentity = await devices.getIdentity()
-
+        // Credentials valid. A local device that got rejected above means it was
+        // revoked → mismatch. Otherwise decide by the server's device count.
         if let identity = storedIdentity, !identity.deviceId.isEmpty {
-            // We have a stored device — try to login with it
-            do {
-                let deviceResult = try await api.loginWithDevice(username, password, deviceId: identity.deviceId)
-                self.token = deviceResult.token
-                self.refreshToken = deviceResult.refreshToken
-                self.deviceId = identity.deviceId
-                await api.setToken(deviceResult.token)
-
-                // Restore messenger from persisted Signal store
-                if let store = persistentSignalStore, store.hasPersistedIdentity {
-                    self.identityKeyPair = try? store.identityKeyPair(context: NullContext())
-                    self.registrationId = try? store.localRegistrationId(context: NullContext())
-                    self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
-                    await _messenger?.mapDevice(identity.deviceId, userId: self.userId!, registrationId: self.registrationId ?? 0)
-                }
-                self._authState = .authenticated
-                return .existingDevice
-            } catch {
-                // Device might have been revoked
-                return .deviceMismatch
-            }
+            return .deviceMismatch
         }
 
-        // No local device identity. Check if user has other devices on the server.
-        // If they have 0 or 1 device (the stale one), re-provision directly — no linking needed.
-        // If they have 2+ devices, this is genuinely a new device that needs linking.
         await rateLimitDelay()
         let serverDevices = try await api.listDevices()
         if serverDevices.count <= 1 {
-            // Only device (or no devices) — re-provision directly, no QR needed
+            // Only device (or none) — re-provision directly, no linking needed.
             return .onlyDevice
         } else {
-            // Multiple devices exist — need approval from an existing one
+            // Multiple devices exist — need approval from an existing one.
             self._authState = .pendingApproval
             return .newDevice
         }

@@ -2,6 +2,12 @@
 
 import PackageDescription
 
+// Absolute path to the prebuilt libsignal FFI static lib, derived from this
+// Package.swift's location (CWD-independent). The vendored libsignal package
+// only adds a `-L` for its OWN test target, so consumers must supply the path.
+let packageDir = String(#filePath.dropLast("/Package.swift".count))
+let libsignalLibDir = packageDir + "/vendored/libsignal/target/release"
+
 let package = Package(
     name: "ObscuraKit",
     platforms: [
@@ -34,6 +40,20 @@ let package = Package(
             dependencies: ["ObscuraKit"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L", libsignalLibDir]),
+            ]),
+        // Pure-logic unit tests — no network, no live server (mirrors Kotlin's
+        // :lib:test). This is the fast PR gate.
+        .testTarget(
+            name: "UnitTests",
+            dependencies: ["ObscuraKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L", libsignalLibDir]),
             ]),
     ]
 )
