@@ -51,7 +51,9 @@ public actor GatewayConnection {
         await rateLimitDelay()
 
         let baseURL = await api.baseURL
-        let wsBase = baseURL.replacingOccurrences(of: "https://", with: "wss://")
+        let wsBase = baseURL
+            .replacingOccurrences(of: "https://", with: "wss://")
+            .replacingOccurrences(of: "http://", with: "ws://")
         let encodedTicket = ticket.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ticket
         let urlString = "\(wsBase)/v1/gateway?ticket=\(encodedTicket)"
 

@@ -21,7 +21,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.25.0"),
-        .package(path: "../grdb-cipher-fork"),
+        // GRDB 6.29.3 + SQLCipher (CommonCrypto backend), maintained by DuckDuckGo.
+        // 2.4.2-1 is their source-code release tag; 3.x jumps to GRDB 7.
+        .package(url: "https://github.com/duckduckgo/GRDB.swift.git", exact: "2.4.2-1"),
         .package(path: "vendored/libsignal/swift"),
     ],
     targets: [
@@ -29,7 +31,7 @@ let package = Package(
             name: "ObscuraKit",
             dependencies: [
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-                .product(name: "GRDB", package: "grdb-cipher-fork"),
+                .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "LibSignalClient", package: "swift"),
             ],
             swiftSettings: [

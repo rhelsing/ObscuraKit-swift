@@ -12,8 +12,6 @@ concurrency:
 env:
   # libsignal is cloned + Rust-built at setup (gitignored, not vendored in-repo).
   LIBSIGNAL_VERSION: v0.40.0
-  # obscura-server pinned so a server change can't silently break our tests.
-  OBSCURA_SERVER_REF: 010868e00a7d4e54724ca724622d25ea2b21c3a4  # release v0.9.1
 
 jobs:
   # Fast PR gate — pure-logic unit tests, no server (mirrors Kotlin :lib:test).
@@ -46,8 +44,8 @@ jobs:
       - name: Unit tests
         run: ./dev.sh test --filter UnitTests
 
-  # Integration suite against a CONTAINERIZED obscura-server (pinned) — the same
-  # shape as Kotlin's lib-integration, with Colima providing Docker on macOS.
+  # Integration suite against a CONTAINERIZED obscura-server (latest GHCR image)
+  # — same shape as Kotlin's lib-integration, with Colima providing Docker on macOS.
   # Must run on an INTEL runner: arm64 macOS runners have nested virtualization
   # disabled, so the Colima VM can never boot (colima's own CI uses macos-15-intel).
   integration:
@@ -78,13 +76,19 @@ jobs:
       - name: Docker via Colima
         uses: douglascamata/setup-docker-macos-action@v1.1.0
 
-      - name: Start obscura-server (pinned)
+      - name: Start obscura-server (latest prebuilt image)
         run: |
-          git clone https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
+          # Clone only for docker-compose.yml (services + env); the server
+          # itself comes prebuilt from GHCR — no Rust build in CI.
+          git clone --depth 1 https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
           cd /tmp/obscura-server
-          git checkout "$OBSCURA_SERVER_REF"
-          git submodule update --init --recursive
-          docker compose up -d --build --wait
+          cat > compose.ci.yml <<'EOF'
+          services:
+            obscura-server:
+              image: ghcr.io/barrelmaker97/obscura-server:latest
+              pull_policy: always
+          EOF
+          docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
 
       - name: Wait for server ready
         run: |
