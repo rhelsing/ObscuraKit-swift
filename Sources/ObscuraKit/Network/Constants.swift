@@ -13,10 +13,15 @@ import Foundation
 // are ~3x these values in practice, but don't rely on that.
 
 /// Delay between general API requests (ms). 100ms = 10 req/s.
-public var SERVER_REQUEST_DELAY_MS: UInt64 = 100
+/// Overridable via the SERVER_REQUEST_DELAY_MS env var (e.g. 0 against a
+/// local containerized server with rate limits disabled).
+public var SERVER_REQUEST_DELAY_MS: UInt64 =
+    ProcessInfo.processInfo.environment["SERVER_REQUEST_DELAY_MS"].flatMap(UInt64.init) ?? 100
 
 /// Delay between auth API requests (ms). 1000ms = 1 req/s.
-public var AUTH_REQUEST_DELAY_MS: UInt64 = 1000
+/// Overridable via the AUTH_REQUEST_DELAY_MS env var.
+public var AUTH_REQUEST_DELAY_MS: UInt64 =
+    ProcessInfo.processInfo.environment["AUTH_REQUEST_DELAY_MS"].flatMap(UInt64.init) ?? 1000
 
 /// Sleep helper for rate limiting between general server calls.
 public func rateLimitDelay() async {
