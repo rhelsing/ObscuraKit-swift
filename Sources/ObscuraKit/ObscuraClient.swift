@@ -201,6 +201,11 @@ public class ObscuraClient {
     private var tokenRefreshTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
 
+    // In-flight refresh dedup — see refreshTokenNow(). Lock-guarded because
+    // callers arrive from multiple concurrent tasks.
+    private let refreshLock = NSLock()
+    private var refreshInFlight: Task<Bool, Error>?
+
     // Reconnection state (matches JS client)
     private var shouldReconnect = false
     private var reconnectAttempts = 0
@@ -344,6 +349,7 @@ public class ObscuraClient {
         do {
             return try await refreshTokenNow()
         } catch {
+            if Self.isCancellation(error) { return false }
             logger.tokenRefreshFailed(attempt: 1, error: "\(error)")
             return false
         }
@@ -354,15 +360,50 @@ public class ObscuraClient {
     /// rotated refresh token. Returns false if there's no refresh token; throws
     /// on API failure. Shared by `ensureFreshToken()` and the background
     /// refresh loop so persistence-on-rotation happens on every path.
+    ///
+    /// Concurrent callers (background loop, reconnect, broadcast path) share a
+    /// single in-flight refresh — the refresh token is single-use, so two racing
+    /// refreshes mean the loser POSTs an already-consumed token and gets a 401.
+    /// Mirrors Kotlin's `refreshInProgress`. The refresh runs in its own Task,
+    /// so cancelling a caller mid-refresh doesn't tear down the HTTP request.
     @discardableResult
     internal func refreshTokenNow() async throws -> Bool {
-        guard let rt = refreshToken else { return false }
-        let result = try await api.refreshSession(rt)
-        self.token = result.token
-        await api.setToken(result.token)
-        if let newRT = result.refreshToken { self.refreshToken = newRT }
-        onSessionChanged?()
-        return true
+        return try await dedupedRefreshTask().value
+    }
+
+    /// Synchronous (lock-guarded) join-or-start for the shared refresh task.
+    private func dedupedRefreshTask() -> Task<Bool, Error> {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+        if let existing = refreshInFlight { return existing }
+        let task = Task { [weak self] () throws -> Bool in
+            guard let self = self else { return false }
+            defer { self.clearRefreshInFlight() }
+            guard let rt = self.refreshToken else { return false }
+            let result = try await self.api.refreshSession(rt)
+            self.token = result.token
+            await self.api.setToken(result.token)
+            if let newRT = result.refreshToken { self.refreshToken = newRT }
+            self.onSessionChanged?()
+            return true
+        }
+        refreshInFlight = task
+        return task
+    }
+
+    private func clearRefreshInFlight() {
+        refreshLock.lock()
+        refreshInFlight = nil
+        refreshLock.unlock()
+    }
+
+    /// True when the error is a task/URLSession cancellation rather than a server
+    /// rejection. Reconnect cancels in-flight loops mid-request; that must not
+    /// be logged as a refresh failure or count toward the 3-strike logout.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let ns = error as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
     }
 
     /// Lightweight account registration — API call only, no Signal keys or DB.
@@ -609,6 +650,9 @@ public class ObscuraClient {
     // MARK: - Connect (WebSocket + envelope loop + token refresh + auto-reconnect)
 
     public func connect() async throws {
+        // DEBUG (flap diagnosis): trace overlapping connect() calls — two of these
+        // close together means foreground observer / reconnect / broadcast raced.
+        logger.log("[client] connect() begin state=\(_connectionState)")
         // Cancel any existing loops (but not reconnectTask — it called us)
         envelopeTask?.cancel()
         envelopeTask = nil
@@ -2001,6 +2045,7 @@ public class ObscuraClient {
                         _ = try await self.refreshTokenNow()
                         consecutiveFailures = 0
                     } catch {
+                        if Self.isCancellation(error) { continue }
                         consecutiveFailures += 1
                         self.logger.tokenRefreshFailed(attempt: consecutiveFailures, error: "\(error)")
                         if consecutiveFailures >= 3 {

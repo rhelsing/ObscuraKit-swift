@@ -34,12 +34,13 @@ jobs:
       - name: Fetch + build libsignal FFI (host)
         if: steps.libsignal.outputs.cache-hit != 'true'
         run: |
+          brew install protobuf  # prost-build needs protoc on PATH
           git clone --depth 1 --branch "$LIBSIGNAL_VERSION" \
             https://github.com/signalapp/libsignal vendored/libsignal
           (cd vendored/libsignal && ./swift/build_ffi.sh -r)
 
       - name: Unit tests
-        run: swift test --filter UnitTests
+        run: ./dev.sh test --filter UnitTests
 
   # Integration suite against a CONTAINERIZED obscura-server (pinned) — the same
   # shape as Kotlin's lib-integration, with Colima providing Docker on macOS.
@@ -60,6 +61,7 @@ jobs:
       - name: Fetch + build libsignal FFI (host)
         if: steps.libsignal.outputs.cache-hit != 'true'
         run: |
+          brew install protobuf  # prost-build needs protoc on PATH
           git clone --depth 1 --branch "$LIBSIGNAL_VERSION" \
             https://github.com/signalapp/libsignal vendored/libsignal
           (cd vendored/libsignal && ./swift/build_ffi.sh -r)
@@ -89,4 +91,4 @@ jobs:
       - name: Integration tests
         env:
           OBSCURA_TEST_API: http://localhost:3000
-        run: swift test --filter ScenarioTests
+        run: ./dev.sh test --filter ScenarioTests

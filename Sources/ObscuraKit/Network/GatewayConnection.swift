@@ -21,6 +21,12 @@ public actor GatewayConnection {
 
     private var onPreKeyStatus: (@Sendable (Int32, Int32) -> Void)?
 
+    /// DEBUG (flap diagnosis): each connect() gets a generation number so logs
+    /// can attribute receive errors / ping failures to the socket that produced
+    /// them — a mismatch (gen != current) proves a stale loop from an old socket
+    /// is mutating live connection state.
+    private var socketGeneration = 0
+
     public func setOnPreKeyStatus(_ handler: (@Sendable (Int32, Int32) -> Void)?) {
         onPreKeyStatus = handler
     }
@@ -31,6 +37,11 @@ public actor GatewayConnection {
     }
 
     public func connect() async throws {
+        socketGeneration += 1
+        let gen = socketGeneration
+        // DEBUG (flap diagnosis): prevSocket/prevPing=ALIVE on a reconnect means the
+        // old socket/ping loop was never torn down and is still running alongside.
+        logger.log("[gw] connect gen=\(gen) prevSocket=\(wsTask != nil ? "ALIVE" : "nil") prevPing=\(pingTask != nil ? "ALIVE" : "nil") wasConnected=\(isConnected)")
         receiveTask?.cancel()
         receiveTask = nil
         flushWaiters()
@@ -54,11 +65,13 @@ public actor GatewayConnection {
         self.wsSession = session
         self.wsTask = task
         self.isConnected = true
-        startReceiveLoop()
-        startPingLoop()
+        logger.log("[gw] socket open gen=\(gen)")
+        startReceiveLoop(gen: gen)
+        startPingLoop(gen: gen)
     }
 
     public func disconnect() {
+        logger.log("[gw] disconnect (intentional) gen=\(socketGeneration)")
         isConnected = false
         receiveTask?.cancel()
         receiveTask = nil
@@ -131,7 +144,7 @@ public actor GatewayConnection {
 
     /// Send WebSocket ping every 30 seconds to keep the connection alive.
     /// If ping fails (no pong), mark as disconnected so the envelope loop triggers reconnect.
-    private func startPingLoop() {
+    private func startPingLoop(gen: Int) {
         pingTask?.cancel()
         guard let ws = wsTask else { return }
         pingTask = Task { [weak self] in
@@ -140,7 +153,7 @@ public actor GatewayConnection {
                 guard !Task.isCancelled, let self = self else { break }
                 ws.sendPing { [weak self] error in
                     if let error = error {
-                        NSLog("[ObscuraKit] ping FAILED — connection dead: %@", "\(error)")
+                        NSLog("[ObscuraKit] [gw] ping FAILED gen=%d: %@", gen, "\(error)")
                         Task { await self?.handlePingFailure() }
                     }
                 }
@@ -163,7 +176,7 @@ public actor GatewayConnection {
         flushWaiters() // This wakes the envelope loop with .notConnected error
     }
 
-    private func startReceiveLoop() {
+    private func startReceiveLoop(gen: Int) {
         guard let ws = wsTask else { return }
         receiveTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -180,19 +193,22 @@ public actor GatewayConnection {
                     }
                 } catch {
                     guard let self = self else { break }
-                    await self.handleReceiveError(error)
+                    await self.handleReceiveError(error, gen: gen, cancelled: Task.isCancelled, ws: ws)
                     break
                 }
             }
         }
     }
 
-    private func handleReceiveError(_ error: Error) {
+    private func handleReceiveError(_ error: Error, gen: Int, cancelled: Bool, ws: URLSessionWebSocketTask) {
+        // DEBUG (flap diagnosis): gen != current means a receive loop from an OLD
+        // socket is running this — it will still set isConnected=false below and
+        // kill the live connection. closeCode/reason say why the socket dropped
+        // (1000=normal, 1001=goingAway, 1006=abnormal, -1=still open per URLSession).
+        let reason = ws.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        logger.log("[gw] receive error gen=\(gen) current=\(socketGeneration) cancelled=\(cancelled) closeCode=\(ws.closeCode.rawValue) reason=\(reason) err=\(error)")
         isConnected = false
         flushWaiters()
-        if !Task.isCancelled {
-            logger.frameParseFailed(byteCount: 0, error: "receive loop: \(error)")
-        }
     }
 
     private func handleFrame(_ data: Data) {
