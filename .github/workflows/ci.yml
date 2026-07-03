@@ -98,6 +98,14 @@ jobs:
           EOF
           docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
 
+          # MinIO starts bare and the server never creates its bucket — without
+          # this, every attachment/pix/story-image/backup upload fails with
+          # NoSuchBucket. Values match the compose file's OBSCURA_STORAGE_* env.
+          command -v aws >/dev/null || brew install awscli
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            aws --endpoint-url http://localhost:9000 --region us-east-1 \
+            s3api create-bucket --bucket test-bucket
+
       - name: Wait for server ready
         run: |
           for i in $(seq 1 60); do
