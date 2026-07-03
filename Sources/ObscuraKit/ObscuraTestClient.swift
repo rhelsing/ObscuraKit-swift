@@ -42,7 +42,7 @@ public class ObscuraTestClient {
             fatalError("ObscuraTestClient must not be used in release builds")
             #endif
         }(),
-        apiURL: String = "https://obscura.barrelmaker.dev"
+        apiURL: String = ProcessInfo.processInfo.environment["OBSCURA_TEST_API"] ?? "https://obscura.barrelmaker.dev"
     ) async throws -> ObscuraTestClient {
         let name = username ?? "test_\(Int.random(in: 100000...999999))"
         let client = try ObscuraClient(apiURL: apiURL)
@@ -62,7 +62,7 @@ public class ObscuraTestClient {
             #endif
         }(),
         deviceId: String? = nil,
-        apiURL: String = "https://obscura.barrelmaker.dev"
+        apiURL: String = ProcessInfo.processInfo.environment["OBSCURA_TEST_API"] ?? "https://obscura.barrelmaker.dev"
     ) async throws -> ObscuraTestClient {
         let client = try ObscuraClient(apiURL: apiURL)
         try await client.login(username, password, deviceId: deviceId)
@@ -81,7 +81,7 @@ public class ObscuraTestClient {
             #endif
         }(),
         deviceName: String = "Device 2",
-        apiURL: String = "https://obscura.barrelmaker.dev"
+        apiURL: String = ProcessInfo.processInfo.environment["OBSCURA_TEST_API"] ?? "https://obscura.barrelmaker.dev"
     ) async throws -> ObscuraTestClient {
         let client = try ObscuraClient(apiURL: apiURL)
         try await client.loginAndProvision(username, password, deviceName: deviceName)

@@ -80,7 +80,7 @@ final class RecoveryTests: XCTestCase {
     // MARK: - ObscuraClient recovery integration
 
     func testGenerateRecoveryPhraseOnClient() async throws {
-        let client = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let client = try ObscuraClient(apiURL: TestServer.apiURL)
         let phrase = client.generateRecoveryPhrase()
 
         XCTAssertEqual(phrase.split(separator: " ").count, 12)

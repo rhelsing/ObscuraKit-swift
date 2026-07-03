@@ -23,7 +23,7 @@ final class CoreFlowTests: XCTestCase {
         let bobDir = tempDir("bob")
         defer { cleanup(aliceDir, bobDir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
         let password = "testpass123456"
         let aliceUsername = "test_\(Int.random(in: 100000...999999))"
         let bobUsername = "test_\(Int.random(in: 100000...999999))"

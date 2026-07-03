@@ -11,7 +11,7 @@ final class NewMethodTests: XCTestCase {
         let alice = try await ObscuraTestClient.register()
         XCTAssertTrue(alice.client.hasSession, "Should have session after register")
 
-        let fresh = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let fresh = try ObscuraClient(apiURL: TestServer.apiURL)
         XCTAssertFalse(fresh.hasSession, "Fresh client should not have session")
     }
 
@@ -26,7 +26,7 @@ final class NewMethodTests: XCTestCase {
         let savedUsername = alice.username
         await rateLimitDelay()
 
-        let restored = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let restored = try ObscuraClient(apiURL: TestServer.apiURL)
         await restored.restoreSession(
             token: savedToken, refreshToken: savedRefreshToken,
             userId: savedUserId, deviceId: savedDeviceId,
@@ -49,7 +49,7 @@ final class NewMethodTests: XCTestCase {
         let result = await alice.client.ensureFreshToken()
         XCTAssertTrue(result, "Should return true for a fresh token")
 
-        let fresh = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let fresh = try ObscuraClient(apiURL: TestServer.apiURL)
         let noResult = await fresh.ensureFreshToken()
         XCTAssertFalse(noResult, "Should return false with no token")
     }

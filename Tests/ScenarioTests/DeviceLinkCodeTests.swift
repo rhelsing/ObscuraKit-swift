@@ -13,7 +13,7 @@ final class DeviceLinkCodeTests: XCTestCase {
     /// 4. Device 2 receives DEVICE_LINK_APPROVAL + SYNC_BLOB
     /// 5. Device 2 has friends and state from device 1
     func testFullLinkCodeCeremony() async throws {
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
         let password = "testpass123456"
         let username = "test_\(Int.random(in: 100000...999999))"
 
@@ -106,7 +106,7 @@ final class DeviceLinkCodeTests: XCTestCase {
 
     /// Link code expiry — codes older than 5 minutes are rejected.
     func testExpiredLinkCodeRejected() async throws {
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
         let device = try ObscuraClient(apiURL: apiURL)
         try await device.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
         await rateLimitDelay()

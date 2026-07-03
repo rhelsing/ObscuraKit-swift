@@ -29,7 +29,7 @@ struct Profile: SyncModel {
 final class TypedModelTests: XCTestCase {
 
     private func makeClient() throws -> ObscuraClient {
-        try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        try ObscuraClient(apiURL: TestServer.apiURL)
     }
 
     // MARK: - Typed CRUD

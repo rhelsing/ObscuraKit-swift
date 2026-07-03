@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # libsignal is cloned + Rust-built at setup (gitignored, not vendored in-repo).
+  LIBSIGNAL_VERSION: v0.40.0
+  # obscura-server pinned so a server change can't silently break our tests.
+  OBSCURA_SERVER_REF: 010868e00a7d4e54724ca724622d25ea2b21c3a4  # release v0.9.1
+
+jobs:
+  # Fast PR gate — pure-logic unit tests, no server (mirrors Kotlin :lib:test).
+  unit:
+    name: Kit (unit tests)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache libsignal (source + built FFI)
+        id: libsignal
+        uses: actions/cache@v4
+        with:
+          path: vendored/libsignal
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+
+      - name: Fetch + build libsignal FFI (host)
+        if: steps.libsignal.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$LIBSIGNAL_VERSION" \
+            https://github.com/signalapp/libsignal vendored/libsignal
+          (cd vendored/libsignal && ./swift/build_ffi.sh -r)
+
+      - name: Unit tests
+        run: swift test --filter UnitTests
+
+  # Integration suite against a CONTAINERIZED obscura-server (pinned) — the same
+  # shape as Kotlin's lib-integration, with Colima providing Docker on macOS.
+  integration:
+    name: Kit (integration, containerized server)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache libsignal (source + built FFI)
+        id: libsignal
+        uses: actions/cache@v4
+        with:
+          path: vendored/libsignal
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+
+      - name: Fetch + build libsignal FFI (host)
+        if: steps.libsignal.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$LIBSIGNAL_VERSION" \
+            https://github.com/signalapp/libsignal vendored/libsignal
+          (cd vendored/libsignal && ./swift/build_ffi.sh -r)
+
+      - name: Docker via Colima
+        run: |
+          brew install colima docker docker-compose
+          colima start --cpu 3 --memory 6
+
+      - name: Start obscura-server (pinned)
+        run: |
+          git clone https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
+          cd /tmp/obscura-server
+          git checkout "$OBSCURA_SERVER_REF"
+          docker compose up -d --build --wait
+
+      - name: Wait for server ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:3000/; then echo "server up"; exit 0; fi
+            sleep 5
+          done
+          echo "server did not become ready" >&2
+          (cd /tmp/obscura-server && docker compose logs obscura-server | tail -50)
+          exit 1
+
+      - name: Integration tests
+        env:
+          OBSCURA_TEST_API: http://localhost:3000
+        run: swift test --filter ScenarioTests

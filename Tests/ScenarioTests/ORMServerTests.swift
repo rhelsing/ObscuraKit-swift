@@ -162,7 +162,7 @@ final class ORMServerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
         let storyDef = ModelDefinition(name: "story", sync: .gset, syncScope: .friends)
 
         // Phase 1: Create client, register, create ORM content
