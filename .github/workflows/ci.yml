@@ -76,6 +76,7 @@ jobs:
           git clone https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
           cd /tmp/obscura-server
           git checkout "$OBSCURA_SERVER_REF"
+          git submodule update --init --recursive
           docker compose up -d --build --wait
 
       - name: Wait for server ready
