@@ -23,7 +23,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
         let password = "testpass123456"
 
         // 1. Register Alice (in-memory, she's the sender)
@@ -101,7 +101,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
 
         // Register with file-backed client
         let client1 = try ObscuraClient(apiURL: apiURL, dataDirectory: dir)
@@ -127,7 +127,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
 
         let client1 = try ObscuraClient(apiURL: apiURL, dataDirectory: dir)
         try await client1.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
@@ -152,7 +152,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
 
         let client1 = try ObscuraClient(apiURL: apiURL, dataDirectory: dir)
         try await client1.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
@@ -178,7 +178,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
 
         let client1 = try ObscuraClient(apiURL: apiURL, dataDirectory: dir)
         try await client1.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
@@ -205,7 +205,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
 
         let client1 = try ObscuraClient(apiURL: apiURL, dataDirectory: dir)
         try await client1.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
@@ -232,7 +232,7 @@ final class PersistenceTests: XCTestCase {
         let dir = tempDir()
         defer { cleanup(dir) }
 
-        let apiURL = "https://obscura.barrelmaker.dev"
+        let apiURL = TestServer.apiURL
         let password = "testpass123456"
 
         // Alice (in-memory sender)

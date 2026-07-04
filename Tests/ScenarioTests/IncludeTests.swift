@@ -5,7 +5,7 @@ import XCTest
 final class IncludeTests: XCTestCase {
 
     func testInclude_loadsChildEntries() async throws {
-        let client = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let client = try ObscuraClient(apiURL: TestServer.apiURL)
 
         // Story has_many comments. Comment belongs_to story.
         let storyDef = ModelDefinition(name: "story", sync: .gset,
@@ -42,7 +42,7 @@ final class IncludeTests: XCTestCase {
     }
 
     func testInclude_noChildrenReturnsEmptyArray() async throws {
-        let client = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let client = try ObscuraClient(apiURL: TestServer.apiURL)
 
         let storyDef = ModelDefinition(name: "story", sync: .gset,
                                        fields: ["content": .string], hasMany: ["comment"])
@@ -63,7 +63,7 @@ final class IncludeTests: XCTestCase {
     }
 
     func testInclude_multipleParentsLoadCorrectChildren() async throws {
-        let client = try ObscuraClient(apiURL: "https://obscura.barrelmaker.dev")
+        let client = try ObscuraClient(apiURL: TestServer.apiURL)
 
         let storyDef = ModelDefinition(name: "story", sync: .gset,
                                        fields: ["content": .string], hasMany: ["comment"])

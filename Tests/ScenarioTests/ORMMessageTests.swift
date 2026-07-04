@@ -119,7 +119,10 @@ final class ORMMessageTests: XCTestCase {
         alice.client.schema([messageDef])
         bob.client.schema([messageDef])
 
-        let convId = "conv_bidir"
+        // Canonical 1:1 conversationId ("userIdA_userIdB") — exercises scoped
+        // delivery. NOTE: any convId that splits on "_" into exactly 2 parts is
+        // treated as canonical; "conv_bidir" resolved to zero recipients.
+        let convId = "\(alice.userId!)_\(bob.userId!)"
         let aliceModel = alice.client.model("directMessage")!
         let bobModel = bob.client.model("directMessage")!
 

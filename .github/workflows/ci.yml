@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # libsignal is cloned + Rust-built at setup (gitignored, not vendored in-repo).
+  LIBSIGNAL_VERSION: v0.40.0
+
+jobs:
+  # Fast PR gate — pure-logic unit tests, no server (mirrors Kotlin :lib:test).
+  unit:
+    name: Kit (unit tests)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Runner default Xcode is 15.4 (Swift 5.10); Package.swift needs tools 6.0.
+      - name: Select latest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
+
+      - name: Cache libsignal (source + built FFI)
+        id: libsignal
+        uses: actions/cache@v4
+        with:
+          path: vendored/libsignal
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+
+      - name: Fetch + build libsignal FFI (host)
+        if: steps.libsignal.outputs.cache-hit != 'true'
+        run: |
+          brew install protobuf  # prost-build needs protoc on PATH
+          for i in 1 2 3; do  # retry: runners occasionally flake on DNS
+            git clone --depth 1 --branch "$LIBSIGNAL_VERSION" \
+              https://github.com/signalapp/libsignal vendored/libsignal && break
+            rm -rf vendored/libsignal; sleep 15
+          done
+          (cd vendored/libsignal && ./swift/build_ffi.sh -r)
+
+      - name: Unit tests
+        run: ./dev.sh test --filter UnitTests
+
+  # Integration suite against a NATIVE obscura-server. No containers anywhere:
+  # GitHub's arm64 macOS runners can't virtualize (no Docker/colima/apple-container),
+  # and the Intel+colima route was slow and flaky. The server is plain Rust and
+  # its deps (postgres, minio, valkey) all run natively via brew. Migrations are
+  # embedded in the server binary (sqlx::migrate!) and run at startup, so the
+  # cached binary is fully self-contained.
+  integration:
+    name: Kit (integration, native server)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
+
+      - name: Cache libsignal (source + built FFI)
+        id: libsignal
+        uses: actions/cache@v4
+        with:
+          path: vendored/libsignal
+          # Same key as the unit job (same arch) — the cache is shared.
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+
+      - name: Fetch + build libsignal FFI (host)
+        if: steps.libsignal.outputs.cache-hit != 'true'
+        run: |
+          brew install protobuf  # prost-build needs protoc on PATH
+          for i in 1 2 3; do  # retry: runners occasionally flake on DNS
+            git clone --depth 1 --branch "$LIBSIGNAL_VERSION" \
+              https://github.com/signalapp/libsignal vendored/libsignal && break
+            rm -rf vendored/libsignal; sleep 15
+          done
+          (cd vendored/libsignal && ./swift/build_ffi.sh -r)
+
+      - name: Resolve latest obscura-server commit
+        id: server-ref
+        run: |
+          for i in 1 2 3; do
+            sha=$(git ls-remote https://github.com/barrelmaker97/obscura-server.git HEAD | cut -f1) && break
+            sleep 15
+          done
+          [ -n "$sha" ] || { echo "could not resolve server HEAD" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache obscura-server binary
+        id: server-bin
+        uses: actions/cache@v4
+        with:
+          path: ~/obscura-server-bin
+          key: obscura-server-${{ steps.server-ref.outputs.sha }}-macos14
+
+      - name: Build obscura-server natively (only when upstream changed)
+        if: steps.server-bin.outputs.cache-hit != 'true'
+        run: |
+          brew list protobuf >/dev/null 2>&1 || brew install protobuf
+          for i in 1 2 3; do  # --recurse-submodules: proto/ is a submodule
+            git clone --depth 1 --recurse-submodules \
+              https://github.com/barrelmaker97/obscura-server /tmp/obscura-server && break
+            rm -rf /tmp/obscura-server; sleep 15
+          done
+          cd /tmp/obscura-server
+          cargo build --release
+          mkdir -p ~/obscura-server-bin
+          cp target/release/obscura-server ~/obscura-server-bin/
+
+      - name: Start backing services (native, no containers)
+        run: |
+          brew install postgresql@18 minio valkey
+
+          # Postgres: superuser + db matching OBSCURA_DATABASE_URL. Trust auth,
+          # so the URL's password is accepted without setup.
+          PGBIN="$(brew --prefix postgresql@18)/bin"
+          "$PGBIN/initdb" -D /tmp/pgdata -U user --auth=trust
+          "$PGBIN/pg_ctl" -D /tmp/pgdata -l /tmp/pg.log start
+          "$PGBIN/createdb" -U user signal_server
+
+          valkey-server --daemonize yes --port 6379
+
+          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            minio server /tmp/minio-data > /tmp/minio.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && break; sleep 1
+          done
+
+          # The server never creates its bucket — without this, every
+          # attachment/pix/story-image/backup upload fails with NoSuchBucket.
+          command -v aws >/dev/null || brew install awscli
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            aws --endpoint-url http://localhost:9000 --region us-east-1 \
+            s3api create-bucket --bucket test-bucket
+
+      - name: Start obscura-server
+        env:
+          OBSCURA_DATABASE_URL: postgres://user:password@localhost:5432/signal_server
+          OBSCURA_PUBSUB_URL: redis://localhost:6379
+          OBSCURA_AUTH_JWT_SECRET: test_secret
+          OBSCURA_STORAGE_BUCKET: test-bucket
+          OBSCURA_STORAGE_ENDPOINT: http://localhost:9000
+          OBSCURA_STORAGE_ACCESS_KEY: minioadmin
+          OBSCURA_STORAGE_SECRET_KEY: minioadmin
+          OBSCURA_STORAGE_FORCE_PATH_STYLE: "true"
+          # Prod runs 3 load-balanced instances (~3x effective limits); a single
+          # instance would rate-limit the suite partway through. Not under test.
+          OBSCURA_RATE_LIMIT_PER_SECOND: 1000
+          OBSCURA_RATE_LIMIT_BURST: 2000
+          OBSCURA_RATE_LIMIT_AUTH_PER_SECOND: 1000
+          OBSCURA_RATE_LIMIT_AUTH_BURST: 2000
+          # OTLP endpoint unset = telemetry export disabled (logs only).
+          RUST_LOG: info
+        run: |
+          ~/obscura-server-bin/obscura-server > /tmp/obscura-server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://localhost:3000/; then echo "server up"; exit 0; fi
+            sleep 2
+          done
+          echo "server did not become ready" >&2
+          tail -100 /tmp/obscura-server.log
+          exit 1
+
+      - name: Integration tests
+        env:
+          OBSCURA_TEST_API: http://localhost:3000
+          # Client-side pacing exists for prod rate limits; the local server
+          # has them disabled, so drop the sleeps (auth pacing alone is 1s/call).
+          SERVER_REQUEST_DELAY_MS: 0
+          AUTH_REQUEST_DELAY_MS: 0
+        run: ./dev.sh test --filter ScenarioTests
+
+      - name: Server log on failure
+        if: failure()
+        run: tail -200 /tmp/obscura-server.log 2>/dev/null || true

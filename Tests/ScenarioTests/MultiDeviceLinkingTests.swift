@@ -28,15 +28,8 @@ final class MultiDeviceLinkingTests: XCTestCase {
     // MARK: - 5.4: Fan-out — message from Alice reaches both Bob devices
 
     func testScenario5_4_FanOutToBothDevices() async throws {
-        // Register Alice and Bob
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-
-        // Bob connects WebSocket
-        try await bob.connectWebSocket()
-        await rateLimitDelay()
+        // send() requires an accepted friendship; the handshake leaves both connected.
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
         // Alice sends message to Bob
         try await alice.send(to: bob.userId!, "fan-out test")
@@ -47,6 +40,7 @@ final class MultiDeviceLinkingTests: XCTestCase {
         XCTAssertEqual(msg.text, "fan-out test")
         XCTAssertEqual(msg.sourceUserId, alice.userId!)
 
+        alice.disconnectWebSocket()
         bob.disconnectWebSocket()
     }
 

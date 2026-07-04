@@ -7,7 +7,12 @@ public actor APIClient {
     private var token: String?
 
     public init(baseURL: String) {
-        precondition(baseURL.hasPrefix("https://"), "API URL must use HTTPS")
+        // Cleartext HTTP is allowed only for loopback (containerized test server).
+        let isLoopback = baseURL.hasPrefix("http://localhost")
+            || baseURL.hasPrefix("http://127.0.0.1")
+            || baseURL.hasPrefix("http://[::1]")
+        precondition(baseURL.hasPrefix("https://") || isLoopback,
+                     "API URL must use HTTPS (cleartext allowed only for loopback)")
         self.baseURL = baseURL
     }
 

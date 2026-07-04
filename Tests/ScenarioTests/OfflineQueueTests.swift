@@ -6,14 +6,10 @@ import XCTest
 final class OfflineQueueTests: XCTestCase {
 
     func testOfflineMessageDelivery() async throws {
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
+        // send() requires an accepted friendship; the handshake leaves both connected.
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
-        // Bob connects, then disconnects (goes offline)
-        try await bob.connectWebSocket()
-        await rateLimitDelay()
+        // Bob goes offline
         bob.disconnectWebSocket()
         await rateLimitDelay()
 
@@ -32,18 +28,14 @@ final class OfflineQueueTests: XCTestCase {
         XCTAssertEqual(msg.sourceUserId, alice.userId!)
         XCTAssertEqual(msg.type, 0, "Should be TEXT")
 
+        alice.disconnectWebSocket()
         bob.disconnectWebSocket()
     }
 
     func testMultipleOfflineMessages() async throws {
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
-        // Bob connects then disconnects
-        try await bob.connectWebSocket()
-        await rateLimitDelay()
+        // Bob goes offline
         bob.disconnectWebSocket()
         await rateLimitDelay()
 
@@ -64,19 +56,14 @@ final class OfflineQueueTests: XCTestCase {
         let texts = [msg1.text, msg2.text].sorted()
         XCTAssertEqual(texts, ["message 1", "message 2"])
 
+        alice.disconnectWebSocket()
         bob.disconnectWebSocket()
     }
 
     func testSessionSurvivesReconnect() async throws {
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
         // Exchange a message to establish session
-        try await bob.connectWebSocket()
-        await rateLimitDelay()
-
         try await alice.send(to: bob.userId!, "before disconnect")
         await rateLimitDelay()
 
@@ -97,6 +84,7 @@ final class OfflineQueueTests: XCTestCase {
         XCTAssertEqual(second.text, "after reconnect")
         XCTAssertEqual(second.sourceUserId, alice.userId!)
 
+        alice.disconnectWebSocket()
         bob.disconnectWebSocket()
     }
 }
