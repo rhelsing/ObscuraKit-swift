@@ -102,10 +102,13 @@ final class RecoveryTests: XCTestCase {
 
         // Upload backup
         do {
-            let etag = try await alice.client.uploadBackup()
-            // Upload succeeded — try download
+            _ = try await alice.client.uploadBackup()
             await rateLimitDelay()
-            let data = try await alice.client.downloadBackup()
+            // Download from a FRESH login (the real recovery scenario). The
+            // uploading client cached the new etag, so its own download sends
+            // If-None-Match and gets 304 Not Modified → nil, by design.
+            let restored = try await ObscuraTestClient.login(alice.username)
+            let data = try await restored.client.downloadBackup()
             XCTAssertNotNil(data, "Should get backup data")
         } catch {
             // Server may not support backup endpoint — pass with warning
