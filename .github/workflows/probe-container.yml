@@ -1,0 +1,51 @@
+# Experiment: can GitHub's arm64 macOS runners run Linux containers via
+# apple/container (Containerization.framework micro-VMs, no Docker)?
+# If yes, the integration job can move off macos-15-intel + colima entirely.
+# Delete this workflow once the answer is known.
+name: Probe apple-container
+
+on:
+  push:
+    branches: [ios-improvements]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    name: apple/container on ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 10
+    steps:
+      - name: Install apple/container
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          sw_vers
+          sysctl -n machdep.cpu.brand_string || true
+          gh release download --repo apple/container --pattern '*installer-signed.pkg' --output container.pkg
+          sudo installer -pkg container.pkg -target /
+          container --version
+
+      - name: Start container system
+        run: |
+          set -x
+          # First start downloads the default Linux kernel; keep non-interactive.
+          container system start --enable-kernel-install || container system start || yes | container system start
+          container system status || true
+
+      - name: Run a Linux container (the actual test)
+        run: |
+          set -x
+          container run --rm alpine:latest uname -a
+          echo "=== LINUX CONTAINERS WORK ON THIS RUNNER ==="
+
+      - name: Port publish check (what the test suite needs)
+        run: |
+          set -x
+          container run --detach --name web --publish 8080:80 nginx:alpine
+          sleep 5
+          curl -sf http://localhost:8080 >/dev/null && echo "=== PORT PUBLISHING WORKS ==="
