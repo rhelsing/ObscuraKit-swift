@@ -95,8 +95,24 @@ jobs:
                 OBSCURA_RATE_LIMIT_BURST: 2000
                 OBSCURA_RATE_LIMIT_AUTH_PER_SECOND: 1000
                 OBSCURA_RATE_LIMIT_AUTH_BURST: 2000
+                # Empty endpoint = OTLP export disabled (logs only) per server
+                # config — lets us skip the multi-GB grafana/otel-lgtm image,
+                # which is brutal to pull through the colima VM.
+                OBSCURA_TELEMETRY_OTLP_ENDPOINT: ""
+              # Replace (not merge) depends_on to drop lgtm; keep the real deps.
+              depends_on: !override
+                db:
+                  condition: service_healthy
+                minio:
+                  condition: service_healthy
+                valkey:
+                  condition: service_healthy
           EOF
-          docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
+          # Target the server service so compose only pulls/starts it + its
+          # depends_on (db, minio, valkey) — never the lgtm observability stack.
+          docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait obscura-server \
+            || { docker compose -f docker-compose.yml -f compose.ci.yml ps; \
+                 docker compose -f docker-compose.yml -f compose.ci.yml logs --tail 100; exit 1; }
 
           # MinIO starts bare and the server never creates its bucket — without
           # this, every attachment/pix/story-image/backup upload fails with
