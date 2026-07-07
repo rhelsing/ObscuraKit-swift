@@ -879,11 +879,11 @@ nonisolated struct Obscura_V2_ModelSignal: Sendable {
 
 fileprivate nonisolated let _protobuf_package = "obscura.v2"
 
-extension Obscura_V2_SignalKind: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_SignalKind: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SIGNAL_KIND_UNSPECIFIED\0\u{1}SIGNAL_KIND_TYPING\0\u{1}SIGNAL_KIND_STOPPED_TYPING\0\u{1}SIGNAL_KIND_READ\0")
 }
 
-extension Obscura_V2_EncryptedMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_EncryptedMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".EncryptedMessage"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}type\0\u{1}content\0")
 
@@ -918,11 +918,11 @@ extension Obscura_V2_EncryptedMessage: SwiftProtobuf.Message, SwiftProtobuf._Mes
   }
 }
 
-extension Obscura_V2_EncryptedMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_EncryptedMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TYPE_UNSPECIFIED\0\u{1}TYPE_PREKEY_MESSAGE\0\u{1}TYPE_ENCRYPTED_MESSAGE\0")
 }
 
-extension Obscura_V2_ClientMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ClientMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ClientMessage"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}type\0\u{1}timestamp\0\u{2}\u{8}text\0\u{3}mime_type\0\u{3}display_duration\0\u{4}\u{3}attachment_id\0\u{3}attachment_expires\0\u{2}\u{4}username\0\u{1}accepted\0\u{4}\u{4}reset_reason\0\u{4}\u{5}device_link_approval\0\u{3}device_announce\0\u{3}device_recovery_announce\0\u{4}\u{8}history_chunk\0\u{3}settings_data\0\u{3}read_message_id\0\u{3}sync_blob\0\u{3}sent_sync\0\u{3}content_reference\0\u{3}chunked_content_reference\0\u{4}\u{4}model_sync\0\u{3}friend_sync\0\u{3}model_signal\0")
 
@@ -1146,11 +1146,11 @@ extension Obscura_V2_ClientMessage: SwiftProtobuf.Message, SwiftProtobuf._Messag
   }
 }
 
-extension Obscura_V2_ClientMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ClientMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TYPE_UNSPECIFIED\0\u{1}TYPE_IMAGE\0\u{1}TYPE_FRIEND_REQUEST\0\u{1}TYPE_FRIEND_RESPONSE\0\u{1}TYPE_SESSION_RESET\0\u{1}TYPE_VIDEO\0\u{1}TYPE_AUDIO\0\u{1}TYPE_FILE\0\u{1}TYPE_TEXT\0\u{2}\u{3}TYPE_DEVICE_LINK_APPROVAL\0\u{1}TYPE_DEVICE_ANNOUNCE\0\u{1}TYPE_DEVICE_RECOVERY_ANNOUNCE\0\u{2}\u{7}TYPE_HISTORY_CHUNK\0\u{1}TYPE_SETTINGS_SYNC\0\u{1}TYPE_READ_SYNC\0\u{1}TYPE_SYNC_BLOB\0\u{1}TYPE_SENT_SYNC\0\u{1}TYPE_CONTENT_REFERENCE\0\u{1}TYPE_SYNC_REQUEST\0\u{1}TYPE_FRIEND_SYNC\0\u{1}TYPE_CHUNKED_CONTENT_REFERENCE\0\u{2}\u{2}TYPE_MODEL_SYNC\0\u{1}TYPE_MODEL_SIGNAL\0")
 }
 
-extension Obscura_V2_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceInfo"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_uuid\0\u{3}device_id\0\u{3}device_name\0\u{3}signal_identity_key\0")
 
@@ -1195,7 +1195,7 @@ extension Obscura_V2_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
   }
 }
 
-extension Obscura_V2_DeviceLinkApproval: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_DeviceLinkApproval: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceLinkApproval"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}p2p_public_key\0\u{3}p2p_private_key\0\u{3}recovery_public_key\0\u{3}challenge_response\0\u{3}own_devices\0\u{3}friends_export\0\u{3}sessions_export\0\u{3}trusted_ids_export\0")
 
@@ -1260,7 +1260,7 @@ extension Obscura_V2_DeviceLinkApproval: SwiftProtobuf.Message, SwiftProtobuf._M
   }
 }
 
-extension Obscura_V2_DeviceAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_DeviceAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceAnnounce"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}devices\0\u{1}timestamp\0\u{3}is_revocation\0\u{1}signature\0\u{3}recovery_public_key\0")
 
@@ -1310,7 +1310,7 @@ extension Obscura_V2_DeviceAnnounce: SwiftProtobuf.Message, SwiftProtobuf._Messa
   }
 }
 
-extension Obscura_V2_DeviceRecoveryAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_DeviceRecoveryAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceRecoveryAnnounce"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}new_devices\0\u{1}timestamp\0\u{1}signature\0\u{3}is_full_recovery\0\u{3}recovery_public_key\0")
 
@@ -1360,7 +1360,7 @@ extension Obscura_V2_DeviceRecoveryAnnounce: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-extension Obscura_V2_HistoryChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_HistoryChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".HistoryChunk"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}entries\0\u{3}is_final\0")
 
@@ -1395,7 +1395,7 @@ extension Obscura_V2_HistoryChunk: SwiftProtobuf.Message, SwiftProtobuf._Message
   }
 }
 
-extension Obscura_V2_MessageEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_MessageEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".MessageEntry"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}message_id\0\u{1}timestamp\0\u{1}content\0\u{3}author_device_id\0\u{1}signature\0")
 
@@ -1445,7 +1445,7 @@ extension Obscura_V2_MessageEntry: SwiftProtobuf.Message, SwiftProtobuf._Message
   }
 }
 
-extension Obscura_V2_SyncBlob: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_SyncBlob: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".SyncBlob"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}compressed_data\0")
 
@@ -1475,7 +1475,7 @@ extension Obscura_V2_SyncBlob: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
   }
 }
 
-extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".SentSync"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}conversation_id\0\u{3}message_id\0\u{1}timestamp\0\u{1}content\0")
 
@@ -1520,7 +1520,7 @@ extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
   }
 }
 
-extension Obscura_V2_FriendSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_FriendSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".FriendSync"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}username\0\u{1}action\0\u{1}status\0\u{1}devices\0\u{1}timestamp\0")
 
@@ -1570,7 +1570,7 @@ extension Obscura_V2_FriendSync: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
   }
 }
 
-extension Obscura_V2_ContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ContentReference"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}attachment_id\0\u{3}content_key\0\u{1}nonce\0\u{3}content_hash\0\u{3}content_type\0\u{3}size_bytes\0\u{3}file_name\0")
 
@@ -1630,7 +1630,7 @@ extension Obscura_V2_ContentReference: SwiftProtobuf.Message, SwiftProtobuf._Mes
   }
 }
 
-extension Obscura_V2_ChunkedContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ChunkedContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ChunkedContentReference"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}file_id\0\u{1}chunks\0\u{3}complete_hash\0\u{3}content_type\0\u{3}total_size_bytes\0\u{3}file_name\0")
 
@@ -1685,7 +1685,7 @@ extension Obscura_V2_ChunkedContentReference: SwiftProtobuf.Message, SwiftProtob
   }
 }
 
-extension Obscura_V2_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ChunkInfo"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}index\0\u{3}attachment_id\0\u{3}content_key\0\u{1}nonce\0\u{3}chunk_hash\0\u{3}size_bytes\0")
 
@@ -1740,7 +1740,7 @@ extension Obscura_V2_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
   }
 }
 
-extension Obscura_V2_ModelSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ModelSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ModelSync"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}id\0\u{1}op\0\u{1}timestamp\0\u{1}data\0\u{1}signature\0\u{3}author_device_id\0")
 
@@ -1800,11 +1800,11 @@ extension Obscura_V2_ModelSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImp
   }
 }
 
-extension Obscura_V2_ModelSync.Op: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ModelSync.Op: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OP_UNSPECIFIED\0\u{1}OP_UPDATE\0\u{1}OP_DELETE\0\u{1}OP_CREATE\0")
 }
 
-extension Obscura_V2_ModelSignal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Obscura_V2_ModelSignal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ModelSignal"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}kind\0\u{3}context_id\0")
 
