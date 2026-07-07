@@ -62,9 +62,8 @@ final class AttachmentTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice sends CONTENT_REFERENCE message
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .contentReference
-        var ref = Obscura_V2_ContentReference()
+        var msg = Obscura_Client_V1_ClientMessage()
+        var ref = Obscura_Client_V1_ContentReference()
         ref.attachmentID = attachmentId
         ref.contentKey = Data(repeating: 0xCC, count: 32) // Fake AES key
         ref.nonce = Data(repeating: 0xDD, count: 12)
@@ -77,7 +76,7 @@ final class AttachmentTests: XCTestCase {
 
         // Bob receives
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 25, "Type should be CONTENT_REFERENCE (25)")
+        XCTAssertEqual(received.type, "CONTENT_REFERENCE", "Type should be CONTENT_REFERENCE (25)")
         XCTAssertEqual(received.sourceUserId, alice.userId!)
 
         bob.disconnectWebSocket()

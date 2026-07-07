@@ -76,7 +76,7 @@ final class ReconnectTests: XCTestCase {
 
         // Bob should get the queued story
         let msg = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(msg.type, 30) // MODEL_SYNC
+        XCTAssertEqual(msg.type, "MODEL_SYNC") // MODEL_SYNC
 
         let bobStories = await bob.client.model("story")!.all()
         XCTAssertEqual(bobStories.count, 2)

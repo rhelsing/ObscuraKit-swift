@@ -52,7 +52,7 @@ final class StoryAttachmentTests: XCTestCase {
         // Alice sends ModelSync + ContentReference for story
 
         // Build MODEL_SYNC with story data
-        var sync = Obscura_V2_ModelSync()
+        var sync = Obscura_Client_V1_ModelSync()
         sync.model = "story"
         sync.id = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_media"
         sync.op = .create
@@ -60,8 +60,7 @@ final class StoryAttachmentTests: XCTestCase {
         sync.data = Data("{\"mediaRef\":\"\(attachmentId)\",\"contentType\":\"image/jpeg\"}".utf8)
         sync.authorDeviceID = alice.deviceId ?? "unknown"
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .modelSync
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.modelSync = sync
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await alice.sendRaw(to: bob.userId!, try msg.serializedData())
@@ -69,7 +68,7 @@ final class StoryAttachmentTests: XCTestCase {
 
         // Bob receives MODEL_SYNC
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 30, "Should be MODEL_SYNC")
+        XCTAssertEqual(received.type, "MODEL_SYNC", "Should be MODEL_SYNC")
         XCTAssertEqual(received.sourceUserId, alice.userId!)
 
         bob.disconnectWebSocket()

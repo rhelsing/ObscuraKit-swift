@@ -53,7 +53,7 @@ final class ORMOfflineTests: XCTestCase {
 
         // Bob should receive the queued MODEL_SYNC
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 30, "Should be MODEL_SYNC")
+        XCTAssertEqual(received.type, "MODEL_SYNC", "Should be MODEL_SYNC")
 
         // Bob's ORM should have the story
         let bobStory = bob.client.model("story")!
@@ -192,7 +192,7 @@ final class ORMOfflineTests: XCTestCase {
         try await bob.connectWebSocket()
         await rateLimitDelay()
         let fromAlice = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(fromAlice.type, 30)
+        XCTAssertEqual(fromAlice.type, "MODEL_SYNC")
 
         // Alice goes offline, Bob creates
         alice.disconnectWebSocket()
@@ -204,7 +204,7 @@ final class ORMOfflineTests: XCTestCase {
         try await alice.connectWebSocket()
         await rateLimitDelay()
         let fromBob = try await alice.waitForMessage(timeout: 10)
-        XCTAssertEqual(fromBob.type, 30)
+        XCTAssertEqual(fromBob.type, "MODEL_SYNC")
 
         // Both should have both stories
         let aliceStories = await alice.client.model("story")!.all()

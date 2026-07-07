@@ -32,9 +32,9 @@ final class MultiDeviceFanOutTests: XCTestCase {
         // Befriend — both bob devices should get FRIEND_REQUEST
         try await alice.befriend(bob1.userId!)
         let req1 = try await bob1.waitForMessage(timeout: 10)
-        XCTAssertEqual(req1.type, 2, "Bob1 should get FRIEND_REQUEST")
+        XCTAssertEqual(req1.type, "FRIEND_REQUEST", "Bob1 should get FRIEND_REQUEST")
         let req2 = try await bob2.waitForMessage(timeout: 10)
-        XCTAssertEqual(req2.type, 2, "Bob2 should get FRIEND_REQUEST")
+        XCTAssertEqual(req2.type, "FRIEND_REQUEST", "Bob2 should get FRIEND_REQUEST")
 
         try await bob1.acceptFriend(alice.userId!)
         _ = try await alice.waitForMessage(timeout: 10) // FRIEND_RESPONSE
@@ -42,11 +42,11 @@ final class MultiDeviceFanOutTests: XCTestCase {
         // Alice sends text — both Bob devices should receive
         try await alice.send(to: bob1.userId!, "Hello both Bobs!")
         let msg1 = try await bob1.waitForMessage(timeout: 10)
-        XCTAssertEqual(msg1.type, 8, "Bob1 should get TEXT")
+        XCTAssertEqual(msg1.type, "TEXT", "Bob1 should get TEXT")
         XCTAssertEqual(msg1.text, "Hello both Bobs!")
 
         let msg2 = try await bob2.waitForMessage(timeout: 10)
-        XCTAssertEqual(msg2.type, 8, "Bob2 should get TEXT")
+        XCTAssertEqual(msg2.type, "TEXT", "Bob2 should get TEXT")
         XCTAssertEqual(msg2.text, "Hello both Bobs!")
 
         // Verify message persisted in both Bob devices' stores

@@ -115,9 +115,8 @@ final class SyncBlobTests: XCTestCase {
 
         // Alice sends SYNC_BLOB to Bob (via encrypted message)
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .syncBlob
-        var blob = Obscura_V2_SyncBlob()
+        var msg = Obscura_Client_V1_ClientMessage()
+        var blob = Obscura_Client_V1_SyncBlob()
         blob.compressedData = exportData
         msg.syncBlob = blob
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -126,7 +125,7 @@ final class SyncBlobTests: XCTestCase {
 
         // Bob receives SYNC_BLOB
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 23, "Should be SYNC_BLOB (23)")
+        XCTAssertEqual(received.type, "SYNC_BLOB", "Should be SYNC_BLOB (23)")
         XCTAssertEqual(received.sourceUserId, alice.userId!)
 
         bob.disconnectWebSocket()

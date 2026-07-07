@@ -8,11 +8,17 @@
 // For information on using the generated types, please see the documentation:
 //   https://github.com/apple/swift-protobuf/
 
-// Obscura v2 Client Protocol
-// Unified client-to-client message format for all v2 operations.
-// This is the payload inside EncryptedMessage.content - server never sees it.
+// Obscura client content protocol (v1)
 //
-// See: docs/protocol-spec.md, docs/identity.md
+// The message format for client-to-client communication: the payload
+// carried inside EncryptedMessage.content, which the zero-knowledge server
+// never parses. This is a distinct *layer* from the server transport
+// (obscura/v1/obscura.proto), not a newer version of it — hence the
+// `obscura.client.v1` package (layer = client, version = v1). A future
+// breaking client-contract change becomes a genuine `obscura.client.v2`.
+//
+// Behavioral contract: see SPEC.md and the conformance/ vectors at the repo
+// root. The protos pin the message *shape*; SPEC.md + vectors pin behavior.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -26,13 +32,13 @@ import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
 /// Ephemeral signal kinds — transient real-time presence for a model context.
-nonisolated enum Obscura_V2_SignalKind: SwiftProtobuf.Enum, Swift.CaseIterable {
+enum Obscura_Client_V1_SignalKind: SwiftProtobuf.Enum, Swift.CaseIterable {
   typealias RawValue = Int
   case unspecified // = 0
   case typing // = 1
@@ -65,7 +71,7 @@ nonisolated enum Obscura_V2_SignalKind: SwiftProtobuf.Enum, Swift.CaseIterable {
   }
 
   // The compiler won't synthesize support with the UNRECOGNIZED case.
-  static let allCases: [Obscura_V2_SignalKind] = [
+  static let allCases: [Obscura_Client_V1_SignalKind] = [
     .unspecified,
     .typing,
     .stoppedTyping,
@@ -74,18 +80,18 @@ nonisolated enum Obscura_V2_SignalKind: SwiftProtobuf.Enum, Swift.CaseIterable {
 
 }
 
-nonisolated struct Obscura_V2_EncryptedMessage: Sendable {
+struct Obscura_Client_V1_EncryptedMessage: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var type: Obscura_V2_EncryptedMessage.TypeEnum = .unspecified
+  var type: Obscura_Client_V1_EncryptedMessage.TypeEnum = .unspecified
 
   var content: Data = Data()
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  nonisolated enum TypeEnum: SwiftProtobuf.Enum, Swift.CaseIterable {
+  enum TypeEnum: SwiftProtobuf.Enum, Swift.CaseIterable {
     typealias RawValue = Int
     case unspecified // = 0
     case prekeyMessage // = 1
@@ -115,7 +121,7 @@ nonisolated struct Obscura_V2_EncryptedMessage: Sendable {
     }
 
     // The compiler won't synthesize support with the UNRECOGNIZED case.
-    static let allCases: [Obscura_V2_EncryptedMessage.TypeEnum] = [
+    static let allCases: [Obscura_Client_V1_EncryptedMessage.TypeEnum] = [
       .unspecified,
       .prekeyMessage,
       .encryptedMessage,
@@ -126,337 +132,266 @@ nonisolated struct Obscura_V2_EncryptedMessage: Sendable {
   init() {}
 }
 
-nonisolated struct Obscura_V2_ClientMessage: @unchecked Sendable {
+struct Obscura_Client_V1_ClientMessage: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var type: Obscura_V2_ClientMessage.TypeEnum {
-    get {_storage._type}
-    set {_uniqueStorage()._type = newValue}
-  }
+  var timestamp: UInt64 = 0
 
-  var timestamp: UInt64 {
-    get {_storage._timestamp}
-    set {_uniqueStorage()._timestamp = newValue}
-  }
+  var payload: Obscura_Client_V1_ClientMessage.OneOf_Payload? = nil
 
   /// Base messaging
-  var text: String {
-    get {_storage._text}
-    set {_uniqueStorage()._text = newValue}
+  var text: Obscura_Client_V1_TextMessage {
+    get {
+      if case .text(let v)? = payload {return v}
+      return Obscura_Client_V1_TextMessage()
+    }
+    set {payload = .text(newValue)}
   }
 
-  var mimeType: String {
-    get {_storage._mimeType}
-    set {_uniqueStorage()._mimeType = newValue}
+  /// Friend request / response
+  var friendRequest: Obscura_Client_V1_FriendRequest {
+    get {
+      if case .friendRequest(let v)? = payload {return v}
+      return Obscura_Client_V1_FriendRequest()
+    }
+    set {payload = .friendRequest(newValue)}
   }
 
-  var displayDuration: UInt32 {
-    get {_storage._displayDuration}
-    set {_uniqueStorage()._displayDuration = newValue}
-  }
-
-  /// Attachment reference (replaces inline image_data)
-  var attachmentID: String {
-    get {_storage._attachmentID}
-    set {_uniqueStorage()._attachmentID = newValue}
-  }
-
-  var attachmentExpires: UInt64 {
-    get {_storage._attachmentExpires}
-    set {_uniqueStorage()._attachmentExpires = newValue}
-  }
-
-  /// Friend request/response
-  var username: String {
-    get {_storage._username}
-    set {_uniqueStorage()._username = newValue}
-  }
-
-  var accepted: Bool {
-    get {_storage._accepted}
-    set {_uniqueStorage()._accepted = newValue}
+  var friendResponse: Obscura_Client_V1_FriendResponse {
+    get {
+      if case .friendResponse(let v)? = payload {return v}
+      return Obscura_Client_V1_FriendResponse()
+    }
+    set {payload = .friendResponse(newValue)}
   }
 
   /// Session reset
-  var resetReason: String {
-    get {_storage._resetReason}
-    set {_uniqueStorage()._resetReason = newValue}
+  var sessionReset: Obscura_Client_V1_SessionReset {
+    get {
+      if case .sessionReset(let v)? = payload {return v}
+      return Obscura_Client_V1_SessionReset()
+    }
+    set {payload = .sessionReset(newValue)}
   }
 
-  /// Device management payloads
-  var deviceLinkApproval: Obscura_V2_DeviceLinkApproval {
-    get {_storage._deviceLinkApproval ?? Obscura_V2_DeviceLinkApproval()}
-    set {_uniqueStorage()._deviceLinkApproval = newValue}
-  }
-  /// Returns true if `deviceLinkApproval` has been explicitly set.
-  var hasDeviceLinkApproval: Bool {_storage._deviceLinkApproval != nil}
-  /// Clears the value of `deviceLinkApproval`. Subsequent reads from it will return its default value.
-  mutating func clearDeviceLinkApproval() {_uniqueStorage()._deviceLinkApproval = nil}
-
-  var deviceAnnounce: Obscura_V2_DeviceAnnounce {
-    get {_storage._deviceAnnounce ?? Obscura_V2_DeviceAnnounce()}
-    set {_uniqueStorage()._deviceAnnounce = newValue}
-  }
-  /// Returns true if `deviceAnnounce` has been explicitly set.
-  var hasDeviceAnnounce: Bool {_storage._deviceAnnounce != nil}
-  /// Clears the value of `deviceAnnounce`. Subsequent reads from it will return its default value.
-  mutating func clearDeviceAnnounce() {_uniqueStorage()._deviceAnnounce = nil}
-
-  var deviceRecoveryAnnounce: Obscura_V2_DeviceRecoveryAnnounce {
-    get {_storage._deviceRecoveryAnnounce ?? Obscura_V2_DeviceRecoveryAnnounce()}
-    set {_uniqueStorage()._deviceRecoveryAnnounce = newValue}
-  }
-  /// Returns true if `deviceRecoveryAnnounce` has been explicitly set.
-  var hasDeviceRecoveryAnnounce: Bool {_storage._deviceRecoveryAnnounce != nil}
-  /// Clears the value of `deviceRecoveryAnnounce`. Subsequent reads from it will return its default value.
-  mutating func clearDeviceRecoveryAnnounce() {_uniqueStorage()._deviceRecoveryAnnounce = nil}
-
-  /// Sync payloads (for new device onboarding)
-  var historyChunk: Obscura_V2_HistoryChunk {
-    get {_storage._historyChunk ?? Obscura_V2_HistoryChunk()}
-    set {_uniqueStorage()._historyChunk = newValue}
-  }
-  /// Returns true if `historyChunk` has been explicitly set.
-  var hasHistoryChunk: Bool {_storage._historyChunk != nil}
-  /// Clears the value of `historyChunk`. Subsequent reads from it will return its default value.
-  mutating func clearHistoryChunk() {_uniqueStorage()._historyChunk = nil}
-
-  var settingsData: Data {
-    get {_storage._settingsData}
-    set {_uniqueStorage()._settingsData = newValue}
+  /// Device management
+  var deviceLinkApproval: Obscura_Client_V1_DeviceLinkApproval {
+    get {
+      if case .deviceLinkApproval(let v)? = payload {return v}
+      return Obscura_Client_V1_DeviceLinkApproval()
+    }
+    set {payload = .deviceLinkApproval(newValue)}
   }
 
-  var readMessageID: String {
-    get {_storage._readMessageID}
-    set {_uniqueStorage()._readMessageID = newValue}
+  var deviceAnnounce: Obscura_Client_V1_DeviceAnnounce {
+    get {
+      if case .deviceAnnounce(let v)? = payload {return v}
+      return Obscura_Client_V1_DeviceAnnounce()
+    }
+    set {payload = .deviceAnnounce(newValue)}
   }
 
-  var syncBlob: Obscura_V2_SyncBlob {
-    get {_storage._syncBlob ?? Obscura_V2_SyncBlob()}
-    set {_uniqueStorage()._syncBlob = newValue}
+  var deviceRecoveryAnnounce: Obscura_Client_V1_DeviceRecoveryAnnounce {
+    get {
+      if case .deviceRecoveryAnnounce(let v)? = payload {return v}
+      return Obscura_Client_V1_DeviceRecoveryAnnounce()
+    }
+    set {payload = .deviceRecoveryAnnounce(newValue)}
   }
-  /// Returns true if `syncBlob` has been explicitly set.
-  var hasSyncBlob: Bool {_storage._syncBlob != nil}
-  /// Clears the value of `syncBlob`. Subsequent reads from it will return its default value.
-  mutating func clearSyncBlob() {_uniqueStorage()._syncBlob = nil}
 
-  var sentSync: Obscura_V2_SentSync {
-    get {_storage._sentSync ?? Obscura_V2_SentSync()}
-    set {_uniqueStorage()._sentSync = newValue}
+  /// Sync (new device onboarding)
+  var historyChunk: Obscura_Client_V1_HistoryChunk {
+    get {
+      if case .historyChunk(let v)? = payload {return v}
+      return Obscura_Client_V1_HistoryChunk()
+    }
+    set {payload = .historyChunk(newValue)}
   }
-  /// Returns true if `sentSync` has been explicitly set.
-  var hasSentSync: Bool {_storage._sentSync != nil}
-  /// Clears the value of `sentSync`. Subsequent reads from it will return its default value.
-  mutating func clearSentSync() {_uniqueStorage()._sentSync = nil}
 
-  /// Attachment reference (E2E encrypted key sharing)
-  var contentReference: Obscura_V2_ContentReference {
-    get {_storage._contentReference ?? Obscura_V2_ContentReference()}
-    set {_uniqueStorage()._contentReference = newValue}
+  var settingsSync: Obscura_Client_V1_SettingsSync {
+    get {
+      if case .settingsSync(let v)? = payload {return v}
+      return Obscura_Client_V1_SettingsSync()
+    }
+    set {payload = .settingsSync(newValue)}
   }
-  /// Returns true if `contentReference` has been explicitly set.
-  var hasContentReference: Bool {_storage._contentReference != nil}
-  /// Clears the value of `contentReference`. Subsequent reads from it will return its default value.
-  mutating func clearContentReference() {_uniqueStorage()._contentReference = nil}
 
-  /// Chunked attachment reference (for large files)
-  var chunkedContentReference: Obscura_V2_ChunkedContentReference {
-    get {_storage._chunkedContentReference ?? Obscura_V2_ChunkedContentReference()}
-    set {_uniqueStorage()._chunkedContentReference = newValue}
+  var readSync: Obscura_Client_V1_ReadSync {
+    get {
+      if case .readSync(let v)? = payload {return v}
+      return Obscura_Client_V1_ReadSync()
+    }
+    set {payload = .readSync(newValue)}
   }
-  /// Returns true if `chunkedContentReference` has been explicitly set.
-  var hasChunkedContentReference: Bool {_storage._chunkedContentReference != nil}
-  /// Clears the value of `chunkedContentReference`. Subsequent reads from it will return its default value.
-  mutating func clearChunkedContentReference() {_uniqueStorage()._chunkedContentReference = nil}
 
-  /// ORM Layer payload
-  var modelSync: Obscura_V2_ModelSync {
-    get {_storage._modelSync ?? Obscura_V2_ModelSync()}
-    set {_uniqueStorage()._modelSync = newValue}
+  var syncBlob: Obscura_Client_V1_SyncBlob {
+    get {
+      if case .syncBlob(let v)? = payload {return v}
+      return Obscura_Client_V1_SyncBlob()
+    }
+    set {payload = .syncBlob(newValue)}
   }
-  /// Returns true if `modelSync` has been explicitly set.
-  var hasModelSync: Bool {_storage._modelSync != nil}
-  /// Clears the value of `modelSync`. Subsequent reads from it will return its default value.
-  mutating func clearModelSync() {_uniqueStorage()._modelSync = nil}
 
-  /// Ephemeral signal payload (typing, read receipts, presence)
-  var modelSignal: Obscura_V2_ModelSignal {
-    get {_storage._modelSignal ?? Obscura_V2_ModelSignal()}
-    set {_uniqueStorage()._modelSignal = newValue}
+  var sentSync: Obscura_Client_V1_SentSync {
+    get {
+      if case .sentSync(let v)? = payload {return v}
+      return Obscura_Client_V1_SentSync()
+    }
+    set {payload = .sentSync(newValue)}
   }
-  /// Returns true if `modelSignal` has been explicitly set.
-  var hasModelSignal: Bool {_storage._modelSignal != nil}
-  /// Clears the value of `modelSignal`. Subsequent reads from it will return its default value.
-  mutating func clearModelSignal() {_uniqueStorage()._modelSignal = nil}
 
-  /// Friend sync payload
-  var friendSync: Obscura_V2_FriendSync {
-    get {_storage._friendSync ?? Obscura_V2_FriendSync()}
-    set {_uniqueStorage()._friendSync = newValue}
+  var contentReference: Obscura_Client_V1_ContentReference {
+    get {
+      if case .contentReference(let v)? = payload {return v}
+      return Obscura_Client_V1_ContentReference()
+    }
+    set {payload = .contentReference(newValue)}
   }
-  /// Returns true if `friendSync` has been explicitly set.
-  var hasFriendSync: Bool {_storage._friendSync != nil}
-  /// Clears the value of `friendSync`. Subsequent reads from it will return its default value.
-  mutating func clearFriendSync() {_uniqueStorage()._friendSync = nil}
+
+  var chunkedContentReference: Obscura_Client_V1_ChunkedContentReference {
+    get {
+      if case .chunkedContentReference(let v)? = payload {return v}
+      return Obscura_Client_V1_ChunkedContentReference()
+    }
+    set {payload = .chunkedContentReference(newValue)}
+  }
+
+  var syncRequest: Obscura_Client_V1_SyncRequest {
+    get {
+      if case .syncRequest(let v)? = payload {return v}
+      return Obscura_Client_V1_SyncRequest()
+    }
+    set {payload = .syncRequest(newValue)}
+  }
+
+  /// ORM layer (Level 3)
+  var modelSync: Obscura_Client_V1_ModelSync {
+    get {
+      if case .modelSync(let v)? = payload {return v}
+      return Obscura_Client_V1_ModelSync()
+    }
+    set {payload = .modelSync(newValue)}
+  }
+
+  var friendSync: Obscura_Client_V1_FriendSync {
+    get {
+      if case .friendSync(let v)? = payload {return v}
+      return Obscura_Client_V1_FriendSync()
+    }
+    set {payload = .friendSync(newValue)}
+  }
+
+  var modelSignal: Obscura_Client_V1_ModelSignal {
+    get {
+      if case .modelSignal(let v)? = payload {return v}
+      return Obscura_Client_V1_ModelSignal()
+    }
+    set {payload = .modelSignal(newValue)}
+  }
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  nonisolated enum TypeEnum: SwiftProtobuf.Enum, Swift.CaseIterable {
-    typealias RawValue = Int
-    case unspecified // = 0
-
-    /// Base messaging (0-9)
-    case image // = 1
-    case friendRequest // = 2
-    case friendResponse // = 3
-    case sessionReset // = 4
-    case video // = 5
-    case audio // = 6
-
-    /// Generic file attachment
-    case file // = 7
-
-    /// Was 0; renumbered so 0 can be TYPE_UNSPECIFIED
-    case text // = 8
-
-    /// Device management (10-19)
-    /// Note: 10 intentionally skipped - link "request" is out-of-band (QR/link code)
-    case deviceLinkApproval // = 11
-    case deviceAnnounce // = 12
-
-    /// Account recovery - replaces all old devices
-    case deviceRecoveryAnnounce // = 13
-
-    /// Sync (20-29)
-    case historyChunk // = 20
-    case settingsSync // = 21
-    case readSync // = 22
-
-    /// Full state transfer (gzipped JSON)
-    case syncBlob // = 23
-
-    /// Notify own devices of sent message
-    case sentSync // = 24
-
-    /// E2E encrypted attachment key sharing
-    case contentReference // = 25
-
-    /// Request full sync from another device
-    case syncRequest // = 26
-
-    /// Sync friend changes to own devices
-    case friendSync // = 27
-
-    /// Large file (chunked attachment)
-    case chunkedContentReference // = 28
-
-    /// ORM Layer (30-39)
-    case modelSync // = 30
-
-    /// Ephemeral signal (typing, read receipt) — not persisted
-    case modelSignal // = 31
-    case UNRECOGNIZED(Int)
-
-    init() {
-      self = .unspecified
-    }
-
-    init?(rawValue: Int) {
-      switch rawValue {
-      case 0: self = .unspecified
-      case 1: self = .image
-      case 2: self = .friendRequest
-      case 3: self = .friendResponse
-      case 4: self = .sessionReset
-      case 5: self = .video
-      case 6: self = .audio
-      case 7: self = .file
-      case 8: self = .text
-      case 11: self = .deviceLinkApproval
-      case 12: self = .deviceAnnounce
-      case 13: self = .deviceRecoveryAnnounce
-      case 20: self = .historyChunk
-      case 21: self = .settingsSync
-      case 22: self = .readSync
-      case 23: self = .syncBlob
-      case 24: self = .sentSync
-      case 25: self = .contentReference
-      case 26: self = .syncRequest
-      case 27: self = .friendSync
-      case 28: self = .chunkedContentReference
-      case 30: self = .modelSync
-      case 31: self = .modelSignal
-      default: self = .UNRECOGNIZED(rawValue)
-      }
-    }
-
-    var rawValue: Int {
-      switch self {
-      case .unspecified: return 0
-      case .image: return 1
-      case .friendRequest: return 2
-      case .friendResponse: return 3
-      case .sessionReset: return 4
-      case .video: return 5
-      case .audio: return 6
-      case .file: return 7
-      case .text: return 8
-      case .deviceLinkApproval: return 11
-      case .deviceAnnounce: return 12
-      case .deviceRecoveryAnnounce: return 13
-      case .historyChunk: return 20
-      case .settingsSync: return 21
-      case .readSync: return 22
-      case .syncBlob: return 23
-      case .sentSync: return 24
-      case .contentReference: return 25
-      case .syncRequest: return 26
-      case .friendSync: return 27
-      case .chunkedContentReference: return 28
-      case .modelSync: return 30
-      case .modelSignal: return 31
-      case .UNRECOGNIZED(let i): return i
-      }
-    }
-
-    // The compiler won't synthesize support with the UNRECOGNIZED case.
-    static let allCases: [Obscura_V2_ClientMessage.TypeEnum] = [
-      .unspecified,
-      .image,
-      .friendRequest,
-      .friendResponse,
-      .sessionReset,
-      .video,
-      .audio,
-      .file,
-      .text,
-      .deviceLinkApproval,
-      .deviceAnnounce,
-      .deviceRecoveryAnnounce,
-      .historyChunk,
-      .settingsSync,
-      .readSync,
-      .syncBlob,
-      .sentSync,
-      .contentReference,
-      .syncRequest,
-      .friendSync,
-      .chunkedContentReference,
-      .modelSync,
-      .modelSignal,
-    ]
+  enum OneOf_Payload: Equatable, Sendable {
+    /// Base messaging
+    case text(Obscura_Client_V1_TextMessage)
+    /// Friend request / response
+    case friendRequest(Obscura_Client_V1_FriendRequest)
+    case friendResponse(Obscura_Client_V1_FriendResponse)
+    /// Session reset
+    case sessionReset(Obscura_Client_V1_SessionReset)
+    /// Device management
+    case deviceLinkApproval(Obscura_Client_V1_DeviceLinkApproval)
+    case deviceAnnounce(Obscura_Client_V1_DeviceAnnounce)
+    case deviceRecoveryAnnounce(Obscura_Client_V1_DeviceRecoveryAnnounce)
+    /// Sync (new device onboarding)
+    case historyChunk(Obscura_Client_V1_HistoryChunk)
+    case settingsSync(Obscura_Client_V1_SettingsSync)
+    case readSync(Obscura_Client_V1_ReadSync)
+    case syncBlob(Obscura_Client_V1_SyncBlob)
+    case sentSync(Obscura_Client_V1_SentSync)
+    case contentReference(Obscura_Client_V1_ContentReference)
+    case chunkedContentReference(Obscura_Client_V1_ChunkedContentReference)
+    case syncRequest(Obscura_Client_V1_SyncRequest)
+    /// ORM layer (Level 3)
+    case modelSync(Obscura_Client_V1_ModelSync)
+    case friendSync(Obscura_Client_V1_FriendSync)
+    case modelSignal(Obscura_Client_V1_ModelSignal)
 
   }
 
   init() {}
+}
 
-  fileprivate var _storage = _StorageClass.defaultInstance
+/// A human-authored message: plain text, with an optional media caption hint
+/// and a view-once display duration. Real media/attachments travel as a
+/// ContentReference or ChunkedContentReference; large model state travels as a
+/// ModelSync.
+struct Obscura_Client_V1_TextMessage: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Message body
+  var text: String = String()
+
+  /// Optional media-kind hint for an inline caption
+  var mimeType: String = String()
+
+  /// View-once seconds; 0 = persistent
+  var displayDuration: UInt32 = 0
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Ask to become friends with `username`.
+struct Obscura_Client_V1_FriendRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var username: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Answer a friend request.
+struct Obscura_Client_V1_FriendResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var username: String = String()
+
+  /// true = accepted, false = declined
+  var accepted: Bool = false
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Tear down the Signal session with the peer (e.g. after a key change).
+struct Obscura_Client_V1_SessionReset: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Human-readable reason (diagnostic only)
+  var reason: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
 }
 
 /// Information about a single device
-nonisolated struct Obscura_V2_DeviceInfo: Sendable {
+struct Obscura_Client_V1_DeviceInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -478,9 +413,9 @@ nonisolated struct Obscura_V2_DeviceInfo: Sendable {
   init() {}
 }
 
-/// Sent from existing device to new device to complete linking
-/// Per identity.md: transfers P2P identity, device list, and optionally data exports
-nonisolated struct Obscura_V2_DeviceLinkApproval: Sendable {
+/// Sent from existing device to new device to complete linking.
+/// Transfers the P2P identity, device list, and optionally data exports.
+struct Obscura_Client_V1_DeviceLinkApproval: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -498,7 +433,7 @@ nonisolated struct Obscura_V2_DeviceLinkApproval: Sendable {
   var challengeResponse: Data = Data()
 
   /// Complete list of linked devices
-  var ownDevices: [Obscura_V2_DeviceInfo] = []
+  var ownDevices: [Obscura_Client_V1_DeviceInfo] = []
 
   /// Serialized friend list (optional)
   var friendsExport: Data = Data()
@@ -514,15 +449,15 @@ nonisolated struct Obscura_V2_DeviceLinkApproval: Sendable {
   init() {}
 }
 
-/// Broadcast to all friends when device list changes
-/// Per identity.md: LWW semantics - latest timestamp wins
-nonisolated struct Obscura_V2_DeviceAnnounce: Sendable {
+/// Broadcast to all friends when device list changes.
+/// LWW semantics - latest timestamp wins.
+struct Obscura_Client_V1_DeviceAnnounce: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Current complete device list (replaces old list)
-  var devices: [Obscura_V2_DeviceInfo] = []
+  var devices: [Obscura_Client_V1_DeviceInfo] = []
 
   /// For LWW merge (latest wins)
   var timestamp: UInt64 = 0
@@ -541,16 +476,16 @@ nonisolated struct Obscura_V2_DeviceAnnounce: Sendable {
   init() {}
 }
 
-/// Account recovery announcement
-/// Sent to friends when recovering from backup
-/// Signed with recovery key to prove legitimacy
-nonisolated struct Obscura_V2_DeviceRecoveryAnnounce: Sendable {
+/// Account recovery announcement.
+/// Sent to friends when recovering from backup; signed with recovery key to
+/// prove legitimacy.
+struct Obscura_Client_V1_DeviceRecoveryAnnounce: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// New device list (just the recovery device)
-  var newDevices: [Obscura_V2_DeviceInfo] = []
+  var newDevices: [Obscura_Client_V1_DeviceInfo] = []
 
   var timestamp: UInt64 = 0
 
@@ -569,12 +504,12 @@ nonisolated struct Obscura_V2_DeviceRecoveryAnnounce: Sendable {
 }
 
 /// Chunk of history sent to new device
-nonisolated struct Obscura_V2_HistoryChunk: Sendable {
+struct Obscura_Client_V1_HistoryChunk: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var entries: [Obscura_V2_MessageEntry] = []
+  var entries: [Obscura_Client_V1_MessageEntry] = []
 
   /// True if this is the last chunk
   var isFinal: Bool = false
@@ -585,7 +520,7 @@ nonisolated struct Obscura_V2_HistoryChunk: Sendable {
 }
 
 /// Single message entry for history sync
-nonisolated struct Obscura_V2_MessageEntry: Sendable {
+struct Obscura_Client_V1_MessageEntry: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -610,9 +545,35 @@ nonisolated struct Obscura_V2_MessageEntry: Sendable {
   init() {}
 }
 
-/// Full state transfer blob (gzipped JSON)
-/// Sent from existing device to new device after link approval
-nonisolated struct Obscura_V2_SyncBlob: Sendable {
+/// Opaque serialized settings blob, synced to the account's own devices.
+struct Obscura_Client_V1_SettingsSync: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var settingsData: Data = Data()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Mark a message read, synced to the account's own devices.
+struct Obscura_Client_V1_ReadSync: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var readMessageID: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Full state transfer blob (gzipped JSON).
+/// Sent from existing device to new device after link approval.
+struct Obscura_Client_V1_SyncBlob: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -625,15 +586,25 @@ nonisolated struct Obscura_V2_SyncBlob: Sendable {
   init() {}
 }
 
-/// Notify own devices of sent message (for incremental sync)
-/// Sent to all own devices when a message is sent to a friend
-nonisolated struct Obscura_V2_SentSync: Sendable {
+/// Request a full state push from another own device.
+struct Obscura_Client_V1_SyncRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Friend username (who the message was sent to)
-  var conversationID: String = String()
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Notify own devices of a message just sent to a friend (for incremental sync).
+struct Obscura_Client_V1_SentSync: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// The friend the message was sent to (own-device echo)
+  var recipientUsername: String = String()
 
   /// Unique message ID
   var messageID: String = String()
@@ -649,9 +620,9 @@ nonisolated struct Obscura_V2_SentSync: Sendable {
   init() {}
 }
 
-/// Sync friend list changes to own devices
-/// Sent to all own devices when friend is added or removed
-nonisolated struct Obscura_V2_FriendSync: Sendable {
+/// Sync friend list changes to own devices.
+/// Sent to all own devices when a friend is added or removed.
+struct Obscura_Client_V1_FriendSync: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -666,7 +637,7 @@ nonisolated struct Obscura_V2_FriendSync: Sendable {
   var status: String = String()
 
   /// Friend's devices (for fan-out)
-  var devices: [Obscura_V2_DeviceInfo] = []
+  var devices: [Obscura_Client_V1_DeviceInfo] = []
 
   /// When the change occurred
   var timestamp: UInt64 = 0
@@ -676,11 +647,10 @@ nonisolated struct Obscura_V2_FriendSync: Sendable {
   init() {}
 }
 
-/// Reference to an encrypted attachment
-/// The blob is encrypted with AES-256-GCM before upload.
-/// This message carries the key to recipients via Signal encryption.
-/// Upload once, share key to many.
-nonisolated struct Obscura_V2_ContentReference: Sendable {
+/// Reference to an encrypted attachment.
+/// The blob is encrypted with AES-256-GCM before upload. This message carries
+/// the key to recipients via Signal encryption. Upload once, share key to many.
+struct Obscura_Client_V1_ContentReference: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -711,9 +681,9 @@ nonisolated struct Obscura_V2_ContentReference: Sendable {
   init() {}
 }
 
-/// Reference to a chunked large file (>950KB, up to 100MB)
-/// Each chunk is encrypted separately with its own key
-nonisolated struct Obscura_V2_ChunkedContentReference: Sendable {
+/// Reference to a chunked large file (>950KB, up to 100MB).
+/// Each chunk is encrypted separately with its own key.
+struct Obscura_Client_V1_ChunkedContentReference: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -722,7 +692,7 @@ nonisolated struct Obscura_V2_ChunkedContentReference: Sendable {
   var fileID: String = String()
 
   /// Ordered list of chunk references
-  var chunks: [Obscura_V2_ChunkInfo] = []
+  var chunks: [Obscura_Client_V1_ChunkInfo] = []
 
   /// SHA-256 of reassembled plaintext
   var completeHash: Data = Data()
@@ -742,7 +712,7 @@ nonisolated struct Obscura_V2_ChunkedContentReference: Sendable {
 }
 
 /// Single chunk within a chunked file
-nonisolated struct Obscura_V2_ChunkInfo: Sendable {
+struct Obscura_Client_V1_ChunkInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -770,10 +740,10 @@ nonisolated struct Obscura_V2_ChunkInfo: Sendable {
   init() {}
 }
 
-/// CRDT model sync operation
-/// Sent between devices to synchronize model state (stories, streaks, etc.)
-/// Uses existing fan-out + self-sync patterns from Level 2
-nonisolated struct Obscura_V2_ModelSync: Sendable {
+/// CRDT model sync operation.
+/// Sent between devices to synchronize model state (stories, streaks, etc.).
+/// Uses the existing fan-out + self-sync patterns from Level 2.
+struct Obscura_Client_V1_ModelSync: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -785,7 +755,7 @@ nonisolated struct Obscura_V2_ModelSync: Sendable {
   var id: String = String()
 
   /// Operation type
-  var op: Obscura_V2_ModelSync.Op = .unspecified
+  var op: Obscura_Client_V1_ModelSync.Op = .unspecified
 
   /// Lamport timestamp for CRDT ordering
   var timestamp: UInt64 = 0
@@ -793,15 +763,12 @@ nonisolated struct Obscura_V2_ModelSync: Sendable {
   /// JSON-encoded model data
   var data: Data = Data()
 
-  /// sign(model + id + data + timestamp, deviceKey)
-  var signature: Data = Data()
-
   /// Which device created this entry
   var authorDeviceID: String = String()
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  nonisolated enum Op: SwiftProtobuf.Enum, Swift.CaseIterable {
+  enum Op: SwiftProtobuf.Enum, Swift.CaseIterable {
     typealias RawValue = Int
     case unspecified // = 0
 
@@ -840,7 +807,7 @@ nonisolated struct Obscura_V2_ModelSync: Sendable {
     }
 
     // The compiler won't synthesize support with the UNRECOGNIZED case.
-    static let allCases: [Obscura_V2_ModelSync.Op] = [
+    static let allCases: [Obscura_Client_V1_ModelSync.Op] = [
       .unspecified,
       .update,
       .delete,
@@ -856,7 +823,7 @@ nonisolated struct Obscura_V2_ModelSync: Sendable {
 /// Not persisted, not CRDT-merged; in-memory only, auto-expires. The sender's
 /// identity and the timestamp come from the authenticated ClientMessage envelope,
 /// so they are intentionally NOT duplicated here.
-nonisolated struct Obscura_V2_ModelSignal: Sendable {
+struct Obscura_Client_V1_ModelSignal: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -865,7 +832,7 @@ nonisolated struct Obscura_V2_ModelSignal: Sendable {
   var model: String = String()
 
   /// Which transient state
-  var kind: Obscura_V2_SignalKind = .unspecified
+  var kind: Obscura_Client_V1_SignalKind = .unspecified
 
   /// Context the signal applies to (e.g. the conversation id)
   var contextID: String = String()
@@ -877,13 +844,13 @@ nonisolated struct Obscura_V2_ModelSignal: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate nonisolated let _protobuf_package = "obscura.v2"
+fileprivate let _protobuf_package = "obscura.client.v1"
 
-nonisolated extension Obscura_V2_SignalKind: SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_SignalKind: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SIGNAL_KIND_UNSPECIFIED\0\u{1}SIGNAL_KIND_TYPING\0\u{1}SIGNAL_KIND_STOPPED_TYPING\0\u{1}SIGNAL_KIND_READ\0")
 }
 
-nonisolated extension Obscura_V2_EncryptedMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_EncryptedMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".EncryptedMessage"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}type\0\u{1}content\0")
 
@@ -910,7 +877,7 @@ nonisolated extension Obscura_V2_EncryptedMessage: SwiftProtobuf.Message, SwiftP
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_EncryptedMessage, rhs: Obscura_V2_EncryptedMessage) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_EncryptedMessage, rhs: Obscura_Client_V1_EncryptedMessage) -> Bool {
     if lhs.type != rhs.type {return false}
     if lhs.content != rhs.content {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -918,239 +885,490 @@ nonisolated extension Obscura_V2_EncryptedMessage: SwiftProtobuf.Message, SwiftP
   }
 }
 
-nonisolated extension Obscura_V2_EncryptedMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_EncryptedMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TYPE_UNSPECIFIED\0\u{1}TYPE_PREKEY_MESSAGE\0\u{1}TYPE_ENCRYPTED_MESSAGE\0")
 }
 
-nonisolated extension Obscura_V2_ClientMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ClientMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ClientMessage"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}type\0\u{1}timestamp\0\u{2}\u{8}text\0\u{3}mime_type\0\u{3}display_duration\0\u{4}\u{3}attachment_id\0\u{3}attachment_expires\0\u{2}\u{4}username\0\u{1}accepted\0\u{4}\u{4}reset_reason\0\u{4}\u{5}device_link_approval\0\u{3}device_announce\0\u{3}device_recovery_announce\0\u{4}\u{8}history_chunk\0\u{3}settings_data\0\u{3}read_message_id\0\u{3}sync_blob\0\u{3}sent_sync\0\u{3}content_reference\0\u{3}chunked_content_reference\0\u{4}\u{4}model_sync\0\u{3}friend_sync\0\u{3}model_signal\0")
-
-  fileprivate class _StorageClass {
-    var _type: Obscura_V2_ClientMessage.TypeEnum = .unspecified
-    var _timestamp: UInt64 = 0
-    var _text: String = String()
-    var _mimeType: String = String()
-    var _displayDuration: UInt32 = 0
-    var _attachmentID: String = String()
-    var _attachmentExpires: UInt64 = 0
-    var _username: String = String()
-    var _accepted: Bool = false
-    var _resetReason: String = String()
-    var _deviceLinkApproval: Obscura_V2_DeviceLinkApproval? = nil
-    var _deviceAnnounce: Obscura_V2_DeviceAnnounce? = nil
-    var _deviceRecoveryAnnounce: Obscura_V2_DeviceRecoveryAnnounce? = nil
-    var _historyChunk: Obscura_V2_HistoryChunk? = nil
-    var _settingsData: Data = Data()
-    var _readMessageID: String = String()
-    var _syncBlob: Obscura_V2_SyncBlob? = nil
-    var _sentSync: Obscura_V2_SentSync? = nil
-    var _contentReference: Obscura_V2_ContentReference? = nil
-    var _chunkedContentReference: Obscura_V2_ChunkedContentReference? = nil
-    var _modelSync: Obscura_V2_ModelSync? = nil
-    var _modelSignal: Obscura_V2_ModelSignal? = nil
-    var _friendSync: Obscura_V2_FriendSync? = nil
-
-      // This property is used as the initial default value for new instances of the type.
-      // The type itself is protecting the reference to its storage via CoW semantics.
-      // This will force a copy to be made of this reference when the first mutation occurs;
-      // hence, it is safe to mark this as `nonisolated(unsafe)`.
-      static nonisolated(unsafe) let defaultInstance = _StorageClass()
-
-    private init() {}
-
-    init(copying source: _StorageClass) {
-      _type = source._type
-      _timestamp = source._timestamp
-      _text = source._text
-      _mimeType = source._mimeType
-      _displayDuration = source._displayDuration
-      _attachmentID = source._attachmentID
-      _attachmentExpires = source._attachmentExpires
-      _username = source._username
-      _accepted = source._accepted
-      _resetReason = source._resetReason
-      _deviceLinkApproval = source._deviceLinkApproval
-      _deviceAnnounce = source._deviceAnnounce
-      _deviceRecoveryAnnounce = source._deviceRecoveryAnnounce
-      _historyChunk = source._historyChunk
-      _settingsData = source._settingsData
-      _readMessageID = source._readMessageID
-      _syncBlob = source._syncBlob
-      _sentSync = source._sentSync
-      _contentReference = source._contentReference
-      _chunkedContentReference = source._chunkedContentReference
-      _modelSync = source._modelSync
-      _modelSignal = source._modelSignal
-      _friendSync = source._friendSync
-    }
-  }
-
-  fileprivate mutating func _uniqueStorage() -> _StorageClass {
-    if !isKnownUniquelyReferenced(&_storage) {
-      _storage = _StorageClass(copying: _storage)
-    }
-    return _storage
-  }
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\u{2}timestamp\0\u{2}\u{8}text\0\u{4}\u{a}friend_request\0\u{3}friend_response\0\u{4}\u{4}session_reset\0\u{4}\u{5}device_link_approval\0\u{3}device_announce\0\u{3}device_recovery_announce\0\u{4}\u{8}history_chunk\0\u{3}settings_sync\0\u{3}read_sync\0\u{3}sync_blob\0\u{3}sent_sync\0\u{3}content_reference\0\u{3}chunked_content_reference\0\u{3}sync_request\0\u{4}\u{3}model_sync\0\u{3}friend_sync\0\u{3}model_signal\0\u{b}type\0\u{c}\u{1}\u{1}\u{c}\u{b}\u{1}\u{c}\u{c}\u{1}\u{c}\u{f}\u{1}\u{c}\u{10}\u{1}")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    _ = _uniqueStorage()
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      while let fieldNumber = try decoder.nextFieldNumber() {
-        // The use of inline closures is to circumvent an issue where the compiler
-        // allocates stack space for every case branch when no optimizations are
-        // enabled. https://github.com/apple/swift-protobuf/issues/1034
-        switch fieldNumber {
-        case 1: try { try decoder.decodeSingularEnumField(value: &_storage._type) }()
-        case 2: try { try decoder.decodeSingularUInt64Field(value: &_storage._timestamp) }()
-        case 10: try { try decoder.decodeSingularStringField(value: &_storage._text) }()
-        case 11: try { try decoder.decodeSingularStringField(value: &_storage._mimeType) }()
-        case 12: try { try decoder.decodeSingularUInt32Field(value: &_storage._displayDuration) }()
-        case 15: try { try decoder.decodeSingularStringField(value: &_storage._attachmentID) }()
-        case 16: try { try decoder.decodeSingularUInt64Field(value: &_storage._attachmentExpires) }()
-        case 20: try { try decoder.decodeSingularStringField(value: &_storage._username) }()
-        case 21: try { try decoder.decodeSingularBoolField(value: &_storage._accepted) }()
-        case 25: try { try decoder.decodeSingularStringField(value: &_storage._resetReason) }()
-        case 30: try { try decoder.decodeSingularMessageField(value: &_storage._deviceLinkApproval) }()
-        case 31: try { try decoder.decodeSingularMessageField(value: &_storage._deviceAnnounce) }()
-        case 32: try { try decoder.decodeSingularMessageField(value: &_storage._deviceRecoveryAnnounce) }()
-        case 40: try { try decoder.decodeSingularMessageField(value: &_storage._historyChunk) }()
-        case 41: try { try decoder.decodeSingularBytesField(value: &_storage._settingsData) }()
-        case 42: try { try decoder.decodeSingularStringField(value: &_storage._readMessageID) }()
-        case 43: try { try decoder.decodeSingularMessageField(value: &_storage._syncBlob) }()
-        case 44: try { try decoder.decodeSingularMessageField(value: &_storage._sentSync) }()
-        case 45: try { try decoder.decodeSingularMessageField(value: &_storage._contentReference) }()
-        case 46: try { try decoder.decodeSingularMessageField(value: &_storage._chunkedContentReference) }()
-        case 50: try { try decoder.decodeSingularMessageField(value: &_storage._modelSync) }()
-        case 51: try { try decoder.decodeSingularMessageField(value: &_storage._friendSync) }()
-        case 52: try { try decoder.decodeSingularMessageField(value: &_storage._modelSignal) }()
-        default: break
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 2: try { try decoder.decodeSingularUInt64Field(value: &self.timestamp) }()
+      case 10: try {
+        var v: Obscura_Client_V1_TextMessage?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .text(let m) = current {v = m}
         }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .text(v)
+        }
+      }()
+      case 20: try {
+        var v: Obscura_Client_V1_FriendRequest?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .friendRequest(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .friendRequest(v)
+        }
+      }()
+      case 21: try {
+        var v: Obscura_Client_V1_FriendResponse?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .friendResponse(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .friendResponse(v)
+        }
+      }()
+      case 25: try {
+        var v: Obscura_Client_V1_SessionReset?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .sessionReset(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .sessionReset(v)
+        }
+      }()
+      case 30: try {
+        var v: Obscura_Client_V1_DeviceLinkApproval?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .deviceLinkApproval(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .deviceLinkApproval(v)
+        }
+      }()
+      case 31: try {
+        var v: Obscura_Client_V1_DeviceAnnounce?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .deviceAnnounce(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .deviceAnnounce(v)
+        }
+      }()
+      case 32: try {
+        var v: Obscura_Client_V1_DeviceRecoveryAnnounce?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .deviceRecoveryAnnounce(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .deviceRecoveryAnnounce(v)
+        }
+      }()
+      case 40: try {
+        var v: Obscura_Client_V1_HistoryChunk?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .historyChunk(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .historyChunk(v)
+        }
+      }()
+      case 41: try {
+        var v: Obscura_Client_V1_SettingsSync?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .settingsSync(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .settingsSync(v)
+        }
+      }()
+      case 42: try {
+        var v: Obscura_Client_V1_ReadSync?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .readSync(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .readSync(v)
+        }
+      }()
+      case 43: try {
+        var v: Obscura_Client_V1_SyncBlob?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .syncBlob(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .syncBlob(v)
+        }
+      }()
+      case 44: try {
+        var v: Obscura_Client_V1_SentSync?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .sentSync(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .sentSync(v)
+        }
+      }()
+      case 45: try {
+        var v: Obscura_Client_V1_ContentReference?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .contentReference(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .contentReference(v)
+        }
+      }()
+      case 46: try {
+        var v: Obscura_Client_V1_ChunkedContentReference?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .chunkedContentReference(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .chunkedContentReference(v)
+        }
+      }()
+      case 47: try {
+        var v: Obscura_Client_V1_SyncRequest?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .syncRequest(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .syncRequest(v)
+        }
+      }()
+      case 50: try {
+        var v: Obscura_Client_V1_ModelSync?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .modelSync(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .modelSync(v)
+        }
+      }()
+      case 51: try {
+        var v: Obscura_Client_V1_FriendSync?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .friendSync(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .friendSync(v)
+        }
+      }()
+      case 52: try {
+        var v: Obscura_Client_V1_ModelSignal?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .modelSignal(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .modelSignal(v)
+        }
+      }()
+      default: break
       }
     }
   }
 
   func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every if/case branch local when no optimizations
-      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-      // https://github.com/apple/swift-protobuf/issues/1182
-      if _storage._type != .unspecified {
-        try visitor.visitSingularEnumField(value: _storage._type, fieldNumber: 1)
-      }
-      if _storage._timestamp != 0 {
-        try visitor.visitSingularUInt64Field(value: _storage._timestamp, fieldNumber: 2)
-      }
-      if !_storage._text.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._text, fieldNumber: 10)
-      }
-      if !_storage._mimeType.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._mimeType, fieldNumber: 11)
-      }
-      if _storage._displayDuration != 0 {
-        try visitor.visitSingularUInt32Field(value: _storage._displayDuration, fieldNumber: 12)
-      }
-      if !_storage._attachmentID.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._attachmentID, fieldNumber: 15)
-      }
-      if _storage._attachmentExpires != 0 {
-        try visitor.visitSingularUInt64Field(value: _storage._attachmentExpires, fieldNumber: 16)
-      }
-      if !_storage._username.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._username, fieldNumber: 20)
-      }
-      if _storage._accepted != false {
-        try visitor.visitSingularBoolField(value: _storage._accepted, fieldNumber: 21)
-      }
-      if !_storage._resetReason.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._resetReason, fieldNumber: 25)
-      }
-      try { if let v = _storage._deviceLinkApproval {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 30)
-      } }()
-      try { if let v = _storage._deviceAnnounce {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 31)
-      } }()
-      try { if let v = _storage._deviceRecoveryAnnounce {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 32)
-      } }()
-      try { if let v = _storage._historyChunk {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 40)
-      } }()
-      if !_storage._settingsData.isEmpty {
-        try visitor.visitSingularBytesField(value: _storage._settingsData, fieldNumber: 41)
-      }
-      if !_storage._readMessageID.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._readMessageID, fieldNumber: 42)
-      }
-      try { if let v = _storage._syncBlob {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 43)
-      } }()
-      try { if let v = _storage._sentSync {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 44)
-      } }()
-      try { if let v = _storage._contentReference {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 45)
-      } }()
-      try { if let v = _storage._chunkedContentReference {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 46)
-      } }()
-      try { if let v = _storage._modelSync {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 50)
-      } }()
-      try { if let v = _storage._friendSync {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 51)
-      } }()
-      try { if let v = _storage._modelSignal {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 52)
-      } }()
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.timestamp != 0 {
+      try visitor.visitSingularUInt64Field(value: self.timestamp, fieldNumber: 2)
+    }
+    switch self.payload {
+    case .text?: try {
+      guard case .text(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 10)
+    }()
+    case .friendRequest?: try {
+      guard case .friendRequest(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 20)
+    }()
+    case .friendResponse?: try {
+      guard case .friendResponse(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 21)
+    }()
+    case .sessionReset?: try {
+      guard case .sessionReset(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 25)
+    }()
+    case .deviceLinkApproval?: try {
+      guard case .deviceLinkApproval(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 30)
+    }()
+    case .deviceAnnounce?: try {
+      guard case .deviceAnnounce(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 31)
+    }()
+    case .deviceRecoveryAnnounce?: try {
+      guard case .deviceRecoveryAnnounce(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 32)
+    }()
+    case .historyChunk?: try {
+      guard case .historyChunk(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 40)
+    }()
+    case .settingsSync?: try {
+      guard case .settingsSync(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 41)
+    }()
+    case .readSync?: try {
+      guard case .readSync(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 42)
+    }()
+    case .syncBlob?: try {
+      guard case .syncBlob(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 43)
+    }()
+    case .sentSync?: try {
+      guard case .sentSync(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 44)
+    }()
+    case .contentReference?: try {
+      guard case .contentReference(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 45)
+    }()
+    case .chunkedContentReference?: try {
+      guard case .chunkedContentReference(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 46)
+    }()
+    case .syncRequest?: try {
+      guard case .syncRequest(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 47)
+    }()
+    case .modelSync?: try {
+      guard case .modelSync(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 50)
+    }()
+    case .friendSync?: try {
+      guard case .friendSync(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 51)
+    }()
+    case .modelSignal?: try {
+      guard case .modelSignal(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 52)
+    }()
+    case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_ClientMessage, rhs: Obscura_V2_ClientMessage) -> Bool {
-    if lhs._storage !== rhs._storage {
-      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
-        let _storage = _args.0
-        let rhs_storage = _args.1
-        if _storage._type != rhs_storage._type {return false}
-        if _storage._timestamp != rhs_storage._timestamp {return false}
-        if _storage._text != rhs_storage._text {return false}
-        if _storage._mimeType != rhs_storage._mimeType {return false}
-        if _storage._displayDuration != rhs_storage._displayDuration {return false}
-        if _storage._attachmentID != rhs_storage._attachmentID {return false}
-        if _storage._attachmentExpires != rhs_storage._attachmentExpires {return false}
-        if _storage._username != rhs_storage._username {return false}
-        if _storage._accepted != rhs_storage._accepted {return false}
-        if _storage._resetReason != rhs_storage._resetReason {return false}
-        if _storage._deviceLinkApproval != rhs_storage._deviceLinkApproval {return false}
-        if _storage._deviceAnnounce != rhs_storage._deviceAnnounce {return false}
-        if _storage._deviceRecoveryAnnounce != rhs_storage._deviceRecoveryAnnounce {return false}
-        if _storage._historyChunk != rhs_storage._historyChunk {return false}
-        if _storage._settingsData != rhs_storage._settingsData {return false}
-        if _storage._readMessageID != rhs_storage._readMessageID {return false}
-        if _storage._syncBlob != rhs_storage._syncBlob {return false}
-        if _storage._sentSync != rhs_storage._sentSync {return false}
-        if _storage._contentReference != rhs_storage._contentReference {return false}
-        if _storage._chunkedContentReference != rhs_storage._chunkedContentReference {return false}
-        if _storage._modelSync != rhs_storage._modelSync {return false}
-        if _storage._modelSignal != rhs_storage._modelSignal {return false}
-        if _storage._friendSync != rhs_storage._friendSync {return false}
-        return true
-      }
-      if !storagesAreEqual {return false}
-    }
+  static func ==(lhs: Obscura_Client_V1_ClientMessage, rhs: Obscura_Client_V1_ClientMessage) -> Bool {
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.payload != rhs.payload {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Obscura_V2_ClientMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TYPE_UNSPECIFIED\0\u{1}TYPE_IMAGE\0\u{1}TYPE_FRIEND_REQUEST\0\u{1}TYPE_FRIEND_RESPONSE\0\u{1}TYPE_SESSION_RESET\0\u{1}TYPE_VIDEO\0\u{1}TYPE_AUDIO\0\u{1}TYPE_FILE\0\u{1}TYPE_TEXT\0\u{2}\u{3}TYPE_DEVICE_LINK_APPROVAL\0\u{1}TYPE_DEVICE_ANNOUNCE\0\u{1}TYPE_DEVICE_RECOVERY_ANNOUNCE\0\u{2}\u{7}TYPE_HISTORY_CHUNK\0\u{1}TYPE_SETTINGS_SYNC\0\u{1}TYPE_READ_SYNC\0\u{1}TYPE_SYNC_BLOB\0\u{1}TYPE_SENT_SYNC\0\u{1}TYPE_CONTENT_REFERENCE\0\u{1}TYPE_SYNC_REQUEST\0\u{1}TYPE_FRIEND_SYNC\0\u{1}TYPE_CHUNKED_CONTENT_REFERENCE\0\u{2}\u{2}TYPE_MODEL_SYNC\0\u{1}TYPE_MODEL_SIGNAL\0")
+extension Obscura_Client_V1_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".TextMessage"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{3}mime_type\0\u{3}display_duration\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.text) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.mimeType) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.displayDuration) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.text.isEmpty {
+      try visitor.visitSingularStringField(value: self.text, fieldNumber: 1)
+    }
+    if !self.mimeType.isEmpty {
+      try visitor.visitSingularStringField(value: self.mimeType, fieldNumber: 2)
+    }
+    if self.displayDuration != 0 {
+      try visitor.visitSingularUInt32Field(value: self.displayDuration, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_TextMessage, rhs: Obscura_Client_V1_TextMessage) -> Bool {
+    if lhs.text != rhs.text {return false}
+    if lhs.mimeType != rhs.mimeType {return false}
+    if lhs.displayDuration != rhs.displayDuration {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
 }
 
-nonisolated extension Obscura_V2_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_FriendRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".FriendRequest"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}username\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.username) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.username.isEmpty {
+      try visitor.visitSingularStringField(value: self.username, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_FriendRequest, rhs: Obscura_Client_V1_FriendRequest) -> Bool {
+    if lhs.username != rhs.username {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Obscura_Client_V1_FriendResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".FriendResponse"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}username\0\u{1}accepted\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.username) }()
+      case 2: try { try decoder.decodeSingularBoolField(value: &self.accepted) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.username.isEmpty {
+      try visitor.visitSingularStringField(value: self.username, fieldNumber: 1)
+    }
+    if self.accepted != false {
+      try visitor.visitSingularBoolField(value: self.accepted, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_FriendResponse, rhs: Obscura_Client_V1_FriendResponse) -> Bool {
+    if lhs.username != rhs.username {return false}
+    if lhs.accepted != rhs.accepted {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Obscura_Client_V1_SessionReset: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".SessionReset"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}reason\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.reason) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.reason.isEmpty {
+      try visitor.visitSingularStringField(value: self.reason, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_SessionReset, rhs: Obscura_Client_V1_SessionReset) -> Bool {
+    if lhs.reason != rhs.reason {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Obscura_Client_V1_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceInfo"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_uuid\0\u{3}device_id\0\u{3}device_name\0\u{3}signal_identity_key\0")
 
@@ -1185,7 +1403,7 @@ nonisolated extension Obscura_V2_DeviceInfo: SwiftProtobuf.Message, SwiftProtobu
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_DeviceInfo, rhs: Obscura_V2_DeviceInfo) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_DeviceInfo, rhs: Obscura_Client_V1_DeviceInfo) -> Bool {
     if lhs.deviceUuid != rhs.deviceUuid {return false}
     if lhs.deviceID != rhs.deviceID {return false}
     if lhs.deviceName != rhs.deviceName {return false}
@@ -1195,7 +1413,7 @@ nonisolated extension Obscura_V2_DeviceInfo: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-nonisolated extension Obscura_V2_DeviceLinkApproval: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_DeviceLinkApproval: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceLinkApproval"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}p2p_public_key\0\u{3}p2p_private_key\0\u{3}recovery_public_key\0\u{3}challenge_response\0\u{3}own_devices\0\u{3}friends_export\0\u{3}sessions_export\0\u{3}trusted_ids_export\0")
 
@@ -1246,7 +1464,7 @@ nonisolated extension Obscura_V2_DeviceLinkApproval: SwiftProtobuf.Message, Swif
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_DeviceLinkApproval, rhs: Obscura_V2_DeviceLinkApproval) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_DeviceLinkApproval, rhs: Obscura_Client_V1_DeviceLinkApproval) -> Bool {
     if lhs.p2PPublicKey != rhs.p2PPublicKey {return false}
     if lhs.p2PPrivateKey != rhs.p2PPrivateKey {return false}
     if lhs.recoveryPublicKey != rhs.recoveryPublicKey {return false}
@@ -1260,7 +1478,7 @@ nonisolated extension Obscura_V2_DeviceLinkApproval: SwiftProtobuf.Message, Swif
   }
 }
 
-nonisolated extension Obscura_V2_DeviceAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_DeviceAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceAnnounce"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}devices\0\u{1}timestamp\0\u{3}is_revocation\0\u{1}signature\0\u{3}recovery_public_key\0")
 
@@ -1299,7 +1517,7 @@ nonisolated extension Obscura_V2_DeviceAnnounce: SwiftProtobuf.Message, SwiftPro
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_DeviceAnnounce, rhs: Obscura_V2_DeviceAnnounce) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_DeviceAnnounce, rhs: Obscura_Client_V1_DeviceAnnounce) -> Bool {
     if lhs.devices != rhs.devices {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs.isRevocation != rhs.isRevocation {return false}
@@ -1310,7 +1528,7 @@ nonisolated extension Obscura_V2_DeviceAnnounce: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-nonisolated extension Obscura_V2_DeviceRecoveryAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_DeviceRecoveryAnnounce: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceRecoveryAnnounce"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}new_devices\0\u{1}timestamp\0\u{1}signature\0\u{3}is_full_recovery\0\u{3}recovery_public_key\0")
 
@@ -1349,7 +1567,7 @@ nonisolated extension Obscura_V2_DeviceRecoveryAnnounce: SwiftProtobuf.Message, 
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_DeviceRecoveryAnnounce, rhs: Obscura_V2_DeviceRecoveryAnnounce) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_DeviceRecoveryAnnounce, rhs: Obscura_Client_V1_DeviceRecoveryAnnounce) -> Bool {
     if lhs.newDevices != rhs.newDevices {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs.signature != rhs.signature {return false}
@@ -1360,7 +1578,7 @@ nonisolated extension Obscura_V2_DeviceRecoveryAnnounce: SwiftProtobuf.Message, 
   }
 }
 
-nonisolated extension Obscura_V2_HistoryChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_HistoryChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".HistoryChunk"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}entries\0\u{3}is_final\0")
 
@@ -1387,7 +1605,7 @@ nonisolated extension Obscura_V2_HistoryChunk: SwiftProtobuf.Message, SwiftProto
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_HistoryChunk, rhs: Obscura_V2_HistoryChunk) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_HistoryChunk, rhs: Obscura_Client_V1_HistoryChunk) -> Bool {
     if lhs.entries != rhs.entries {return false}
     if lhs.isFinal != rhs.isFinal {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -1395,7 +1613,7 @@ nonisolated extension Obscura_V2_HistoryChunk: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-nonisolated extension Obscura_V2_MessageEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_MessageEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".MessageEntry"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}message_id\0\u{1}timestamp\0\u{1}content\0\u{3}author_device_id\0\u{1}signature\0")
 
@@ -1434,7 +1652,7 @@ nonisolated extension Obscura_V2_MessageEntry: SwiftProtobuf.Message, SwiftProto
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_MessageEntry, rhs: Obscura_V2_MessageEntry) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_MessageEntry, rhs: Obscura_Client_V1_MessageEntry) -> Bool {
     if lhs.messageID != rhs.messageID {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs.content != rhs.content {return false}
@@ -1445,7 +1663,67 @@ nonisolated extension Obscura_V2_MessageEntry: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-nonisolated extension Obscura_V2_SyncBlob: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_SettingsSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".SettingsSync"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}settings_data\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBytesField(value: &self.settingsData) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.settingsData.isEmpty {
+      try visitor.visitSingularBytesField(value: self.settingsData, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_SettingsSync, rhs: Obscura_Client_V1_SettingsSync) -> Bool {
+    if lhs.settingsData != rhs.settingsData {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Obscura_Client_V1_ReadSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".ReadSync"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}read_message_id\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.readMessageID) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.readMessageID.isEmpty {
+      try visitor.visitSingularStringField(value: self.readMessageID, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_ReadSync, rhs: Obscura_Client_V1_ReadSync) -> Bool {
+    if lhs.readMessageID != rhs.readMessageID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Obscura_Client_V1_SyncBlob: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".SyncBlob"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}compressed_data\0")
 
@@ -1468,16 +1746,35 @@ nonisolated extension Obscura_V2_SyncBlob: SwiftProtobuf.Message, SwiftProtobuf.
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_SyncBlob, rhs: Obscura_V2_SyncBlob) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_SyncBlob, rhs: Obscura_Client_V1_SyncBlob) -> Bool {
     if lhs.compressedData != rhs.compressedData {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_SyncRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".SyncRequest"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Obscura_Client_V1_SyncRequest, rhs: Obscura_Client_V1_SyncRequest) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Obscura_Client_V1_SentSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".SentSync"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}conversation_id\0\u{3}message_id\0\u{1}timestamp\0\u{1}content\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}recipient_username\0\u{3}message_id\0\u{1}timestamp\0\u{1}content\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1485,7 +1782,7 @@ nonisolated extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf.
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.conversationID) }()
+      case 1: try { try decoder.decodeSingularStringField(value: &self.recipientUsername) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.messageID) }()
       case 3: try { try decoder.decodeSingularUInt64Field(value: &self.timestamp) }()
       case 4: try { try decoder.decodeSingularBytesField(value: &self.content) }()
@@ -1495,8 +1792,8 @@ nonisolated extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf.
   }
 
   func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.conversationID.isEmpty {
-      try visitor.visitSingularStringField(value: self.conversationID, fieldNumber: 1)
+    if !self.recipientUsername.isEmpty {
+      try visitor.visitSingularStringField(value: self.recipientUsername, fieldNumber: 1)
     }
     if !self.messageID.isEmpty {
       try visitor.visitSingularStringField(value: self.messageID, fieldNumber: 2)
@@ -1510,8 +1807,8 @@ nonisolated extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf.
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_SentSync, rhs: Obscura_V2_SentSync) -> Bool {
-    if lhs.conversationID != rhs.conversationID {return false}
+  static func ==(lhs: Obscura_Client_V1_SentSync, rhs: Obscura_Client_V1_SentSync) -> Bool {
+    if lhs.recipientUsername != rhs.recipientUsername {return false}
     if lhs.messageID != rhs.messageID {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs.content != rhs.content {return false}
@@ -1520,7 +1817,7 @@ nonisolated extension Obscura_V2_SentSync: SwiftProtobuf.Message, SwiftProtobuf.
   }
 }
 
-nonisolated extension Obscura_V2_FriendSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_FriendSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".FriendSync"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}username\0\u{1}action\0\u{1}status\0\u{1}devices\0\u{1}timestamp\0")
 
@@ -1559,7 +1856,7 @@ nonisolated extension Obscura_V2_FriendSync: SwiftProtobuf.Message, SwiftProtobu
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_FriendSync, rhs: Obscura_V2_FriendSync) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_FriendSync, rhs: Obscura_Client_V1_FriendSync) -> Bool {
     if lhs.username != rhs.username {return false}
     if lhs.action != rhs.action {return false}
     if lhs.status != rhs.status {return false}
@@ -1570,7 +1867,7 @@ nonisolated extension Obscura_V2_FriendSync: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-nonisolated extension Obscura_V2_ContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ContentReference"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}attachment_id\0\u{3}content_key\0\u{1}nonce\0\u{3}content_hash\0\u{3}content_type\0\u{3}size_bytes\0\u{3}file_name\0")
 
@@ -1617,7 +1914,7 @@ nonisolated extension Obscura_V2_ContentReference: SwiftProtobuf.Message, SwiftP
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_ContentReference, rhs: Obscura_V2_ContentReference) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_ContentReference, rhs: Obscura_Client_V1_ContentReference) -> Bool {
     if lhs.attachmentID != rhs.attachmentID {return false}
     if lhs.contentKey != rhs.contentKey {return false}
     if lhs.nonce != rhs.nonce {return false}
@@ -1630,7 +1927,7 @@ nonisolated extension Obscura_V2_ContentReference: SwiftProtobuf.Message, SwiftP
   }
 }
 
-nonisolated extension Obscura_V2_ChunkedContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ChunkedContentReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ChunkedContentReference"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}file_id\0\u{1}chunks\0\u{3}complete_hash\0\u{3}content_type\0\u{3}total_size_bytes\0\u{3}file_name\0")
 
@@ -1673,7 +1970,7 @@ nonisolated extension Obscura_V2_ChunkedContentReference: SwiftProtobuf.Message,
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_ChunkedContentReference, rhs: Obscura_V2_ChunkedContentReference) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_ChunkedContentReference, rhs: Obscura_Client_V1_ChunkedContentReference) -> Bool {
     if lhs.fileID != rhs.fileID {return false}
     if lhs.chunks != rhs.chunks {return false}
     if lhs.completeHash != rhs.completeHash {return false}
@@ -1685,7 +1982,7 @@ nonisolated extension Obscura_V2_ChunkedContentReference: SwiftProtobuf.Message,
   }
 }
 
-nonisolated extension Obscura_V2_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ChunkInfo"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}index\0\u{3}attachment_id\0\u{3}content_key\0\u{1}nonce\0\u{3}chunk_hash\0\u{3}size_bytes\0")
 
@@ -1728,7 +2025,7 @@ nonisolated extension Obscura_V2_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_ChunkInfo, rhs: Obscura_V2_ChunkInfo) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_ChunkInfo, rhs: Obscura_Client_V1_ChunkInfo) -> Bool {
     if lhs.index != rhs.index {return false}
     if lhs.attachmentID != rhs.attachmentID {return false}
     if lhs.contentKey != rhs.contentKey {return false}
@@ -1740,9 +2037,9 @@ nonisolated extension Obscura_V2_ChunkInfo: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-nonisolated extension Obscura_V2_ModelSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ModelSync: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ModelSync"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}id\0\u{1}op\0\u{1}timestamp\0\u{1}data\0\u{1}signature\0\u{3}author_device_id\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}id\0\u{1}op\0\u{1}timestamp\0\u{1}data\0\u{4}\u{2}author_device_id\0\u{b}signature\0\u{c}\u{6}\u{1}")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1755,7 +2052,6 @@ nonisolated extension Obscura_V2_ModelSync: SwiftProtobuf.Message, SwiftProtobuf
       case 3: try { try decoder.decodeSingularEnumField(value: &self.op) }()
       case 4: try { try decoder.decodeSingularUInt64Field(value: &self.timestamp) }()
       case 5: try { try decoder.decodeSingularBytesField(value: &self.data) }()
-      case 6: try { try decoder.decodeSingularBytesField(value: &self.signature) }()
       case 7: try { try decoder.decodeSingularStringField(value: &self.authorDeviceID) }()
       default: break
       }
@@ -1778,33 +2074,29 @@ nonisolated extension Obscura_V2_ModelSync: SwiftProtobuf.Message, SwiftProtobuf
     if !self.data.isEmpty {
       try visitor.visitSingularBytesField(value: self.data, fieldNumber: 5)
     }
-    if !self.signature.isEmpty {
-      try visitor.visitSingularBytesField(value: self.signature, fieldNumber: 6)
-    }
     if !self.authorDeviceID.isEmpty {
       try visitor.visitSingularStringField(value: self.authorDeviceID, fieldNumber: 7)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_ModelSync, rhs: Obscura_V2_ModelSync) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_ModelSync, rhs: Obscura_Client_V1_ModelSync) -> Bool {
     if lhs.model != rhs.model {return false}
     if lhs.id != rhs.id {return false}
     if lhs.op != rhs.op {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs.data != rhs.data {return false}
-    if lhs.signature != rhs.signature {return false}
     if lhs.authorDeviceID != rhs.authorDeviceID {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Obscura_V2_ModelSync.Op: SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ModelSync.Op: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OP_UNSPECIFIED\0\u{1}OP_UPDATE\0\u{1}OP_DELETE\0\u{1}OP_CREATE\0")
 }
 
-nonisolated extension Obscura_V2_ModelSignal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Obscura_Client_V1_ModelSignal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".ModelSignal"
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}kind\0\u{3}context_id\0")
 
@@ -1835,7 +2127,7 @@ nonisolated extension Obscura_V2_ModelSignal: SwiftProtobuf.Message, SwiftProtob
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Obscura_V2_ModelSignal, rhs: Obscura_V2_ModelSignal) -> Bool {
+  static func ==(lhs: Obscura_Client_V1_ModelSignal, rhs: Obscura_Client_V1_ModelSignal) -> Bool {
     if lhs.model != rhs.model {return false}
     if lhs.kind != rhs.kind {return false}
     if lhs.contextID != rhs.contextID {return false}

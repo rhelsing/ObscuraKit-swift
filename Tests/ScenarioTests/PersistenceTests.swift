@@ -267,7 +267,7 @@ final class PersistenceTests: XCTestCase {
 
         // Should receive the queued friend request
         let msg = try await bob2.waitForMessage(timeout: 15)
-        XCTAssertEqual(msg.type, 2, "Should receive FRIEND_REQUEST (2)")
+        XCTAssertEqual(msg.type, "FRIEND_REQUEST", "Should receive FRIEND_REQUEST (2)")
         XCTAssertEqual(msg.sourceUserId, alice.userId!)
 
         // Check it was routed to the friends store

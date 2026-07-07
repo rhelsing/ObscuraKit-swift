@@ -204,15 +204,14 @@ extension TypedModel {
     private func sendSignal(_ type: SignalType, data: [String: String]) async {
         let kind = WireCodec.encodeSignalKind(type.rawValue)
 
-        var signal = Obscura_V2_ModelSignal()
+        var signal = Obscura_Client_V1_ModelSignal()
         signal.model = T.modelName
         signal.kind = kind
         signal.contextID = data["conversationId"] ?? ""
 
         // Typed MODEL_SIGNAL payload — no JSON. Sender identity and timestamp ride on
         // the authenticated ClientMessage envelope, not the payload.
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .modelSignal
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.modelSignal = signal
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
@@ -264,11 +263,12 @@ extension Model {
             data: data,
             authorDeviceId: deviceId
         )
-        guard let jsonData = try? JSONEncoder().encode(payload),
-              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .modelSignal
-        msg.text = jsonString
+        var signal = Obscura_Client_V1_ModelSignal()
+        signal.model = name
+        signal.kind = WireCodec.encodeSignalKind(type.rawValue)
+        signal.contextID = data["conversationId"] ?? ""
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.modelSignal = signal
         msg.timestamp = payload.timestamp
         guard let msgData = try? msg.serializedData() else { return }
         await onSignalSend?(msgData)

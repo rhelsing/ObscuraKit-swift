@@ -60,7 +60,7 @@ final class ORMTests: XCTestCase {
 
         // Alice sends MODEL_SYNC message
 
-        var sync = Obscura_V2_ModelSync()
+        var sync = Obscura_Client_V1_ModelSync()
         sync.model = "story"
         sync.id = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_abc"
         sync.op = .create
@@ -68,8 +68,7 @@ final class ORMTests: XCTestCase {
         sync.data = Data("{\"content\":\"from alice\"}".utf8)
         sync.authorDeviceID = alice.deviceId ?? "unknown"
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .modelSync
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.modelSync = sync
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await alice.sendRaw(to: bob.userId!, try msg.serializedData())
@@ -77,7 +76,7 @@ final class ORMTests: XCTestCase {
 
         // Bob receives MODEL_SYNC
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 30, "Type should be MODEL_SYNC (30)")
+        XCTAssertEqual(received.type, "MODEL_SYNC", "Type should be MODEL_SYNC (30)")
         XCTAssertEqual(received.sourceUserId, alice.userId!)
 
         bob.disconnectWebSocket()

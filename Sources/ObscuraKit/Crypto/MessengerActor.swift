@@ -166,7 +166,7 @@ public actor MessengerActor {
         let encrypted = try encrypt(userId, plaintext, registrationId: regId)
 
         // Wrap in EncryptedMessage protobuf
-        var encMsg = Obscura_V2_EncryptedMessage()
+        var encMsg = Obscura_Client_V1_EncryptedMessage()
         encMsg.type = encrypted.type == .preKey ? .prekeyMessage : .encryptedMessage
         encMsg.content = Data(encrypted.body)
 

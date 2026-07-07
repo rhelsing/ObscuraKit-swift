@@ -32,7 +32,7 @@ final class SessionResetTests: XCTestCase {
         await rateLimitDelay()
 
         let msg = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(msg.type, 4, "Should be SESSION_RESET (4)")
+        XCTAssertEqual(msg.type, "SESSION_RESET", "Should be SESSION_RESET (4)")
 
         // Friendship should NOT be affected by session reset
         let aliceFriend2 = await alice.friends.getFriend(bob.userId!)

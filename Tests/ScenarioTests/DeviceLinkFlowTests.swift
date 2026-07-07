@@ -31,13 +31,13 @@ final class DeviceLinkFlowTests: XCTestCase {
 
         // Existing device sends DEVICE_LINK_APPROVAL
         // Build approval message with p2p keys and device list
-        var approval = Obscura_V2_DeviceLinkApproval()
+        var approval = Obscura_Client_V1_DeviceLinkApproval()
         approval.p2PPublicKey = Data(repeating: 0x05, count: 33)   // p2p identity
         approval.p2PPrivateKey = Data(repeating: 0xBB, count: 32)  // p2p private (encrypted transfer)
         approval.recoveryPublicKey = Data(repeating: 0xCC, count: 32)
         approval.challengeResponse = Data(repeating: 0xDD, count: 32)  // echo back challenge
 
-        var device1Info = Obscura_V2_DeviceInfo()
+        var device1Info = Obscura_Client_V1_DeviceInfo()
         device1Info.deviceID = existingDevice.deviceId ?? ""
         device1Info.deviceName = "Existing Phone"
         approval.ownDevices = [device1Info]
@@ -47,8 +47,7 @@ final class DeviceLinkFlowTests: XCTestCase {
         let exportData = SyncBlobExporter.export(friends: friends, messages: [])
         approval.friendsExport = exportData
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceLinkApproval
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceLinkApproval = approval
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await existingDevice.sendRaw(to: newDevice.userId!, try msg.serializedData())
@@ -56,7 +55,7 @@ final class DeviceLinkFlowTests: XCTestCase {
 
         // New device receives DEVICE_LINK_APPROVAL
         let received = try await newDevice.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 11, "Should be DEVICE_LINK_APPROVAL (11)")
+        XCTAssertEqual(received.type, "DEVICE_LINK_APPROVAL", "Should be DEVICE_LINK_APPROVAL (11)")
         XCTAssertEqual(received.sourceUserId, existingDevice.userId!)
 
         newDevice.disconnectWebSocket()
@@ -83,9 +82,8 @@ final class DeviceLinkFlowTests: XCTestCase {
         let msgs = await device1.messages.getMessages("carol")
         let exportData = SyncBlobExporter.export(friends: friends, messages: [("carol", msgs)])
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .syncBlob
-        var blob = Obscura_V2_SyncBlob()
+        var msg = Obscura_Client_V1_ClientMessage()
+        var blob = Obscura_Client_V1_SyncBlob()
         blob.compressedData = exportData
         msg.syncBlob = blob
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -94,14 +92,14 @@ final class DeviceLinkFlowTests: XCTestCase {
 
         // Device2 receives SYNC_BLOB
         let received = try await device2.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 23, "Should be SYNC_BLOB")
+        XCTAssertEqual(received.type, "SYNC_BLOB", "Should be SYNC_BLOB")
 
         // Device2 imports the state from raw bytes
         let parsed = SyncBlobExporter.parseExport(received.rawBytes)
 
         // Actually we need the syncBlob compressed data, not the outer clientMessage bytes
         // The rawBytes is the decrypted ClientMessage — need to re-parse
-        let clientMsg = try Obscura_V2_ClientMessage(serializedData: received.rawBytes)
+        let clientMsg = try Obscura_Client_V1_ClientMessage(serializedData: received.rawBytes)
         let syncData = clientMsg.syncBlob.compressedData
         let importedState = SyncBlobExporter.parseExport(syncData)
 
