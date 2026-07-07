@@ -1,6 +1,6 @@
 import Foundation
 
-/// Single source of truth for the L2 wire <-> app-facing-form mappings.
+/// Single source of truth for the wire <-> app-facing-form mappings.
 ///
 /// The message kind is the `ClientMessage.payload` oneof arm; `ModelSync.Op` and
 /// `SignalKind` carry `OP_`/`SIGNAL_KIND_` prefixes and move CREATE/typing off
