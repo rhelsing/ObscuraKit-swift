@@ -1261,9 +1261,41 @@ public class ObscuraClient {
         var definitions: [ModelDefinition] = []
         for (name, config) in schema {
             let syncStr = config["sync"] as? String ?? "gset"
-            let sync: SyncStrategy = syncStr == "lww" ? .lwwMap : .gset
-            let isPrivate = config["private"] as? Bool ?? false
-            let scope: SyncScope = isPrivate ? .ownDevices : .friends
+            let sync: SyncStrategy
+            switch syncStr {
+            case "gset": sync = .gset
+            case "lww": sync = .lwwMap
+            default: throw ObscuraError.invalidSchema("Unknown sync strategy '\(syncStr)' for model '\(name)' (expected 'gset' or 'lww')")
+            }
+
+            // `audience` declares delivery scope (mirrors the shared schema.ts / Kotlin Audience).
+            //   self          → own devices only
+            //   friends/absent → all accepted friends
+            //   recipient/conversation → 1:1
+            // NOTE (transitional): 1:1 routing is still resolved by SyncManager
+            // field-sniffing (recipientUsername / conversationId) until the Swift kit adopts
+            // the full field-agnostic Audience model — tracked as a WS-DEBT follow-up that
+            // needs a macOS build. Here we only map the scope so `self` stays private.
+            var scope: SyncScope = .friends
+            var isPrivate = false
+            if let audienceObj = config["audience"] as? [String: Any] {
+                let kind = audienceObj["kind"] as? String ?? "friends"
+                switch kind {
+                case "friends":
+                    scope = .friends
+                case "self":
+                    scope = .ownDevices
+                    isPrivate = true
+                case "recipient", "conversation":
+                    guard let field = audienceObj["field"] as? String, !field.isEmpty else {
+                        throw ObscuraError.invalidSchema("audience '\(kind)' requires a non-empty 'field' for model '\(name)'")
+                    }
+                    _ = field  // routing currently field-sniffed — see NOTE above
+                    scope = .friends
+                default:
+                    throw ObscuraError.invalidSchema("Unknown audience kind '\(kind)' for model '\(name)'")
+                }
+            }
 
             var ttl: TTL? = nil
             if let ttlStr = config["ttl"] as? String {
@@ -1280,7 +1312,7 @@ public class ObscuraClient {
                     case "string?": fields[fieldName] = .optionalString
                     case "number?": fields[fieldName] = .optionalNumber
                     case "boolean?": fields[fieldName] = .optionalBoolean
-                    default: fields[fieldName] = .string
+                    default: throw ObscuraError.invalidSchema("Field '\(fieldName)' has unknown type '\(fieldType)' in model '\(name)'")
                     }
                 }
             }
@@ -2021,6 +2053,26 @@ public class ObscuraClient {
         case timeout
         case notFriends(String)
         case deviceLinkFailed(String)
+        case invalidSchema(String)
+        case directRoutingUnresolved(String)
+
+        /// Stable, machine-readable code for cross-boundary propagation (mirrors
+        /// Kotlin `ObscuraError.code`). The bridge rejects promises with this so JS
+        /// can branch on *what* failed rather than parse the message.
+        public var code: String {
+            switch self {
+            case .missingToken: return "MISSING_TOKEN"
+            case .notAuthenticated: return "NOT_AUTHENTICATED"
+            case .provisionFailed: return "NOT_PROVISIONED"
+            case .noMessenger: return "NO_MESSENGER"
+            case .noMessage: return "NO_MESSAGE"
+            case .timeout: return "TIMEOUT"
+            case .notFriends: return "NOT_FRIENDS"
+            case .deviceLinkFailed: return "DEVICE_LINK_FAILED"
+            case .invalidSchema: return "INVALID_SCHEMA"
+            case .directRoutingUnresolved: return "DIRECT_ROUTING_UNRESOLVED"
+            }
+        }
 
         public var errorDescription: String? {
             switch self {
@@ -2032,6 +2084,8 @@ public class ObscuraClient {
             case .timeout: return "Operation timed out"
             case .notFriends(let userId): return "Not friends with \(userId)"
             case .deviceLinkFailed(let reason): return "Device link failed: \(reason)"
+            case .invalidSchema(let msg): return "Invalid schema: \(msg)"
+            case .directRoutingUnresolved(let msg): return msg
             }
         }
     }
