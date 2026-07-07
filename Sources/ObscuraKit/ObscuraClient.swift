@@ -1768,26 +1768,34 @@ public class ObscuraClient {
             }
 
         case .modelSignal:
-            // Ephemeral signal — don't persist, don't CRDT merge
-            NSLog("[ObscuraKit] MODEL_SIGNAL received text=%@", String(msg.text.prefix(200)))
-            if let payloadData = msg.text.data(using: .utf8),
-               let payload = try? JSONDecoder().decode(ModelSignalPayload.self, from: payloadData) {
-                NSLog("[ObscuraKit] MODEL_SIGNAL decoded model=%@ signal=%@", payload.model, payload.signal)
-                // Always store as "typing" — let auto-expire handle cleanup.
-                // stoppedTyping just means don't refresh the timer.
-                if payload.signal != SignalType.stoppedTyping.rawValue {
+            // Ephemeral signal — typed payload; identity comes from the authenticated
+            // envelope (sender from the decrypted session, display name from the friend
+            // graph), never from the payload.
+            let sig = msg.modelSignal
+            let signalName: String
+            switch sig.kind {
+            case .typing: signalName = "typing"
+            case .stoppedTyping: signalName = "stoppedTyping"
+            case .read: signalName = "read"
+            default: signalName = ""
+            }
+            if !sig.model.isEmpty, !signalName.isEmpty {
+                let username = await friends.getAccepted().first(where: { $0.userId == sourceUserId })?.username ?? sourceUserId
+                let payload = ModelSignalPayload(
+                    model: sig.model,
+                    signalRaw: signalName,
+                    conversationId: sig.contextID,
+                    senderUsername: username,
+                    authorDeviceId: sourceUserId,
+                    timestamp: msg.timestamp
+                )
+                if signalName == "stoppedTyping" {
+                    await SignalStoreRegistry.shared.store.remove(
+                        model: sig.model, signal: "typing", data: payload.data, authorDeviceId: sourceUserId)
+                } else {
                     await SignalStoreRegistry.shared.store.receive(payload)
-                    SignalStoreRegistry.shared.notifyObservers()
                 }
-            } else {
-                NSLog("[ObscuraKit] MODEL_SIGNAL decode FAILED text=%@", String(msg.text.prefix(300)))
-                if let payloadData = msg.text.data(using: .utf8) {
-                    do {
-                        _ = try JSONDecoder().decode(ModelSignalPayload.self, from: payloadData)
-                    } catch {
-                        NSLog("[ObscuraKit] MODEL_SIGNAL decode error: %@", "\(error)")
-                    }
-                }
+                SignalStoreRegistry.shared.notifyObservers()
             }
 
         case .syncBlob:

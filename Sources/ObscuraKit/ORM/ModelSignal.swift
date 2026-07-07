@@ -25,8 +25,9 @@ public enum SignalType: String, Sendable, Codable {
     case read
 }
 
-/// Wire format for MODEL_SIGNAL — encoded as JSON in ClientMessage.
-/// Not persisted, not CRDT-merged, held in memory with auto-expire.
+/// In-memory representation of a received/derived signal, held by [SignalStore]
+/// until it auto-expires. The wire form is the typed `ModelSignal` protobuf
+/// message (not JSON); this struct is the kit-internal shape used by the store.
 public struct ModelSignalPayload: Codable, Sendable {
     public let model: String          // "directMessage"
     public let signal: String         // "typing", "stoppedTyping", "read"
@@ -40,6 +41,16 @@ public struct ModelSignalPayload: Codable, Sendable {
         self.data = data
         self.authorDeviceId = authorDeviceId
         self.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// Build a payload from a received wire signal. Identity (author, display name)
+    /// and timestamp come from the authenticated ClientMessage envelope, not the payload.
+    public init(model: String, signalRaw: String, conversationId: String, senderUsername: String, authorDeviceId: String, timestamp: UInt64) {
+        self.model = model
+        self.signal = signalRaw
+        self.data = ["conversationId": conversationId, "senderUsername": senderUsername]
+        self.authorDeviceId = authorDeviceId
+        self.timestamp = timestamp
     }
 }
 
@@ -191,27 +202,28 @@ extension TypedModel {
     }
 
     private func sendSignal(_ type: SignalType, data: [String: String]) async {
-        let payload = ModelSignalPayload(
-            model: T.modelName,
-            signal: type,
-            data: data,
-            authorDeviceId: model.deviceId
-        )
+        let kind: Obscura_V2_SignalKind
+        switch type {
+        case .typing: kind = .typing
+        case .stoppedTyping: kind = .stoppedTyping
+        case .read: kind = .read
+        }
 
-        // Encode and send via the client
-        guard let jsonData = try? JSONEncoder().encode(payload),
-              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+        var signal = Obscura_V2_ModelSignal()
+        signal.model = T.modelName
+        signal.kind = kind
+        signal.contextID = data["conversationId"] ?? ""
 
-        // Build ClientMessage with type .modelSignal
+        // Typed MODEL_SIGNAL payload — no JSON. Sender identity and timestamp ride on
+        // the authenticated ClientMessage envelope, not the payload.
         var msg = Obscura_V2_ClientMessage()
         msg.type = .modelSignal
-        msg.text = jsonString  // Payload rides in the text field
-        msg.timestamp = payload.timestamp
+        msg.modelSignal = signal
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
         guard let msgData = try? msg.serializedData() else { return }
 
-        // Send to all friends (same as MODEL_SYNC)
-        // Access the client through the model's broadcast callback
+        // Send to all friends (same fan-out as MODEL_SYNC) via the model's callback.
         await model.onSignalSend?(msgData)
     }
 }
