@@ -27,7 +27,7 @@ public enum LoginScenario: Sendable {
 }
 
 public struct ReceivedMessage: Sendable {
-    public let type: Int  // ClientMessage.Type raw value (0=TEXT, 2=FRIEND_REQUEST, etc.)
+    public let type: String  // app-facing message kind, e.g. "MODEL_SYNC"; "" if unset
     public let text: String
     public let username: String
     public let accepted: Bool
@@ -770,7 +770,7 @@ public class ObscuraClient {
     ) {
         // MODEL_SYNC (type 30) carries the ORM model name — the authoritative categorization.
         // Legacy TEXT/CONTENT_REFERENCE paths go to `other` since our app uses ORM exclusively.
-        if msg.type == 30, let clientMsg = try? Obscura_V2_ClientMessage(serializedBytes: msg.rawBytes) {
+        if msg.type == "MODEL_SYNC", let clientMsg = try? Obscura_Client_V1_ClientMessage(serializedBytes: msg.rawBytes) {
             switch clientMsg.modelSync.model {
             case "pix":            pix += 1; return
             case "directMessage":  message += 1; return
@@ -821,9 +821,8 @@ public class ObscuraClient {
         let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         let messageId = "msg_\(UUID().uuidString)"
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .text
-        msg.text = text
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.text.text = text
         msg.timestamp = timestamp
 
         try await sendToAllDevices(friendUserId, msg)
@@ -839,9 +838,8 @@ public class ObscuraClient {
     public func befriend(_ targetUserId: String, username targetUsername: String) async throws {
         _ = try requireMessenger()
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .friendRequest
-        msg.username = username ?? ""
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.friendRequest.username = username ?? ""
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
         try await sendToAllDevices(targetUserId, msg)
@@ -854,10 +852,9 @@ public class ObscuraClient {
     public func acceptFriend(_ targetUserId: String, username targetUsername: String) async throws {
         _ = try requireMessenger()
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .friendResponse
-        msg.username = username ?? ""
-        msg.accepted = true
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.friendResponse.username = username ?? ""
+        msg.friendResponse.accepted = true
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
         try await sendToAllDevices(targetUserId, msg)
@@ -888,9 +885,9 @@ public class ObscuraClient {
     /// Announce device list to all friends
     public func announceDevices(isRevocation: Bool = false, signature: Data = Data()) async throws {
         let ownDevices = await devices.getOwnDevices()
-        var announce = Obscura_V2_DeviceAnnounce()
+        var announce = Obscura_Client_V1_DeviceAnnounce()
         announce.devices = ownDevices.map { dev in
-            var info = Obscura_V2_DeviceInfo()
+            var info = Obscura_Client_V1_DeviceInfo()
             info.deviceID = dev.deviceId
             info.deviceName = dev.deviceName
             return info
@@ -899,8 +896,7 @@ public class ObscuraClient {
         announce.isRevocation = isRevocation
         announce.signature = signature
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceAnnounce
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceAnnounce = announce
 
         let accepted = await friends.getAccepted()
@@ -915,9 +911,8 @@ public class ObscuraClient {
     public func resetSessionWith(_ targetUserId: String, reason: String = "manual") async throws {
         try? persistentSignalStore?.deleteAllSessions(for: targetUserId)
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .sessionReset
-        msg.resetReason = reason
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.sessionReset.reason = reason
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await sendToAllDevices(targetUserId, msg)
 
@@ -942,8 +937,8 @@ public class ObscuraClient {
         guard let uid = userId else { throw ObscuraError.notAuthenticated }
         let ownDevices = await devices.getOwnDevices()
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .syncRequest
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.syncRequest = Obscura_Client_V1_SyncRequest()
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         let msgData = try msg.serializedData()
 
@@ -961,8 +956,7 @@ public class ObscuraClient {
         let friendsData = await friends.getAll()
         let compressed = SyncBlobExporter.export(friends: friendsData, messages: [])
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .syncBlob
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.syncBlob.compressedData = compressed
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
@@ -992,21 +986,20 @@ public class ObscuraClient {
         let friendsData = await friends.getAll()
         let friendsExportData = SyncBlobExporter.export(friends: friendsData, messages: [])
 
-        var approval = Obscura_V2_DeviceLinkApproval()
+        var approval = Obscura_Client_V1_DeviceLinkApproval()
         if let pk = identity?.p2pPublicKey { approval.p2PPublicKey = pk }
         if let sk = identity?.p2pPrivateKey { approval.p2PPrivateKey = sk }
         if let rk = identity?.recoveryPublicKey { approval.recoveryPublicKey = rk }
         approval.challengeResponse = challengeResponse
         approval.ownDevices = ownDevices.map { d in
-            var info = Obscura_V2_DeviceInfo()
+            var info = Obscura_Client_V1_DeviceInfo()
             info.deviceID = d.deviceId
             info.deviceName = d.deviceName
             return info
         }
         approval.friendsExport = friendsExportData
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceLinkApproval
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceLinkApproval = approval
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
@@ -1073,9 +1066,9 @@ public class ObscuraClient {
 
     /// Announce device revocation to a specific friend with remaining device IDs.
     public func announceDeviceRevocation(to friendUserId: String, remainingDeviceIds: [String]) async throws {
-        var announce = Obscura_V2_DeviceAnnounce()
+        var announce = Obscura_Client_V1_DeviceAnnounce()
         announce.devices = remainingDeviceIds.map { id in
-            var info = Obscura_V2_DeviceInfo()
+            var info = Obscura_Client_V1_DeviceInfo()
             info.deviceID = id
             info.deviceName = "Device"
             return info
@@ -1084,8 +1077,7 @@ public class ObscuraClient {
         announce.isRevocation = true
         announce.signature = Data(repeating: 0, count: Self.emptySignatureSize)
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceAnnounce
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceAnnounce = announce
         try await sendToAllDevices(friendUserId, msg)
     }
@@ -1165,15 +1157,14 @@ public class ObscuraClient {
     /// Send a CONTENT_REFERENCE message to a friend (attachment already uploaded). Throws if not friends.
     public func sendAttachment(to friendUserId: String, attachmentId: String, contentKey: Data, nonce: Data, mimeType: String, sizeBytes: Int) async throws {
         guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
-        var ref = Obscura_V2_ContentReference()
+        var ref = Obscura_Client_V1_ContentReference()
         ref.attachmentID = attachmentId
         ref.contentKey = contentKey
         ref.nonce = nonce
         ref.contentType = mimeType
         ref.sizeBytes = UInt64(sizeBytes)
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .contentReference
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.contentReference = ref
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await sendToAllDevices(friendUserId, msg)
@@ -1182,7 +1173,7 @@ public class ObscuraClient {
     /// Send a MODEL_SYNC message to a friend. Throws if not friends.
     public func sendModelSync(to friendUserId: String, model: String, entryId: String, op: String = "CREATE", data: Data) async throws {
         guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
-        var sync = Obscura_V2_ModelSync()
+        var sync = Obscura_Client_V1_ModelSync()
         sync.model = model
         sync.id = entryId
         sync.op = WireCodec.encodeOp(op)
@@ -1190,25 +1181,22 @@ public class ObscuraClient {
         sync.data = data
         sync.authorDeviceID = deviceId ?? ""
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .modelSync
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.modelSync = sync
         try await sendToAllDevices(friendUserId, msg)
     }
 
     /// SyncManager-friendly overload with all fields.
     public func sendModelSync(to friendUserId: String? = nil, toSelf: Bool = false, model: String, entryId: String, op: String = "CREATE", data: Data, timestamp: UInt64 = 0, authorDeviceId: String = "", signature: Data = Data()) async throws {
-        var sync = Obscura_V2_ModelSync()
+        var sync = Obscura_Client_V1_ModelSync()
         sync.model = model
         sync.id = entryId
         sync.op = WireCodec.encodeOp(op)
         sync.timestamp = timestamp != 0 ? timestamp : UInt64(Date().timeIntervalSince1970 * 1000)
         sync.data = data
         sync.authorDeviceID = authorDeviceId.isEmpty ? (deviceId ?? "") : authorDeviceId
-        sync.signature = signature
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .modelSync
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.modelSync = sync
 
         if let targetUserId = friendUserId {
@@ -1337,7 +1325,7 @@ public class ObscuraClient {
             // story/profile/pix syncs re-query, not just directMessage.
             let msgTask = Task {
                 for await event in events() {
-                    if event.type == 30 { // MODEL_SYNC
+                    if event.type == "MODEL_SYNC" {
                         continuation.yield(.messageReceived(model: event.model ?? "directMessage", entryId: ""))
                     }
                 }
@@ -1612,8 +1600,8 @@ public class ObscuraClient {
         let signature = RecoveryKeys.sign(phrase: recoveryPhrase, data: announceData)
         let recoveryPubKey = RecoveryKeys.getPublicKey(from: recoveryPhrase)
 
-        var announce = Obscura_V2_DeviceRecoveryAnnounce()
-        var deviceInfo = Obscura_V2_DeviceInfo()
+        var announce = Obscura_Client_V1_DeviceRecoveryAnnounce()
+        var deviceInfo = Obscura_Client_V1_DeviceInfo()
         deviceInfo.deviceID = deviceId ?? ""
         announce.newDevices = [deviceInfo]
         announce.timestamp = timestamp
@@ -1621,8 +1609,7 @@ public class ObscuraClient {
         announce.isFullRecovery = true
         announce.recoveryPublicKey = recoveryPubKey
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceRecoveryAnnounce
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceRecoveryAnnounce = announce
 
         let accepted = await friends.getAccepted()
@@ -1704,7 +1691,7 @@ public class ObscuraClient {
 
     // MARK: - Internal: Send to all devices of a user
 
-    private func sendToAllDevices(_ targetUserId: String, _ msg: Obscura_V2_ClientMessage, excludingDeviceId: String? = nil) async throws {
+    private func sendToAllDevices(_ targetUserId: String, _ msg: Obscura_Client_V1_ClientMessage, excludingDeviceId: String? = nil) async throws {
         let messenger = try requireMessenger()
         let bundles = try await messenger.fetchPreKeyBundles(targetUserId)
         await rateLimitDelay()
@@ -1772,27 +1759,39 @@ public class ObscuraClient {
         }
 
         do {
-            let encMsg = try Obscura_V2_EncryptedMessage(serializedData: raw.message)
+            let encMsg = try Obscura_Client_V1_EncryptedMessage(serializedData: raw.message)
             let messageType = encMsg.type == .prekeyMessage ? 1 : 2
             let plaintext = try await messenger.decrypt(
                 sourceUserId: sourceUserId, content: encMsg.content, messageType: messageType
             )
-            let clientMsg = try Obscura_V2_ClientMessage(serializedData: Data(plaintext))
+            let clientMsg = try Obscura_Client_V1_ClientMessage(serializedData: Data(plaintext))
 
             // Route by message type
             await routeMessage(clientMsg, sourceUserId: sourceUserId)
 
             // Emit to event subscribers
             let received = ReceivedMessage(
-                type: clientMsg.type.rawValue,
-                text: clientMsg.text,
-                username: clientMsg.username,
-                accepted: clientMsg.accepted,
+                type: WireCodec.decodeMessageType(clientMsg.payload),
+                text: clientMsg.text.text,
+                username: {
+                    switch clientMsg.payload {
+                    case .friendRequest?: return clientMsg.friendRequest.username
+                    case .friendResponse?: return clientMsg.friendResponse.username
+                    default: return ""
+                    }
+                }(),
+                accepted: {
+                    if case .friendResponse? = clientMsg.payload { return clientMsg.friendResponse.accepted }
+                    return false
+                }(),
                 sourceUserId: sourceUserId,
                 senderDeviceId: nil,
                 timestamp: clientMsg.timestamp,
                 rawBytes: Data(plaintext),
-                model: clientMsg.type == .modelSync ? clientMsg.modelSync.model : nil
+                model: {
+                    if case .modelSync? = clientMsg.payload { return clientMsg.modelSync.model }
+                    return nil
+                }()
             )
             emit(received)
 
@@ -1814,28 +1813,28 @@ public class ObscuraClient {
 
     // MARK: - Internal: Message Routing
 
-    private func routeMessage(_ msg: Obscura_V2_ClientMessage, sourceUserId: String) async {
-        NSLog("[ObscuraKit] routeMessage type=%d from=%@", msg.type.rawValue, String(sourceUserId.prefix(8)))
-        switch msg.type {
-        case .friendRequest:
-            await friends.add(sourceUserId, msg.username, status: .pendingReceived)
+    private func routeMessage(_ msg: Obscura_Client_V1_ClientMessage, sourceUserId: String) async {
+        NSLog("[ObscuraKit] routeMessage payload=%@ from=%@", WireCodec.decodeMessageType(msg.payload), String(sourceUserId.prefix(8)))
+        switch msg.payload {
+        case .friendRequest?:
+            await friends.add(sourceUserId, msg.friendRequest.username, status: .pendingReceived)
 
-        case .friendResponse:
-            if msg.accepted {
-                await friends.add(sourceUserId, msg.username, status: .accepted)
+        case .friendResponse?:
+            if msg.friendResponse.accepted {
+                await friends.add(sourceUserId, msg.friendResponse.username, status: .accepted)
             }
 
-        case .text, .image, .video, .audio, .file:
+        case .text?:
             let messageData = Message(
                 messageId: "msg_\(UUID().uuidString)",
                 conversationId: sourceUserId,
                 timestamp: msg.timestamp,
-                content: msg.text,
+                content: msg.text.text,
                 isSent: false
             )
             await messages.add(sourceUserId, messageData)
 
-        case .deviceAnnounce:
+        case .deviceAnnounce?:
             let announce = msg.deviceAnnounce
             let deviceInfos = announce.devices.map { dev -> [String: String] in
                 ["deviceId": dev.deviceID, "deviceName": dev.deviceName]
@@ -1861,7 +1860,7 @@ public class ObscuraClient {
                 // Would need to know which device was removed to purge its messages
             }
 
-        case .modelSync:
+        case .modelSync?:
             // Clear all typing indicators — a real message arrived
             await SignalStoreRegistry.shared.store.clearAll()
             SignalStoreRegistry.shared.notifyObservers()
@@ -1873,13 +1872,13 @@ public class ObscuraClient {
                     op: WireCodec.decodeOp(msg.modelSync.op),
                     timestamp: msg.modelSync.timestamp,
                     data: msg.modelSync.data,
-                    signature: msg.modelSync.signature,
+                    signature: Data(),
                     authorDeviceId: msg.modelSync.authorDeviceID
                 )
                 _ = await syncManager.handleIncoming(syncMsg, sourceUserId: sourceUserId)
             }
 
-        case .modelSignal:
+        case .modelSignal?:
             // Ephemeral signal — typed payload; identity comes from the authenticated
             // envelope (sender from the decrypted session, display name from the friend
             // graph), never from the payload.
@@ -1904,7 +1903,7 @@ public class ObscuraClient {
                 SignalStoreRegistry.shared.notifyObservers()
             }
 
-        case .syncBlob:
+        case .syncBlob?:
             // Import state from linked device — only accept from own devices
             guard sourceUserId == self.userId else { break }
             if let parsed = SyncBlobExporter.parseExport(msg.syncBlob.compressedData) {
@@ -1922,20 +1921,20 @@ public class ObscuraClient {
                 }
             }
 
-        case .sentSync:
+        case .sentSync?:
             // Only accept sent sync from own devices
             guard sourceUserId == self.userId else { break }
             let ss = msg.sentSync
             let messageData = Message(
                 messageId: ss.messageID,
-                conversationId: ss.conversationID,
+                conversationId: ss.recipientUsername,
                 timestamp: ss.timestamp,
                 content: String(data: ss.content, encoding: .utf8) ?? "",
                 isSent: true
             )
-            await messages.add(ss.conversationID, messageData)
+            await messages.add(ss.recipientUsername, messageData)
 
-        case .friendSync:
+        case .friendSync?:
             // Only accept friend sync from own devices
             guard sourceUserId == self.userId else { break }
             let fs = msg.friendSync
@@ -1946,7 +1945,7 @@ public class ObscuraClient {
                 await friends.remove(sourceUserId)
             }
 
-        case .sessionReset:
+        case .sessionReset?:
             try? persistentSignalStore?.deleteAllSessions(for: sourceUserId)
 
         default:
@@ -1960,10 +1959,9 @@ public class ObscuraClient {
         let ownDevices = await devices.getOwnDevices()
         guard !ownDevices.isEmpty else { return }
 
-        var syncMsg = Obscura_V2_ClientMessage()
-        syncMsg.type = .sentSync
-        var payload = Obscura_V2_SentSync()
-        payload.conversationID = conversationId
+        var syncMsg = Obscura_Client_V1_ClientMessage()
+        var payload = Obscura_Client_V1_SentSync()
+        payload.recipientUsername = conversationId
         payload.messageID = messageId
         payload.timestamp = timestamp
         payload.content = Data(content.utf8)
@@ -1983,9 +1981,8 @@ public class ObscuraClient {
         let ownDevices = await devices.getOwnDevices()
         guard !ownDevices.isEmpty else { return }
 
-        var syncMsg = Obscura_V2_ClientMessage()
-        syncMsg.type = .friendSync
-        var payload = Obscura_V2_FriendSync()
+        var syncMsg = Obscura_Client_V1_ClientMessage()
+        var payload = Obscura_Client_V1_FriendSync()
         payload.username = username
         payload.action = action
         payload.status = status

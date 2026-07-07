@@ -40,7 +40,7 @@ final class ORMAutoSyncTests: XCTestCase {
 
         // Bob should receive the MODEL_SYNC
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 30, "Should be MODEL_SYNC (type 30)")
+        XCTAssertEqual(received.type, "MODEL_SYNC", "Should be MODEL_SYNC (type 30)")
 
         // Bob's ORM should have merged the story
         let bobStory = bob.client.model("story")!

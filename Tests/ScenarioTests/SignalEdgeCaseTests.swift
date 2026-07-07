@@ -123,7 +123,7 @@ final class SignalEdgeCaseTests: XCTestCase {
         // Alice resets session with Bob only
         try await alice.client.resetSessionWith(bob.userId!, reason: "selective reset")
         let resetMsg = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(resetMsg.type, 4, "Bob should get SESSION_RESET")
+        XCTAssertEqual(resetMsg.type, "SESSION_RESET", "Bob should get SESSION_RESET")
 
         // Alice can still message Carol (that session wasn't reset)
         try await alice.send(to: carol.userId!, "Carol session intact")

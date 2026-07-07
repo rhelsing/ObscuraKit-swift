@@ -90,7 +90,7 @@ final class CoreFlowTests: XCTestCase {
 
         // Bob receives FRIEND_REQUEST
         let friendReq = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(friendReq.type, 2, "Should be FRIEND_REQUEST (2)")
+        XCTAssertEqual(friendReq.type, "FRIEND_REQUEST", "Should be FRIEND_REQUEST (2)")
         XCTAssertEqual(friendReq.sourceUserId, aliceUserId)
         XCTAssertEqual(friendReq.username, aliceUsername, "Request should carry Alice's username")
 
@@ -110,7 +110,7 @@ final class CoreFlowTests: XCTestCase {
 
         // Alice receives FRIEND_RESPONSE
         let friendResp = try await alice.waitForMessage(timeout: 10)
-        XCTAssertEqual(friendResp.type, 3, "Should be FRIEND_RESPONSE (3)")
+        XCTAssertEqual(friendResp.type, "FRIEND_RESPONSE", "Should be FRIEND_RESPONSE (3)")
         XCTAssertTrue(friendResp.accepted)
 
         // Assert Alice's store: accepted
@@ -140,7 +140,7 @@ final class CoreFlowTests: XCTestCase {
         // Bob receives
         let bobRecv1 = try await bob.waitForMessage(timeout: 10)
         XCTAssertEqual(bobRecv1.text, "Hello from Alice!")
-        XCTAssertEqual(bobRecv1.type, 8, "Should be TEXT (8)")
+        XCTAssertEqual(bobRecv1.type, "TEXT", "Should be TEXT (8)")
 
         // Assert Bob's store: received message persisted
         let bobMsgs1 = await bob.messages.getMessages(aliceUserId)

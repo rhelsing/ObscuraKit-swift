@@ -27,9 +27,8 @@ final class PixFlowTests: XCTestCase {
 
         // Alice sends CONTENT_REFERENCE (pix) to Bob
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .contentReference
-        var ref = Obscura_V2_ContentReference()
+        var msg = Obscura_Client_V1_ClientMessage()
+        var ref = Obscura_Client_V1_ContentReference()
         ref.attachmentID = attachmentId
         ref.contentKey = Data(repeating: 0xAA, count: 32)
         ref.nonce = Data(repeating: 0xBB, count: 12)
@@ -42,7 +41,7 @@ final class PixFlowTests: XCTestCase {
 
         // Bob receives
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 25, "Should be CONTENT_REFERENCE")
+        XCTAssertEqual(received.type, "CONTENT_REFERENCE", "Should be CONTENT_REFERENCE")
         XCTAssertEqual(received.sourceUserId, alice.userId!)
 
         bob.disconnectWebSocket()

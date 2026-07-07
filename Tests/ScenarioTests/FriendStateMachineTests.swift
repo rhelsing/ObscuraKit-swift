@@ -118,7 +118,7 @@ final class FriendStateMachineTests: XCTestCase {
         // Bob connects — server should flush queued FRIEND_REQUEST
         try await bob.connectWebSocket()
         let msg = try await bob.waitForMessage(timeout: 15)
-        XCTAssertEqual(msg.type, 2, "Should be FRIEND_REQUEST")
+        XCTAssertEqual(msg.type, "FRIEND_REQUEST", "Should be FRIEND_REQUEST")
 
         // Bob's store should have the friend entry
         let friend = await bob.friends.getFriend(alice.userId!)

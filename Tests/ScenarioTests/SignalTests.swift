@@ -31,7 +31,7 @@ final class SignalTests: XCTestCase {
 
         // Bob should receive it (MODEL_SIGNAL type 31)
         let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 31, "Should be MODEL_SIGNAL")
+        XCTAssertEqual(received.type, "MODEL_SIGNAL", "Should be MODEL_SIGNAL")
 
         // Check SignalStore has the typing indicator
         let active = await SignalStoreRegistry.shared.store.getActive(

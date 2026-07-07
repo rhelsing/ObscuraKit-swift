@@ -43,7 +43,7 @@ final class DeviceTakeoverTests: XCTestCase {
 
         try await alice.befriend(bob.userId!, username: bob.username)
         let req = try await bob.waitForMessage(timeout: 15) // FRIEND_REQUEST
-        XCTAssertEqual(req.type, 2)
+        XCTAssertEqual(req.type, "FRIEND_REQUEST")
 
         try await bob.acceptFriend(alice.userId!, username: alice.username)
         _ = try await alice.waitForMessage(timeout: 15) // FRIEND_RESPONSE

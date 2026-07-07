@@ -18,16 +18,15 @@ final class DeviceRevocationFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Bob sends DEVICE_ANNOUNCE to Alice
-        var announce = Obscura_V2_DeviceAnnounce()
-        var deviceInfo = Obscura_V2_DeviceInfo()
+        var announce = Obscura_Client_V1_DeviceAnnounce()
+        var deviceInfo = Obscura_Client_V1_DeviceInfo()
         deviceInfo.deviceID = bob.deviceId ?? ""
         deviceInfo.deviceName = "Bob's Phone"
         announce.devices = [deviceInfo]
         announce.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         announce.isRevocation = false
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceAnnounce
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceAnnounce = announce
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await bob.sendRaw(to: alice.userId!, try msg.serializedData())
@@ -35,7 +34,7 @@ final class DeviceRevocationFlowTests: XCTestCase {
 
         // Alice receives DEVICE_ANNOUNCE
         let received = try await alice.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 12, "Should be DEVICE_ANNOUNCE (12)")
+        XCTAssertEqual(received.type, "DEVICE_ANNOUNCE", "Should be DEVICE_ANNOUNCE (12)")
         XCTAssertEqual(received.sourceUserId, bob.userId!)
 
         alice.disconnectWebSocket()
@@ -53,21 +52,20 @@ final class DeviceRevocationFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Bob sends revocation announce (device removed)
-        var announce = Obscura_V2_DeviceAnnounce()
+        var announce = Obscura_Client_V1_DeviceAnnounce()
         announce.devices = [] // empty — all devices revoked
         announce.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         announce.isRevocation = true
         announce.signature = Data(repeating: 0xAA, count: 64) // signed with recovery key
 
-        var msg = Obscura_V2_ClientMessage()
-        msg.type = .deviceAnnounce
+        var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceAnnounce = announce
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         try await bob.sendRaw(to: alice.userId!, try msg.serializedData())
         await rateLimitDelay()
 
         let received = try await alice.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, 12, "Should be DEVICE_ANNOUNCE")
+        XCTAssertEqual(received.type, "DEVICE_ANNOUNCE", "Should be DEVICE_ANNOUNCE")
 
         alice.disconnectWebSocket()
     }

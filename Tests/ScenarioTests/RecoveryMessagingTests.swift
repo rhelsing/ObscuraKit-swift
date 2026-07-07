@@ -28,9 +28,9 @@ final class RecoveryMessagingTests: XCTestCase {
 
         let msg = try await bob.waitForMessage(timeout: 10)
         // DEVICE_RECOVERY_ANNOUNCE = type 13
-        XCTAssertEqual(msg.type, 13, "Should be DEVICE_RECOVERY_ANNOUNCE")
+        XCTAssertEqual(msg.type, "DEVICE_RECOVERY_ANNOUNCE", "Should be DEVICE_RECOVERY_ANNOUNCE")
 
-        let clientMsg = try Obscura_V2_ClientMessage(serializedBytes: msg.rawBytes)
+        let clientMsg = try Obscura_Client_V1_ClientMessage(serializedBytes: msg.rawBytes)
         XCTAssertTrue(clientMsg.deviceRecoveryAnnounce.isFullRecovery)
 
         alice.disconnectWebSocket()

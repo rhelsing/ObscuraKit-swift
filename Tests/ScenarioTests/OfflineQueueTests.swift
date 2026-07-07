@@ -26,7 +26,7 @@ final class OfflineQueueTests: XCTestCase {
         let msg = try await bob.waitForMessage(timeout: 10)
         XCTAssertEqual(msg.text, "you there?")
         XCTAssertEqual(msg.sourceUserId, alice.userId!)
-        XCTAssertEqual(msg.type, 8, "Should be TEXT")
+        XCTAssertEqual(msg.type, "TEXT", "Should be TEXT")
 
         alice.disconnectWebSocket()
         bob.disconnectWebSocket()

@@ -58,9 +58,9 @@ final class EdgeCaseTests: XCTestCase {
         await rateLimitDelay()
 
         let msg = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(msg.type, 30, "Should be MODEL_SYNC (30)")
+        XCTAssertEqual(msg.type, "MODEL_SYNC", "Should be MODEL_SYNC (30)")
 
-        let clientMsg = try Obscura_V2_ClientMessage(serializedBytes: msg.rawBytes)
+        let clientMsg = try Obscura_Client_V1_ClientMessage(serializedBytes: msg.rawBytes)
         XCTAssertEqual(clientMsg.modelSync.model, "profile")
 
         let data = try JSONSerialization.jsonObject(with: clientMsg.modelSync.data) as? [String: Any]

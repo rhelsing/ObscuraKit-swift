@@ -18,18 +18,18 @@ import SwiftProtobuf
 /// The production mapping under test is `WireCodec`.
 final class WireConformanceTests: XCTestCase {
 
-    private let typeByWire: [String: Obscura_V2_ClientMessage.TypeEnum] = [
-        "TYPE_TEXT": .text,
-        "TYPE_FRIEND_REQUEST": .friendRequest,
-        "TYPE_MODEL_SYNC": .modelSync,
-        "TYPE_MODEL_SIGNAL": .modelSignal,
+    private let payloadByWire: [String: Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
+        "text": .text(Obscura_Client_V1_TextMessage()),
+        "friend_request": .friendRequest(Obscura_Client_V1_FriendRequest()),
+        "model_sync": .modelSync(Obscura_Client_V1_ModelSync()),
+        "model_signal": .modelSignal(Obscura_Client_V1_ModelSignal()),
     ]
-    private let opByWire: [String: Obscura_V2_ModelSync.Op] = [
+    private let opByWire: [String: Obscura_Client_V1_ModelSync.Op] = [
         "OP_CREATE": .create,
         "OP_UPDATE": .update,
         "OP_DELETE": .delete,
     ]
-    private let kindByWire: [String: Obscura_V2_SignalKind] = [
+    private let kindByWire: [String: Obscura_Client_V1_SignalKind] = [
         "SIGNAL_KIND_TYPING": .typing,
         "SIGNAL_KIND_STOPPED_TYPING": .stoppedTyping,
         "SIGNAL_KIND_READ": .read,
@@ -40,8 +40,8 @@ final class WireConformanceTests: XCTestCase {
 
         for m in (v["messageTypes"] as? [[String: Any]] ?? []) {
             let wire = m["wire"] as? String ?? "", app = m["app"] as? String ?? ""
-            guard let t = typeByWire[wire] else { XCTFail("unmapped wire messageType \(wire)"); continue }
-            XCTAssertEqual(WireCodec.decodeMessageType(t), app, "messageType \(wire) -> \(app)")
+            guard let p = payloadByWire[wire] else { XCTFail("unmapped wire messageType \(wire)"); continue }
+            XCTAssertEqual(WireCodec.decodeMessageType(p), app, "messageType \(wire) -> \(app)")
         }
 
         for m in (v["modelSyncOps"] as? [[String: Any]] ?? []) {
@@ -71,7 +71,7 @@ final class WireConformanceTests: XCTestCase {
         let ts = conformanceUInt64(ms["timestamp"])
         let dataMap = ms["data"] as? [String: Any] ?? [:]
 
-        var proto = Obscura_V2_ModelSync()
+        var proto = Obscura_Client_V1_ModelSync()
         proto.model = model
         proto.id = id
         proto.op = WireCodec.encodeOp(appOp)
@@ -79,7 +79,7 @@ final class WireConformanceTests: XCTestCase {
         proto.data = try JSONSerialization.data(withJSONObject: dataMap)
         proto.authorDeviceID = "d0"
 
-        let decoded = try Obscura_V2_ModelSync(serializedData: proto.serializedData())
+        let decoded = try Obscura_Client_V1_ModelSync(serializedData: proto.serializedData())
 
         XCTAssertEqual(decoded.model, model, "[\(name)] model")
         XCTAssertEqual(decoded.id, id, "[\(name)] id")
