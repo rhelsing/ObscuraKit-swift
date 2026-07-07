@@ -129,7 +129,7 @@ public class Model {
         try validate(data)
 
         let id = "\(name)_\(UInt64(Date().timeIntervalSince1970 * 1000))_\(randomId())"
-        let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        let timestamp = await MonotonicClock.shared.now()
         let entry = ModelEntry(
             id: id,
             data: data,
@@ -166,7 +166,7 @@ public class Model {
         }
         try validate(data)
 
-        let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        let timestamp = await MonotonicClock.shared.now()
         let entry = ModelEntry(
             id: id,
             data: data,
@@ -180,9 +180,11 @@ public class Model {
         return result
     }
 
-    /// Find by ID.
+    /// Find by ID. A tombstone is not findable — consistent with all(), which
+    /// excludes deleted entries.
     public func find(_ id: String) async -> ModelEntry? {
-        await crdt.get(id)
+        let entry = await crdt.get(id)
+        return (entry?.isDeleted == true) ? nil : entry
     }
 
     /// Get all entries.

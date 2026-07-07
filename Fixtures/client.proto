@@ -65,39 +65,45 @@ message ClientMessage {
   ChunkedContentReference chunked_content_reference = 46;
 
   enum Type {
+    TYPE_UNSPECIFIED = 0;
+
     // Base messaging (0-9)
-    TEXT = 0;
-    IMAGE = 1;
-    FRIEND_REQUEST = 2;
-    FRIEND_RESPONSE = 3;
-    SESSION_RESET = 4;
-    VIDEO = 5;
-    AUDIO = 6;
-    FILE = 7;  // Generic file attachment
+    TYPE_IMAGE = 1;
+    TYPE_FRIEND_REQUEST = 2;
+    TYPE_FRIEND_RESPONSE = 3;
+    TYPE_SESSION_RESET = 4;
+    TYPE_VIDEO = 5;
+    TYPE_AUDIO = 6;
+    TYPE_FILE = 7;  // Generic file attachment
+    TYPE_TEXT = 8;  // Was 0; renumbered so 0 can be TYPE_UNSPECIFIED
 
     // Device management (10-19)
     // Note: 10 intentionally skipped - link "request" is out-of-band (QR/link code)
-    DEVICE_LINK_APPROVAL = 11;
-    DEVICE_ANNOUNCE = 12;
-    DEVICE_RECOVERY_ANNOUNCE = 13;  // Account recovery - replaces all old devices
+    TYPE_DEVICE_LINK_APPROVAL = 11;
+    TYPE_DEVICE_ANNOUNCE = 12;
+    TYPE_DEVICE_RECOVERY_ANNOUNCE = 13;  // Account recovery - replaces all old devices
 
     // Sync (20-29)
-    HISTORY_CHUNK = 20;
-    SETTINGS_SYNC = 21;
-    READ_SYNC = 22;
-    SYNC_BLOB = 23;      // Full state transfer (gzipped JSON)
-    SENT_SYNC = 24;      // Notify own devices of sent message
-    CONTENT_REFERENCE = 25;  // E2E encrypted attachment key sharing
-    SYNC_REQUEST = 26;   // Request full sync from another device
-    FRIEND_SYNC = 27;    // Sync friend changes to own devices
-    CHUNKED_CONTENT_REFERENCE = 28;  // Large file (chunked attachment)
+    TYPE_HISTORY_CHUNK = 20;
+    TYPE_SETTINGS_SYNC = 21;
+    TYPE_READ_SYNC = 22;
+    TYPE_SYNC_BLOB = 23;      // Full state transfer (gzipped JSON)
+    TYPE_SENT_SYNC = 24;      // Notify own devices of sent message
+    TYPE_CONTENT_REFERENCE = 25;  // E2E encrypted attachment key sharing
+    TYPE_SYNC_REQUEST = 26;   // Request full sync from another device
+    TYPE_FRIEND_SYNC = 27;    // Sync friend changes to own devices
+    TYPE_CHUNKED_CONTENT_REFERENCE = 28;  // Large file (chunked attachment)
 
     // ORM Layer (30-39)
-    MODEL_SYNC = 30;     // CRDT model operation (create/update/delete)
+    TYPE_MODEL_SYNC = 30;     // CRDT model operation (create/update/delete)
+    TYPE_MODEL_SIGNAL = 31;   // Ephemeral signal (typing, read receipt) — not persisted
   }
 
   // ORM Layer payload
   ModelSync model_sync = 50;
+
+  // Ephemeral signal payload (typing, read receipts, presence)
+  ModelSignal model_signal = 52;
 
   // Friend sync payload
   FriendSync friend_sync = 51;
@@ -249,8 +255,27 @@ message ModelSync {
   string author_device_id = 7;      // Which device created this entry
 
   enum Op {
-    CREATE = 0;
-    UPDATE = 1;                     // Only for LWW models
-    DELETE = 2;                     // Soft delete (tombstone)
+    OP_UNSPECIFIED = 0;
+    OP_UPDATE = 1;      // Only for LWW models
+    OP_DELETE = 2;      // Soft delete (tombstone)
+    OP_CREATE = 3;      // Was 0; renumbered so 0 can be OP_UNSPECIFIED
   }
+}
+
+// Ephemeral signal kinds — transient real-time presence for a model context.
+enum SignalKind {
+  SIGNAL_KIND_UNSPECIFIED = 0;
+  SIGNAL_KIND_TYPING = 1;
+  SIGNAL_KIND_STOPPED_TYPING = 2;
+  SIGNAL_KIND_READ = 3;
+}
+
+// Ephemeral model signal — real-time presence attached to a model context.
+// Not persisted, not CRDT-merged; in-memory only, auto-expires. The sender's
+// identity and the timestamp come from the authenticated ClientMessage envelope,
+// so they are intentionally NOT duplicated here.
+message ModelSignal {
+  string model = 1;         // Model namespace, e.g. "directMessage"
+  SignalKind kind = 2;      // Which transient state
+  string context_id = 3;    // Context the signal applies to (e.g. the conversation id)
 }

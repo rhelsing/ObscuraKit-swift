@@ -1381,11 +1381,43 @@ public class ObscuraClient {
         var definitions: [ModelDefinition] = []
         for (name, config) in schema {
             let syncStr = config["sync"] as? String ?? "gset"
-            let sync: SyncStrategy = syncStr == "lww" ? .lwwMap : .gset
-            let isPrivate = config["private"] as? Bool ?? false
-            let isDirect = config["direct"] as? Bool ?? false
-            // private wins; then direct (1:1, fail-loud); else broadcast to friends.
-            let scope: SyncScope = isPrivate ? .ownDevices : (isDirect ? .direct : .friends)
+            let sync: SyncStrategy
+            switch syncStr {
+            case "gset": sync = .gset
+            case "lww": sync = .lwwMap
+            default: throw ObscuraError.invalidSchema("Unknown sync strategy '\(syncStr)' for model '\(name)' (expected 'gset' or 'lww')")
+            }
+
+            // `audience` declares delivery scope (mirrors the shared schema.ts / Kotlin Audience,
+            // obscura-proto SPEC §1):
+            //   self                    → own devices only (.ownDevices)
+            //   recipient/conversation  → 1:1, fail-loud, never broadcast (.direct)
+            //   friends/absent          → all accepted friends (.friends)
+            var scope: SyncScope = .friends
+            var isPrivate = false
+            if let audienceObj = config["audience"] as? [String: Any] {
+                let kind = audienceObj["kind"] as? String ?? "friends"
+                switch kind {
+                case "friends":
+                    scope = .friends
+                case "self":
+                    scope = .ownDevices
+                    isPrivate = true
+                case "recipient", "conversation":
+                    guard let field = audienceObj["field"] as? String, !field.isEmpty else {
+                        throw ObscuraError.invalidSchema("audience '\(kind)' requires a non-empty 'field' for model '\(name)'")
+                    }
+                    // NOTE (transitional): SyncManager.resolveTargets still resolves the 1:1
+                    // recipient by field-sniffing recipientUsername / conversationId rather than
+                    // reading this declared `field` name. Honoring `field` is the remaining step to
+                    // full config-driven parity with Kotlin. The scope below already guarantees
+                    // fail-loud (never-broadcast) routing regardless.
+                    _ = field
+                    scope = .direct
+                default:
+                    throw ObscuraError.invalidSchema("Unknown audience kind '\(kind)' for model '\(name)'")
+                }
+            }
 
             var ttl: TTL? = nil
             if let ttlStr = config["ttl"] as? String {
@@ -1402,7 +1434,7 @@ public class ObscuraClient {
                     case "string?": fields[fieldName] = .optionalString
                     case "number?": fields[fieldName] = .optionalNumber
                     case "boolean?": fields[fieldName] = .optionalBoolean
-                    default: fields[fieldName] = .string
+                    default: throw ObscuraError.invalidSchema("Field '\(fieldName)' has unknown type '\(fieldType)' in model '\(name)'")
                     }
                 }
             }
@@ -1860,26 +1892,34 @@ public class ObscuraClient {
             }
 
         case .modelSignal:
-            // Ephemeral signal — don't persist, don't CRDT merge
-            NSLog("[ObscuraKit] MODEL_SIGNAL received text=%@", String(msg.text.prefix(200)))
-            if let payloadData = msg.text.data(using: .utf8),
-               let payload = try? JSONDecoder().decode(ModelSignalPayload.self, from: payloadData) {
-                NSLog("[ObscuraKit] MODEL_SIGNAL decoded model=%@ signal=%@", payload.model, payload.signal)
-                // Always store as "typing" — let auto-expire handle cleanup.
-                // stoppedTyping just means don't refresh the timer.
-                if payload.signal != SignalType.stoppedTyping.rawValue {
+            // Ephemeral signal — typed payload; identity comes from the authenticated
+            // envelope (sender from the decrypted session, display name from the friend
+            // graph), never from the payload.
+            let sig = msg.modelSignal
+            let signalName: String
+            switch sig.kind {
+            case .typing: signalName = "typing"
+            case .stoppedTyping: signalName = "stoppedTyping"
+            case .read: signalName = "read"
+            default: signalName = ""
+            }
+            if !sig.model.isEmpty, !signalName.isEmpty {
+                let username = await friends.getAccepted().first(where: { $0.userId == sourceUserId })?.username ?? sourceUserId
+                let payload = ModelSignalPayload(
+                    model: sig.model,
+                    signalRaw: signalName,
+                    conversationId: sig.contextID,
+                    senderUsername: username,
+                    authorDeviceId: sourceUserId,
+                    timestamp: msg.timestamp
+                )
+                if signalName == "stoppedTyping" {
+                    await SignalStoreRegistry.shared.store.remove(
+                        model: sig.model, signal: "typing", data: payload.data, authorDeviceId: sourceUserId)
+                } else {
                     await SignalStoreRegistry.shared.store.receive(payload)
-                    SignalStoreRegistry.shared.notifyObservers()
                 }
-            } else {
-                NSLog("[ObscuraKit] MODEL_SIGNAL decode FAILED text=%@", String(msg.text.prefix(300)))
-                if let payloadData = msg.text.data(using: .utf8) {
-                    do {
-                        _ = try JSONDecoder().decode(ModelSignalPayload.self, from: payloadData)
-                    } catch {
-                        NSLog("[ObscuraKit] MODEL_SIGNAL decode error: %@", "\(error)")
-                    }
-                }
+                SignalStoreRegistry.shared.notifyObservers()
             }
 
         case .syncBlob:
@@ -2140,6 +2180,26 @@ public class ObscuraClient {
         case timeout
         case notFriends(String)
         case deviceLinkFailed(String)
+        case invalidSchema(String)
+        case directRoutingUnresolved(String)
+
+        /// Stable, machine-readable code for cross-boundary propagation (mirrors
+        /// Kotlin `ObscuraError.code`). The bridge rejects promises with this so JS
+        /// can branch on *what* failed rather than parse the message.
+        public var code: String {
+            switch self {
+            case .missingToken: return "MISSING_TOKEN"
+            case .notAuthenticated: return "NOT_AUTHENTICATED"
+            case .provisionFailed: return "NOT_PROVISIONED"
+            case .noMessenger: return "NO_MESSENGER"
+            case .noMessage: return "NO_MESSAGE"
+            case .timeout: return "TIMEOUT"
+            case .notFriends: return "NOT_FRIENDS"
+            case .deviceLinkFailed: return "DEVICE_LINK_FAILED"
+            case .invalidSchema: return "INVALID_SCHEMA"
+            case .directRoutingUnresolved: return "DIRECT_ROUTING_UNRESOLVED"
+            }
+        }
 
         public var errorDescription: String? {
             switch self {
@@ -2151,6 +2211,8 @@ public class ObscuraClient {
             case .timeout: return "Operation timed out"
             case .notFriends(let userId): return "Not friends with \(userId)"
             case .deviceLinkFailed(let reason): return "Device link failed: \(reason)"
+            case .invalidSchema(let msg): return "Invalid schema: \(msg)"
+            case .directRoutingUnresolved(let msg): return msg
             }
         }
     }
