@@ -1,0 +1,4 @@
+[submodule "proto"]
+	path = proto
+	url = https://github.com/barrelmaker97/obscura-proto.git
+	branch = main
