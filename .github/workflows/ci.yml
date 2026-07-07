@@ -17,7 +17,7 @@ jobs:
   # Fast PR gate — pure-logic unit tests, no server (mirrors Kotlin :lib:test).
   unit:
     name: Kit (unit tests)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,7 +33,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendored/libsignal
-          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos15
 
       - name: Fetch + build libsignal FFI (host)
         if: steps.libsignal.outputs.cache-hit != 'true'
@@ -57,7 +57,7 @@ jobs:
   # cached binary is fully self-contained.
   integration:
     name: Kit (integration, native server)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +73,7 @@ jobs:
         with:
           path: vendored/libsignal
           # Same key as the unit job (same arch) — the cache is shared.
-          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos14
+          key: libsignal-${{ env.LIBSIGNAL_VERSION }}-macos15
 
       - name: Fetch + build libsignal FFI (host)
         if: steps.libsignal.outputs.cache-hit != 'true'
@@ -101,7 +101,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/obscura-server-bin
-          key: obscura-server-${{ steps.server-ref.outputs.sha }}-macos14
+          key: obscura-server-${{ steps.server-ref.outputs.sha }}-macos15
 
       - name: Build obscura-server natively (only when upstream changed)
         if: steps.server-bin.outputs.cache-hit != 'true'
