@@ -106,13 +106,18 @@ public class LWWMap {
         return entries.count
     }
 
-    /// Delete via tombstone pattern.
+    /// Delete via tombstone pattern. Preserves the prior entry's fields (plus
+    /// _deleted) so a delete on a 1:1 model still carries the routing field (e.g.
+    /// conversationId) when broadcast; otherwise scoped routing can't resolve the
+    /// audience and could fall through to a broadcast. Mirrors ObscuraKit-Kotlin.
     public func delete(_ id: String, authorDeviceId: String) async -> ModelEntry {
         await ensureLoaded()
+        var data = entries[id]?.data ?? [:]
+        data["_deleted"] = true
         let tombstone = ModelEntry(
             id: id,
-            data: ["_deleted": true],
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
+            data: data,
+            timestamp: await MonotonicClock.shared.now(),
             signature: Data(),
             authorDeviceId: authorDeviceId
         )
