@@ -98,7 +98,7 @@ public class Model {
     internal var storeDB: DatabaseQueue { store.dbQueue }
 
     /// Callback for broadcasting — set by SyncManager
-    internal var onBroadcast: ((String, ModelEntry) async -> Void)?
+    internal var onBroadcast: ((String, ModelEntry) async throws -> Void)?
 
     /// Callback for sending signals — set by SyncManager
     internal var onSignalSend: ((Data) async -> Void)?
@@ -154,7 +154,7 @@ public class Model {
         }
 
         // Broadcast via SyncManager
-        await onBroadcast?(name, result)
+        try await onBroadcast?(name, result)
 
         return result
     }
@@ -176,7 +176,7 @@ public class Model {
         )
 
         let result = await crdt.set(entry)
-        await onBroadcast?(name, result)
+        try await onBroadcast?(name, result)
         return result
     }
 
@@ -206,7 +206,7 @@ public class Model {
             throw ModelError.invalidOperation("internal: no LWWMap")
         }
         let tombstone = await lww.delete(id, authorDeviceId: deviceId)
-        await onBroadcast?(name, tombstone)
+        try await onBroadcast?(name, tombstone)
         return tombstone
     }
 

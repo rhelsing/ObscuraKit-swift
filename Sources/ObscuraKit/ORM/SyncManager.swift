@@ -16,7 +16,7 @@ public class SyncManager {
 
         // Wire up the broadcast callback
         model.onBroadcast = { [weak self] modelName, entry in
-            await self?.broadcast(modelName, entry)
+            try await self?.broadcast(modelName, entry)
         }
 
         // Wire up model resolver for include() eager loading
@@ -54,7 +54,12 @@ public class SyncManager {
     // MARK: - Broadcast (outgoing)
 
     /// Broadcast a model entry to the appropriate targets based on sync scope.
-    private func broadcast(_ modelName: String, _ entry: ModelEntry) async {
+    ///
+    /// Throws `ObscuraError.directRoutingUnresolved` when a 1:1 (`.direct`) payload has no
+    /// resolvable recipient — a pre-send validation failure that sends NOTHING (never a
+    /// broadcast, never even a self-sync). Transient network send failures are caught and
+    /// logged (the local write survives; the server retries), not thrown.
+    private func broadcast(_ modelName: String, _ entry: ModelEntry) async throws {
         guard let client = client, let model = models[modelName] else { return }
 
         let scope = model.definition.syncScope
@@ -92,33 +97,40 @@ public class SyncManager {
             )
         }
 
-        do {
-            // Group targeting needs an async parent-model lookup, so it stays out of the
-            // pure decision below.
-            if scope == .group {
+        // Group targeting needs an async parent-model lookup, so it is handled separately
+        // from the pure targeting decision below.
+        if scope == .group {
+            do {
                 let memberUserIds = await resolveGroupMembers(model: model, entry: entry)
                 for memberId in memberUserIds { try await deliver(to: memberId, toSelf: false) }
                 try await deliver(to: nil, toSelf: true)   // self-sync to own devices
-                return
+            } catch {
+                client.logger.log("BROADCAST FAILED \(modelName)/\(entry.id.prefix(20)): \(error.localizedDescription)")
             }
+            return
+        }
 
-            let acceptedFriends = await client.friends.getAccepted()
-            let resolution = SyncManager.resolveTargets(
-                scope: scope,
-                isPrivate: isPrivate,
-                entryData: entry.data,
-                acceptedFriends: acceptedFriends
-            )
+        let acceptedFriends = await client.friends.getAccepted()
+        let resolution = SyncManager.resolveTargets(
+            scope: scope,
+            isPrivate: isPrivate,
+            entryData: entry.data,
+            acceptedFriends: acceptedFriends
+        )
 
+        // FAIL LOUD: a 1:1 payload with no resolvable recipient must raise and send NOTHING
+        // (not even a self-sync) — never broadcast. Thrown before any delivery so it is NOT
+        // swallowed by the network catch below (which only logs transient send failures).
+        // Mirrors Kotlin SyncManager.getTargets throwing ObscuraError.DirectRoutingUnresolved;
+        // conforms to obscura-proto SPEC §1.2 + conformance/routing.json.
+        if case .refuse(let reason) = resolution {
+            throw ObscuraError.directRoutingUnresolved(
+                "Model '\(modelName)' entry \(entry.id.prefix(20)): \(reason). Refusing to broadcast a 1:1 payload.")
+        }
+
+        do {
             switch resolution {
             case .selfOnly:
-                try await deliver(to: nil, toSelf: true)
-
-            case .refuse(let reason):
-                // Direct payload with no resolvable recipient. FAIL LOUD + CLOSED: log and send
-                // to self only. Never fall through to the all-friends broadcast — a misrouted
-                // 1:1 payload reaching every mutual friend is a confidentiality breach.
-                client.logger.log("SYNC: refusing to broadcast direct \(modelName)/\(entry.id.prefix(20)) — \(reason); sending to self only")
                 try await deliver(to: nil, toSelf: true)
 
             case .scoped(let userIds):
@@ -128,6 +140,9 @@ public class SyncManager {
             case .allFriends:
                 for friend in acceptedFriends { try await deliver(to: friend.userId, toSelf: false) }
                 try await deliver(to: nil, toSelf: true)   // self-sync to own other devices
+
+            case .refuse:
+                break // unreachable — thrown above before any send
             }
         } catch {
             // Log through the client's logger so the app can see failures in the debug log.
@@ -144,7 +159,7 @@ public class SyncManager {
         case selfOnly                 // own devices only (private / ownDevices)
         case allFriends               // every accepted friend (+ self)
         case scoped([String])         // explicit recipient userIds (+ self)
-        case refuse(String)           // direct payload, no resolvable recipient → fail loud + self only
+        case refuse(String)           // direct payload, no resolvable recipient → caller MUST raise + send nothing
     }
 
     /// Pure targeting decision. No client, no network — fully unit testable. Group scope is
