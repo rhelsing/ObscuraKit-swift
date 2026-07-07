@@ -140,7 +140,7 @@ final class CoreFlowTests: XCTestCase {
         // Bob receives
         let bobRecv1 = try await bob.waitForMessage(timeout: 10)
         XCTAssertEqual(bobRecv1.text, "Hello from Alice!")
-        XCTAssertEqual(bobRecv1.type, 0, "Should be TEXT (0)")
+        XCTAssertEqual(bobRecv1.type, 8, "Should be TEXT (8)")
 
         // Assert Bob's store: received message persisted
         let bobMsgs1 = await bob.messages.getMessages(aliceUserId)
