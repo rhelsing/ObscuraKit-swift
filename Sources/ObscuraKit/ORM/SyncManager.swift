@@ -124,7 +124,7 @@ public class SyncManager {
         // Mirrors Kotlin SyncManager.getTargets throwing ObscuraError.DirectRoutingUnresolved;
         // conforms to obscura-proto SPEC §1.2 + conformance/routing.json.
         if case .refuse(let reason) = resolution {
-            throw ObscuraError.directRoutingUnresolved(
+            throw ObscuraClient.ObscuraError.directRoutingUnresolved(
                 "Model '\(modelName)' entry \(entry.id.prefix(20)): \(reason). Refusing to broadcast a 1:1 payload.")
         }
 
