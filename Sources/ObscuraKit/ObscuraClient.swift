@@ -1185,13 +1185,7 @@ public class ObscuraClient {
         var sync = Obscura_V2_ModelSync()
         sync.model = model
         sync.id = entryId
-        sync.op = {
-            switch op.uppercased() {
-            case "UPDATE": return .update
-            case "DELETE": return .delete
-            default: return .create
-            }
-        }()
+        sync.op = WireCodec.encodeOp(op)
         sync.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         sync.data = data
         sync.authorDeviceID = deviceId ?? ""
@@ -1207,13 +1201,7 @@ public class ObscuraClient {
         var sync = Obscura_V2_ModelSync()
         sync.model = model
         sync.id = entryId
-        sync.op = {
-            switch op.uppercased() {
-            case "UPDATE": return .update
-            case "DELETE": return .delete
-            default: return .create
-            }
-        }()
+        sync.op = WireCodec.encodeOp(op)
         sync.timestamp = timestamp != 0 ? timestamp : UInt64(Date().timeIntervalSince1970 * 1000)
         sync.data = data
         sync.authorDeviceID = authorDeviceId.isEmpty ? (deviceId ?? "") : authorDeviceId
@@ -1882,7 +1870,7 @@ public class ObscuraClient {
                 let syncMsg = ModelSyncMessage(
                     model: msg.modelSync.model,
                     id: msg.modelSync.id,
-                    op: msg.modelSync.op == .delete ? "DELETE" : (msg.modelSync.op == .update ? "UPDATE" : "CREATE"),
+                    op: WireCodec.decodeOp(msg.modelSync.op),
                     timestamp: msg.modelSync.timestamp,
                     data: msg.modelSync.data,
                     signature: msg.modelSync.signature,
@@ -1896,13 +1884,7 @@ public class ObscuraClient {
             // envelope (sender from the decrypted session, display name from the friend
             // graph), never from the payload.
             let sig = msg.modelSignal
-            let signalName: String
-            switch sig.kind {
-            case .typing: signalName = "typing"
-            case .stoppedTyping: signalName = "stoppedTyping"
-            case .read: signalName = "read"
-            default: signalName = ""
-            }
+            let signalName = WireCodec.decodeSignalKind(sig.kind)
             if !sig.model.isEmpty, !signalName.isEmpty {
                 let username = await friends.getAccepted().first(where: { $0.userId == sourceUserId })?.username ?? sourceUserId
                 let payload = ModelSignalPayload(

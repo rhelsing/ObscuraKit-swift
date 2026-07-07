@@ -202,12 +202,7 @@ extension TypedModel {
     }
 
     private func sendSignal(_ type: SignalType, data: [String: String]) async {
-        let kind: Obscura_V2_SignalKind
-        switch type {
-        case .typing: kind = .typing
-        case .stoppedTyping: kind = .stoppedTyping
-        case .read: kind = .read
-        }
+        let kind = WireCodec.encodeSignalKind(type.rawValue)
 
         var signal = Obscura_V2_ModelSignal()
         signal.model = T.modelName

@@ -50,7 +50,10 @@ let package = Package(
         // :lib:test). This is the fast PR gate.
         .testTarget(
             name: "UnitTests",
-            dependencies: ["ObscuraKit"],
+            dependencies: [
+                "ObscuraKit",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ],
