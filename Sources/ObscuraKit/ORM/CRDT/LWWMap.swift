@@ -24,24 +24,20 @@ public class LWWMap {
         loaded = true
     }
 
-    /// Set/update an entry. Only updates if timestamp is newer.
+    /// Set/update an entry. Only updates if it wins the LWW conflict.
     /// Returns the winning entry (might be existing if it was newer).
     /// Rejects timestamps more than 60 seconds in the future to prevent spoofing.
     public func set(_ entry: ModelEntry) async -> ModelEntry {
         await ensureLoaded()
-        let maxTimestamp = UInt64(Date().timeIntervalSince1970 * 1000) + 60_000
-        let effective: ModelEntry
-        if entry.timestamp > maxTimestamp {
-            effective = ModelEntry(id: entry.id, data: entry.data, timestamp: maxTimestamp, signature: entry.signature, authorDeviceId: entry.authorDeviceId)
-        } else {
-            effective = entry
+        let effective = clampFutureTimestamp(entry)
+        let existing = entries[effective.id]
+        if supersedes(effective, over: existing) {
+            await store.put(modelName, effective)
+            entries[effective.id] = effective
+            return effective
         }
-        if let existing = entries[effective.id], effective.timestamp <= existing.timestamp {
-            return existing
-        }
-        await store.put(modelName, effective)
-        entries[effective.id] = effective
-        return effective
+        // supersedes(x, over: nil) is always true, so a false result implies existing != nil.
+        return existing!
     }
 
     /// Alias for set, consistent interface with GSet.
@@ -54,19 +50,40 @@ public class LWWMap {
         await ensureLoaded()
         var updated: [ModelEntry] = []
         for entry in entries {
-            if let existing = self.entries[entry.id] {
-                if entry.timestamp > existing.timestamp {
-                    await store.put(modelName, entry)
-                    self.entries[entry.id] = entry
-                    updated.append(entry)
-                }
-            } else {
-                await store.put(modelName, entry)
-                self.entries[entry.id] = entry
-                updated.append(entry)
+            let effective = clampFutureTimestamp(entry)
+            let existing = self.entries[effective.id]
+            if supersedes(effective, over: existing) {
+                await store.put(modelName, effective)
+                self.entries[effective.id] = effective
+                updated.append(effective)
             }
         }
         return updated
+    }
+
+    /// Reject a spoofed far-future timestamp that would otherwise win every future
+    /// LWW conflict forever. Applied on BOTH the local-write (set) and the
+    /// incoming-sync (merge) paths — a timestamp arriving over sync is no more
+    /// trustworthy than a local one.
+    private func clampFutureTimestamp(_ entry: ModelEntry) -> ModelEntry {
+        let maxTimestamp = UInt64(Date().timeIntervalSince1970 * 1000) + 60_000
+        guard entry.timestamp > maxTimestamp else { return entry }
+        return ModelEntry(id: entry.id, data: entry.data, timestamp: maxTimestamp, signature: entry.signature, authorDeviceId: entry.authorDeviceId)
+    }
+
+    /// Does `incoming` win the LWW conflict against `existing`?
+    ///
+    /// Total order on (timestamp, authorDeviceId): a strictly-greater timestamp
+    /// wins; on an equal timestamp the lexicographically-higher authorDeviceId
+    /// wins. The device-id tie-break makes resolution deterministic and
+    /// order-independent across replicas (a true CRDT) instead of "whichever
+    /// write happened to arrive first" — which would let two devices converge to
+    /// different states on an equal-timestamp conflict. Equal timestamp AND equal
+    /// author is the same logical write (idempotent → existing is kept).
+    private func supersedes(_ incoming: ModelEntry, over existing: ModelEntry?) -> Bool {
+        guard let existing = existing else { return true }
+        if incoming.timestamp != existing.timestamp { return incoming.timestamp > existing.timestamp }
+        return incoming.authorDeviceId > existing.authorDeviceId
     }
 
     public func get(_ id: String) async -> ModelEntry? {
