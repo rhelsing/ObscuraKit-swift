@@ -1,13 +1,55 @@
 # Claude Code Context
 
+## ⚠️ Read this before changing anything
+
+**This repo is mid-reset. Large parts of it are scheduled for deletion.**
+
+Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) and
+[`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+
+The rule that governs this repo:
+
+> **If the kit reads it, it is a field in `client.proto`.
+> If it is not in `client.proto`, the kit MUST NOT read it.**
+
+**Do not "improve" the ORM, the CRDT layer, the query builder, the audience/routing engine, or
+the schema parser. They are on the deletion list.** They exist here *and* in ObscuraKit-Kotlin,
+duplicated, to serve five flat models in one app that uses almost none of them.
+
+Known live defects in this kit, documented so nobody rediscovers them as "improvements":
+
+- `SyncManager.resolveScopedRecipientUserIds` **hard-codes application field names**
+  (`recipientUsername`, `conversationId`). SPEC §0.4 forbids this.
+- `SyncManager.resolveTargets` **narrows a `.friends` broadcast** to a direct send when an entry
+  happens to carry one of those fields. A `friends` audience must reach all accepted friends.
+- **No schema migration mechanism exists** — every store is `CREATE TABLE IF NOT EXISTS`. Adding
+  a column to an existing install is currently impossible.
+- **No device-announce replay protection.**
+- `RoutingConformanceTests` **re-implements the audience mapping in the test harness** and
+  discards the `field` name — so it passes without exercising production code.
+- `authorDeviceId` is a lie: `routeMessage` passes `sourceUserId` into that slot and
+  `ReceivedMessage.senderDeviceId` is hardcoded `nil`.
+
+> **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
+> porting target and not a normative implementation. This file used to list its source files as
+> "the reference for porting." That instruction is a large part of why this repo looks the way it
+> does. It has been removed — do not reinstate it.
+
+## Project Overview
+
+ObscuraKit — the **native iOS platform layer** for the Obscura app (`obscura-pix`). Not a
+general-purpose framework; it has one consumer and owes API stability to no one.
+
+It exists natively for exactly two reasons: libsignal ships only as `libsignal-swift` (no shared
+core), and the push path must decrypt with the app closed (Notification Service Extension — no
+React Native runtime). Everything else belongs in the app.
+
+It must agree with ObscuraKit-Kotlin on the **wire** (`conformance/wire.json`) and nothing more.
+
 @README.md
 @docs/PITFALLS.md
 @docs/MESSAGE_FLOW.md
 @docs/AGENT_NOTES.md
-
-## Project Overview
-
-ObscuraKit — Swift package for the Obscura encrypted messaging data layer. Actors architecture, no views. The public API is what both SwiftUI views and XCTests call.
 
 ## Server
 
@@ -24,40 +66,16 @@ All smoke/scenario tests run against the live server.
 - Use `await authRateLimitDelay()` (1000ms) between auth calls
 - Both configurable via `SERVER_REQUEST_DELAY_MS` and `AUTH_REQUEST_DELAY_MS` in `Constants.swift`
 
-## Web Client (reference implementation)
+## Reference implementations
 
-The JS web client at `../obscura-client-web` is the reference for porting. Key source files:
+There is no porting reference. This kit is written against the contract in `obscura-proto`
+(`SPEC.md` + `conformance/`), not against another codebase.
 
-### Proto
-- `public/proto/obscura/v1/obscura.proto` — Server transport (WebSocketFrame, Envelope, SendMessageRequest)
-- `public/proto/v2/client.proto` — Client payload (EncryptedMessage, ClientMessage, ModelSync)
-
-### ORM
-- `src/v2/orm/crdt/GSet.js` — Grow-only set
-- `src/v2/orm/crdt/LWWMap.js` — Last-writer-wins map
-- `src/v2/orm/Model.js` — Base model class
-- `src/v2/orm/storage/ModelStore.js` — IndexedDB persistence
-- `src/v2/orm/sync/SyncManager.js` — Broadcast targeting
-- `src/v2/orm/sync/TTLManager.js` — Ephemeral content expiry
-- `src/v2/orm/QueryBuilder.js` — Query filtering
-- `src/v2/orm/index.js` — Schema wiring
-
-### Stores & Managers
-- `src/v2/store/friendStore.js` — Friend persistence (IndexedDB)
-- `src/v2/store/messageStore.js` — Message persistence
-- `src/v2/store/deviceStore.js` — Device identity + linked devices
-- `src/lib/IndexedDBStore.js` — Signal protocol key store (15-method interface)
-- `src/lib/messenger.js` — Encrypt/decrypt/queue/flush
-- `src/lib/ObscuraClient.js` — Facade
-
-### API & Network
-- `src/api/client.js` — HTTP API client
-- `src/api/gateway.js` — WebSocket connection
-
-### Tests
-- `test/helpers/testClient.js` — E2E test client
-- `test/browser/scenario-*.spec.js` — Playwright scenario tests (1-10)
-- `test/smoke/` — Standalone smoke tests
+> A section here used to enumerate the source files of `obscura-client-web` — a throwaway
+> proof-of-concept — as "the reference for porting", and `docs/AGENT_NOTES.md` pointed at the
+> Kotlin kit as "the feature parity reference". Both instructions told agents to copy designs
+> that were themselves unexamined, which is how an ORM, a CRDT engine and a query DSL ended up
+> duplicated across two kits. Removed deliberately. Do not reinstate.
 
 ## Server API Quick Reference
 

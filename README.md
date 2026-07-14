@@ -1,6 +1,27 @@
-# ObscuraKit
+# ObscuraKit (Swift)
 
-Rails-like framework for Signal-powered apps. E2E encrypted data sync with CRDT conflict resolution and reactive observation. Library only — no views.
+The **native iOS platform layer** for the Obscura app (`obscura-pix`). Not a general-purpose
+framework; one consumer, no API-stability obligation.
+
+> ### ⚠️ Mid-reset — much of what is documented below is being deleted
+>
+> The normative brief is [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
+> with the deletion inventory in [`obscura-proto/RESET.md`](../obscura-proto/RESET.md).
+>
+> The ORM, CRDT engine, query DSL, audience-routing system and schema parser documented below
+> exist here *and* in ObscuraKit-Kotlin, to serve five flat models in one app that uses almost
+> none of them. They are being removed, and their logic moved into the app where it will exist
+> once. **This README still describes the old design — trust `SPEC.md` over it.**
+>
+> This kit also carries live defects that the reset will resolve: it hard-codes application field
+> names, narrows a `.friends` broadcast when an entry happens to carry a `conversationId`, has no
+> schema-migration mechanism at all, has no device-announce replay protection, and reports a
+> *userId* in a field documented as a device id. See `CLAUDE.md`.
+
+**Why a native kit exists at all:** libsignal ships only as `libsignal-swift` (no supported
+shared core), and the push path must decrypt with the app closed — on iOS, inside a Notification
+Service Extension, which cannot run a React Native runtime. Those two facts justify native code.
+Everything else belongs in the app.
 
 ## What it does
 
@@ -79,7 +100,9 @@ try await existingClient.validateAndApproveLink(code)
 
 ## What works
 
-Tested with 123 unit tests (offline, <1s) and 17 integration tests (live server). Cross-platform interop proven with Kotlin/Android client.
+Tested with 123 unit tests (offline, <1s) and 17 integration tests (live server).
+
+**"Cross-platform interop proven" was claimed here and is not true as written.** The two kits agree on the *wire*; they do not agree on *behavior*. This kit still hard-codes application field names and narrows a `friends` broadcast — both of which the Kotlin kit does not do. Interop of the wire format is real; behavioral parity is not.
 
 - Register, login, friend handshake, encrypted messaging
 - ORM: typed models, create/find/upsert/delete, validation
@@ -95,7 +118,7 @@ Tested with 123 unit tests (offline, <1s) and 17 integration tests (live server)
 - Device linking: QR/code generation, validation, approval flow
 - ECS signals: typing indicators, read receipts (ephemeral, in-memory only)
 - Self-sync: own devices get your content too
-- Cross-platform: iOS ↔ Android proven with shared ORM wire format
+- Cross-platform: the **wire format** interoperates with Android. Behavior does not — see above.
 
 ## What doesn't work yet
 
