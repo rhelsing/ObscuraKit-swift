@@ -43,8 +43,17 @@ public struct ReceivedMessage: Sendable {
 
 /// Result of `processPendingMessages(timeout:)` — counts of envelopes drained, by ORM model.
 /// The bridge uses these to pick generic notification text. `otherCount` is debug-only; the
-/// bridge ignores it. Shape is identical to Kotlin's `ProcessedCounts` so both platforms
-/// implement the same notification logic.
+/// bridge ignores it.
+///
+/// - Warning: This type hard-codes the application's model names (`"pix"`, `"directMessage"`)
+///   in `classifyForPushCounts`, which the kit boundary forbids — a kit must treat a model name
+///   as an opaque key (obscura-proto `SPEC.md` §0.4). Being replaced by counts keyed on the
+///   opaque model name, with notification copy supplied by the app.
+///
+///   It also previously claimed "shape is identical to Kotlin's `ProcessedCounts`, so both
+///   platforms implement the same notification logic." That is **no longer true** — Kotlin
+///   moved to a generic `modelCounts` map. The claim was left in place while it was false,
+///   which is exactly the failure mode the reset exists to stop.
 public struct ProcessedCounts: Sendable {
     public let pixCount: Int
     public let messageCount: Int

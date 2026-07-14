@@ -125,7 +125,17 @@ public struct SignalObservation {
     let signal: String
     let data: [String: String]
 
-    /// Stream of active author device IDs. Polls every 300ms.
+    /// Stream of active signalers. Polls every 300ms.
+    ///
+    /// - Warning: This does **not** emit author device IDs, despite what this comment said for
+    ///   as long as it existed. `SignalStore.getActive` returns `senderUsername` — a display
+    ///   name taken from the message *payload*, which is attacker-controlled: a peer chooses how
+    ///   they are labelled on screen. See obscura-proto `SPEC.md` §0.5 — a sender's name MUST
+    ///   come from the local friend graph, keyed on the authenticated envelope, never the payload.
+    ///
+    ///   Note the related defect on the receive path: `routeMessage` passes `sourceUserId` into
+    ///   the `authorDeviceId` slot, and `ReceivedMessage.senderDeviceId` is hardcoded `nil`. So
+    ///   this kit cannot currently produce a real device id at all. Kotlin has the same bug.
     public var values: AsyncStream<[String]> {
         AsyncStream { continuation in
             let task = Task {

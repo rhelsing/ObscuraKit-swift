@@ -32,7 +32,16 @@ When `ObscuraClient.connect()` starts the envelope loop, incoming messages get p
 
 ## Reference Codebase
 
-**The Kotlin client at `../obscura-client-kotlin` is the feature parity reference.** Their `ObscuraClient.kt` (954 lines) is structurally what ours should look like after the Phase B refactor. Check their test suite when adding features — if they test it, we should too. Their `SignalStore.kt` is the reference for how persistent Signal stores work with SQL.
+**There is no "feature parity reference." Do not copy another kit's design.**
+
+This section used to say the Kotlin client was the parity reference and that we should mirror
+its features and tests. That instruction is why both kits carry the same ORM, CRDT engine, and
+query DSL — each one justified by the other's existence, neither justified by the app.
+
+The only thing this kit must match in ObscuraKit-Kotlin is the **wire**
+(`obscura-proto/conformance/wire.json`). Behavior is specified by
+[`obscura-proto/SPEC.md`](../../obscura-proto/SPEC.md) — the contract, not a sibling codebase.
+(The path in the old note, `../obscura-client-kotlin`, had not existed for months either.)
 
 ## The Public API Contract
 
