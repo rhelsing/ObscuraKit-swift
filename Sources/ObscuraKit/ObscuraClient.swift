@@ -480,7 +480,25 @@ public class ObscuraClient {
 
         // 5. Messenger
         self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
+
+        // F9: record THIS device in the own-device registry so approveLink / DeviceAnnounce ship a
+        // real device list. Without this the registry stays empty, every DeviceAnnounce is inert,
+        // and a friend's device list is always empty (which is what masks F1 today).
+        await recordOwnDevice(deviceName: "ObscuraKit-device",
+                              signalIdentityKey: Data(identity.publicKey.serialize()), registrationId: regId)
+
         self._authState = .authenticated
+    }
+
+    /// F9: record THIS device in the own-device registry. deviceUUID == deviceId by the kit's
+    /// convention (see generateLinkCode / validateAndApproveLink). Idempotent (INSERT OR REPLACE).
+    /// Mirrors Kotlin AuthManager.addOwnDevice(OwnDeviceData(...)) on register/loginAndProvision.
+    private func recordOwnDevice(deviceName: String, signalIdentityKey: Data, registrationId: UInt32) async {
+        guard let did = self.deviceId else { return }
+        var device = OwnDevice(deviceUUID: did, deviceId: did, deviceName: deviceName)
+        device.signalIdentityKey = signalIdentityKey
+        device.registrationId = registrationId
+        await devices.addOwnDevice(device)
     }
 
     /// Provision the current device with Signal keys. Requires token + userId already set.
@@ -516,6 +534,11 @@ public class ObscuraClient {
 
         let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
         self._messenger = MessengerActor(api: api, store: store, ownUserId: userId)
+
+        // F9: record THIS device in the own-device registry (see recordOwnDevice / register()).
+        await recordOwnDevice(deviceName: deviceName,
+                              signalIdentityKey: Data(identity.publicKey.serialize()), registrationId: regId)
+
         self._authState = .authenticated
     }
 
@@ -652,6 +675,13 @@ public class ObscuraClient {
         await devices.storeIdentity(DeviceIdentity(
             coreUsername: username, deviceId: self.deviceId ?? "", deviceUUID: self.deviceId ?? ""
         ))
+
+        // F9: record THIS (as-yet-unapproved) device so it knows itself. The approving device ships
+        // the full account device list, which reconciles this on approval. Mirrors Kotlin
+        // AuthManager.loginAndProvision's addOwnDevice.
+        await recordOwnDevice(deviceName: deviceName,
+                              signalIdentityKey: Data(identity.publicKey.serialize()), registrationId: regId)
+
         _authState = .authenticated
         await rateLimitDelay()
     }
@@ -918,7 +948,7 @@ public class ObscuraClient {
 
     /// Delete all Signal sessions for a user and send SESSION_RESET message.
     public func resetSessionWith(_ targetUserId: String, reason: String = "manual") async throws {
-        try? persistentSignalStore?.deleteAllSessions(for: targetUserId)
+        await clearSessionsWithUser(targetUserId)
 
         var msg = Obscura_Client_V1_ClientMessage()
         msg.sessionReset.reason = reason
@@ -928,7 +958,18 @@ public class ObscuraClient {
         // Delete the session that was just rebuilt to send the reset message.
         // Forces next send to use a fresh PreKey exchange, which the receiver
         // can handle after they also cleared their session.
-        try? persistentSignalStore?.deleteAllSessions(for: targetUserId)
+        await clearSessionsWithUser(targetUserId)
+    }
+
+    /// Phase 2: Signal sessions are keyed on the peer's DEVICE UUID at address (deviceUuid, 1), so
+    /// clearing "a user's" sessions means clearing every session with each of that user's devices.
+    /// `deleteAllSessions(for:)` matches on the address-name prefix, so passing a device UUID here
+    /// deletes exactly that device's session. (Mirrors Kotlin ClientSyncManager.clearSessionsWithUser.)
+    private func clearSessionsWithUser(_ userId: String) async {
+        guard let messenger = _messenger else { return }
+        for deviceId in await messenger.getDeviceIdsForUser(userId) {
+            try? persistentSignalStore?.deleteAllSessions(for: deviceId)
+        }
     }
 
     /// Reset Signal sessions with all accepted friends.
@@ -1109,9 +1150,10 @@ public class ObscuraClient {
         )
 
         // Clear all old sessions — identity key changed, old sessions are invalid.
-        // Next send will do a fresh PreKey exchange with the new identity.
+        // Next send will do a fresh PreKey exchange with the new identity. Sessions are keyed on
+        // the DEVICE UUID (Phase 2), so clear per friend device.
         for friend in await friends.getAccepted() {
-            try? persistentSignalStore?.deleteAllSessions(for: friend.userId)
+            await clearSessionsWithUser(friend.userId)
         }
 
         let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
@@ -1753,7 +1795,7 @@ public class ObscuraClient {
         }
     }
 
-    private func processEnvelope(_ raw: (id: Data, senderID: Data, timestamp: UInt64, message: Data)) async {
+    private func processEnvelope(_ raw: (id: Data, senderID: Data, senderDeviceID: Data, timestamp: UInt64, message: Data)) async {
         guard let messenger = _messenger else { return }
 
         let sourceUserId = bytesToUuid(raw.senderID)
@@ -1768,18 +1810,31 @@ public class ObscuraClient {
         }
 
         do {
+            // Phase 2 receive-side addressing: the envelope carries the sender's DEVICE UUID
+            // (sender_device_id, stamped server-side from the device-scoped JWT). Signal sessions
+            // are pairwise device-to-device, so this selects the inbound session. Missing/empty is
+            // an ERROR (no candidate-registrationId guessing) — throwing here lands in the catch
+            // below and SKIPS the ack, so the message stays on the server rather than being lost.
+            guard raw.senderDeviceID.count == 16 else {
+                throw ObscuraError.provisionFailed(
+                    "Envelope from \(sourceUserId) has no sender_device_id (\(raw.senderDeviceID.count) bytes); cannot select an inbound session")
+            }
+            let senderDeviceId = bytesToUuid(raw.senderDeviceID)
+
             let encMsg = try Obscura_Client_V1_EncryptedMessage(serializedData: raw.message)
             let messageType = encMsg.type == .prekeyMessage ? 1 : 2
             let plaintext = try await messenger.decrypt(
-                sourceUserId: sourceUserId, content: encMsg.content, messageType: messageType
+                senderUserId: sourceUserId, senderDeviceUuid: senderDeviceId,
+                content: encMsg.content, messageType: messageType
             )
             let clientMsg = try Obscura_Client_V1_ClientMessage(serializedData: Data(plaintext))
 
             // Route by message type. SPEC §0.9 rule 3+4: decrypt → persist → (notify) → ack.
             // routeMessage now throws, so if durable persistence fails the error propagates to the
             // catch below and we SKIP the ack — the message stays on the server for retry rather
-            // than being deleted un-persisted.
-            try await routeMessage(clientMsg, sourceUserId: sourceUserId)
+            // than being deleted un-persisted. authorDeviceId is the decrypting session's device
+            // UUID (== senderDeviceId, proven by the MAC), never the userId (the F4 lie).
+            try await routeMessage(clientMsg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId)
 
             // Emit to event subscribers
             let received = ReceivedMessage(
@@ -1797,7 +1852,7 @@ public class ObscuraClient {
                     return false
                 }(),
                 sourceUserId: sourceUserId,
-                senderDeviceId: nil,
+                senderDeviceId: senderDeviceId,
                 timestamp: clientMsg.timestamp,
                 rawBytes: Data(plaintext),
                 model: {
@@ -1825,7 +1880,7 @@ public class ObscuraClient {
 
     // MARK: - Internal: Message Routing
 
-    private func routeMessage(_ msg: Obscura_Client_V1_ClientMessage, sourceUserId: String) async throws {
+    private func routeMessage(_ msg: Obscura_Client_V1_ClientMessage, sourceUserId: String, senderDeviceId: String) async throws {
         NSLog("[ObscuraKit] routeMessage payload=%@ from=%@", WireCodec.decodeMessageType(msg.payload), String(sourceUserId.prefix(8)))
         switch msg.payload {
         case .friendRequest?:
@@ -1842,7 +1897,9 @@ public class ObscuraClient {
                 conversationId: sourceUserId,
                 timestamp: msg.timestamp,
                 content: msg.text.text,
-                isSent: false
+                isSent: false,
+                // Honest attribution (F4): the sending device's UUID, proven by the session MAC.
+                authorDeviceId: senderDeviceId
             )
             try await messages.add(sourceUserId, messageData)
 
@@ -1903,12 +1960,13 @@ public class ObscuraClient {
                     signalRaw: signalName,
                     conversationId: sig.contextID,
                     senderUsername: username,
-                    authorDeviceId: sourceUserId,
+                    // Honest attribution (F4): the sending device's UUID, proven by the session MAC.
+                    authorDeviceId: senderDeviceId,
                     timestamp: msg.timestamp
                 )
                 if signalName == "stoppedTyping" {
                     await SignalStoreRegistry.shared.store.remove(
-                        model: sig.model, signal: "typing", data: payload.data, authorDeviceId: sourceUserId)
+                        model: sig.model, signal: "typing", data: payload.data, authorDeviceId: senderDeviceId)
                 } else {
                     await SignalStoreRegistry.shared.store.receive(payload)
                 }
@@ -1958,7 +2016,9 @@ public class ObscuraClient {
             }
 
         case .sessionReset?:
-            try? persistentSignalStore?.deleteAllSessions(for: sourceUserId)
+            // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we hold with
+            // any of this user's devices.
+            await clearSessionsWithUser(sourceUserId)
 
         default:
             break
