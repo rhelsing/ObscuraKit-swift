@@ -837,7 +837,7 @@ public class ObscuraClient {
         try await sendToAllDevices(friendUserId, msg)
 
         // Persist locally
-        await messages.add(friendUserId, Message(messageId: messageId, conversationId: friendUserId, timestamp: timestamp, content: text, isSent: true))
+        try await messages.add(friendUserId, Message(messageId: messageId, conversationId: friendUserId, timestamp: timestamp, content: text, isSent: true))
 
         // SENT_SYNC to own devices
         try await sendSentSync(conversationId: friendUserId, messageId: messageId, timestamp: timestamp, content: text)
@@ -852,7 +852,7 @@ public class ObscuraClient {
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
 
         try await sendToAllDevices(targetUserId, msg)
-        await friends.add(targetUserId, targetUsername, status: .pendingSent)
+        try await friends.add(targetUserId, targetUsername, status: .pendingSent)
 
         try await sendFriendSync(username: targetUsername, action: "add", status: "pending_sent", userId: targetUserId)
     }
@@ -1775,8 +1775,11 @@ public class ObscuraClient {
             )
             let clientMsg = try Obscura_Client_V1_ClientMessage(serializedData: Data(plaintext))
 
-            // Route by message type
-            await routeMessage(clientMsg, sourceUserId: sourceUserId)
+            // Route by message type. SPEC §0.9 rule 3+4: decrypt → persist → (notify) → ack.
+            // routeMessage now throws, so if durable persistence fails the error propagates to the
+            // catch below and we SKIP the ack — the message stays on the server for retry rather
+            // than being deleted un-persisted.
+            try await routeMessage(clientMsg, sourceUserId: sourceUserId)
 
             // Emit to event subscribers
             let received = ReceivedMessage(
@@ -1822,15 +1825,15 @@ public class ObscuraClient {
 
     // MARK: - Internal: Message Routing
 
-    private func routeMessage(_ msg: Obscura_Client_V1_ClientMessage, sourceUserId: String) async {
+    private func routeMessage(_ msg: Obscura_Client_V1_ClientMessage, sourceUserId: String) async throws {
         NSLog("[ObscuraKit] routeMessage payload=%@ from=%@", WireCodec.decodeMessageType(msg.payload), String(sourceUserId.prefix(8)))
         switch msg.payload {
         case .friendRequest?:
-            await friends.add(sourceUserId, msg.friendRequest.username, status: .pendingReceived)
+            try await friends.add(sourceUserId, msg.friendRequest.username, status: .pendingReceived)
 
         case .friendResponse?:
             if msg.friendResponse.accepted {
-                await friends.add(sourceUserId, msg.friendResponse.username, status: .accepted)
+                try await friends.add(sourceUserId, msg.friendResponse.username, status: .accepted)
             }
 
         case .text?:
@@ -1841,7 +1844,7 @@ public class ObscuraClient {
                 content: msg.text.text,
                 isSent: false
             )
-            await messages.add(sourceUserId, messageData)
+            try await messages.add(sourceUserId, messageData)
 
         case .deviceAnnounce?:
             let announce = msg.deviceAnnounce
@@ -1861,7 +1864,7 @@ public class ObscuraClient {
                 }
             }
 
-            await friends.updateDevices(sourceUserId, devices: deviceInfos, timestamp: announce.timestamp)
+            try await friends.updateDevices(sourceUserId, devices: deviceInfos, timestamp: announce.timestamp)
 
             if announce.isRevocation {
                 // Purge messages from revoked devices
@@ -1918,7 +1921,7 @@ public class ObscuraClient {
             if let parsed = SyncBlobExporter.parseExport(msg.syncBlob.compressedData) {
                 for f in parsed.friends {
                     let status = FriendStatus(rawValue: f["status"] as? String ?? "") ?? .pendingSent
-                    await friends.add(f["userId"] as? String ?? "", f["username"] as? String ?? "", status: status)
+                    try await friends.add(f["userId"] as? String ?? "", f["username"] as? String ?? "", status: status)
                 }
                 for m in parsed.messages {
                     let message = Message(
@@ -1926,7 +1929,7 @@ public class ObscuraClient {
                         conversationId: m["conversationId"] as? String ?? "",
                         content: m["content"] as? String ?? ""
                     )
-                    await messages.add(m["conversationId"] as? String ?? "", message)
+                    try await messages.add(m["conversationId"] as? String ?? "", message)
                 }
             }
 
@@ -1941,7 +1944,7 @@ public class ObscuraClient {
                 content: String(data: ss.content, encoding: .utf8) ?? "",
                 isSent: true
             )
-            await messages.add(ss.recipientUsername, messageData)
+            try await messages.add(ss.recipientUsername, messageData)
 
         case .friendSync?:
             // Only accept friend sync from own devices
@@ -1949,9 +1952,9 @@ public class ObscuraClient {
             let fs = msg.friendSync
             if fs.action == "add" {
                 let status = FriendStatus(rawValue: fs.status) ?? .pendingSent
-                await friends.add(sourceUserId, fs.username, status: status)
+                try await friends.add(sourceUserId, fs.username, status: status)
             } else if fs.action == "remove" {
-                await friends.remove(sourceUserId)
+                try await friends.remove(sourceUserId)
             }
 
         case .sessionReset?:
