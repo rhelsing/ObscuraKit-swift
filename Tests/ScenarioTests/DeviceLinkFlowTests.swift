@@ -68,8 +68,8 @@ final class DeviceLinkFlowTests: XCTestCase {
         await rateLimitDelay()
 
         // Device1 has some state
-        await device1.friends.add("carol-id", "carol", status: .accepted)
-        await device1.messages.add("carol", Message(messageId: "m1", conversationId: "carol", content: "synced"))
+        try await device1.friends.add("carol-id", "carol", status: .accepted)
+        try await device1.messages.add("carol", Message(messageId: "m1", conversationId: "carol", content: "synced"))
 
         let device2 = try await ObscuraTestClient.register()
         await rateLimitDelay()

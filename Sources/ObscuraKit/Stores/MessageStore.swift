@@ -76,9 +76,13 @@ public actor MessageActor {
         }
     }
 
-    public func add(_ conversationId: String, _ message: Message) async {
+    // SPEC §0.9 rule 3: durable persistence must be able to fail loudly. Swallowing a write
+    // error here (the old `try?`) meant the receive loop would ack — and the server would DELETE —
+    // a message that never landed in the durable store. `add` now throws so a persist failure
+    // propagates to the envelope loop and SKIPS the ack, leaving the message on the server.
+    public func add(_ conversationId: String, _ message: Message) async throws {
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        try? await db.write { db in
+        try await db.write { db in
             // Idempotent: skip if exists
             let exists = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE message_id = ?",
                                           arguments: [message.messageId]) ?? 0

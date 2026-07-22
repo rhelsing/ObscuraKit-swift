@@ -101,8 +101,8 @@ final class SyncBlobTests: XCTestCase {
         await rateLimitDelay()
 
         // Alice has some state to sync
-        await alice.friends.add(bob.userId!, bob.username, status: .accepted)
-        await alice.messages.add(bob.username, Message(messageId: "m1", conversationId: bob.username, content: "test sync"))
+        try await alice.friends.add(bob.userId!, bob.username, status: .accepted)
+        try await alice.messages.add(bob.username, Message(messageId: "m1", conversationId: bob.username, content: "test sync"))
 
         // Export state
         let friends = await alice.friends.getAll()

@@ -50,7 +50,7 @@ final class MultiDeviceLinkingTests: XCTestCase {
         let alice = try await ObscuraTestClient.register()
 
         // Try to add self as friend locally — this should be prevented at app level
-        await alice.friends.add(alice.userId!, alice.username, status: .pendingSent)
+        try await alice.friends.add(alice.userId!, alice.username, status: .pendingSent)
         let selfFriend = await alice.friends.getFriend(alice.userId!)
 
         // The store allows it (no enforcement at store level),

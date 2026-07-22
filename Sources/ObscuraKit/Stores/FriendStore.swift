@@ -111,11 +111,13 @@ public actor FriendActor {
         }
     }
 
-    public func add(_ userId: String, _ username: String, status: FriendStatus, devices: [[String: String]] = []) async {
+    // SPEC §0.9 rule 3: a durable write that backs an acked message must be able to fail loudly,
+    // so the envelope loop skips the ack instead of deleting an un-persisted message server-side.
+    public func add(_ userId: String, _ username: String, status: FriendStatus, devices: [[String: String]] = []) async throws {
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
         let devicesJson = (try? JSONSerialization.data(withJSONObject: devices)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
 
-        try? await db.write { db in
+        try await db.write { db in
             try db.execute(sql: """
                 INSERT OR REPLACE INTO friends (user_id, username, status, devices, devices_updated_at, is_verified, created_at, updated_at)
                 VALUES (?, ?, ?, ?, 0, 0, ?, ?)
@@ -152,11 +154,11 @@ public actor FriendActor {
         }
     }
 
-    public func updateDevices(_ userId: String, devices: [[String: String]], timestamp: UInt64? = nil) async {
+    public func updateDevices(_ userId: String, devices: [[String: String]], timestamp: UInt64? = nil) async throws {
         let ts = timestamp ?? UInt64(Date().timeIntervalSince1970 * 1000)
         let devicesJson = (try? JSONSerialization.data(withJSONObject: devices)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
 
-        try? await db.write { db in
+        try await db.write { db in
             // LWW: only update if newer
             try db.execute(sql: """
                 UPDATE friends SET devices = ?, devices_updated_at = ?, updated_at = ?
@@ -165,8 +167,8 @@ public actor FriendActor {
         }
     }
 
-    public func remove(_ userId: String) async {
-        try? await db.write { db in
+    public func remove(_ userId: String) async throws {
+        try await db.write { db in
             try db.execute(sql: "DELETE FROM friends WHERE user_id = ?", arguments: [userId])
         }
     }
