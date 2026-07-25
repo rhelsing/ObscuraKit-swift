@@ -14,21 +14,21 @@
 
 **`InMemorySignalProtocolStore` is fine for tests but not production.** Sessions are lost on process exit. Use `PersistentSignalStore` (GRDB-backed) which implements all 6 libsignal protocol interfaces with SQLite persistence.
 
-**⚠️ Signal sessions are keyed as `(userId, registrationId)` — and that is the bug, not the design.**
-This describes the code as it stands on `main`; do **not** treat it as guidance. `registrationId`
-travels on exactly one wire surface (`PreKeyBundleResponse`), while the device UUID travels on all of
-them, so this addressing breaks multi-device delivery and makes `authorDeviceId` unattributable
-(`obscura-proto/PLAN.md` F1, F4). The contract is now `obscura-proto/SPEC.md` §0.10: address
-`ProtocolAddress` on the **device UUID**, select the inbound session from
-`Envelope.sender_device_id`, and select prekey bundles by device UUID with no fallback.
+**Signal sessions are keyed on the DEVICE UUID — never on `registrationId`.** `ProtocolAddress` is
+`(deviceUUID, 1)`; the inbound session comes from `Envelope.sender_device_id`; prekey bundles are
+selected by device UUID with **no** fallback to an arbitrary bundle. This is normative in
+`obscura-proto/SPEC.md` §0.10.
 
-Swift-specific defect: `MessengerActor.decrypt(...)` defaults `senderRegId: 1` and its only call
-site never overrides it, so outbound sessions are filed at `(userId, realRegId)` and inbound ones at
-`(userId, 1)` — the two directions use different addresses. This is the most likely explanation for
-"session desync happens occasionally under load" in the README. The fix is written on
-`swift/phase2-device-uuid` (PR #6), but that PR **does not build** — macOS CI run `29925525672`
-fails with 11 `call can throw but is not marked with 'try'` errors in `ObservationTests.swift` and
-`SyncBlobTests.swift`, the fallout of making persistence throwing. Kotlin already migrated (PR #40).
+> **This file used to state the opposite as guidance** — "sessions are keyed as
+> `(userId, registrationId)`. Not `(userId, deviceId)`" — which was true of the code and was exactly
+> the defect (`PLAN.md` F1/F4). `registrationId` travels on one wire surface
+> (`PreKeyBundleResponse`); the device UUID travels on all of them. Swift's specific variant:
+> `decrypt` defaulted `senderRegId: 1` while outbound sessions used the real one, so the two
+> directions filed sessions at different addresses — the cause of the old README's "session desync
+> under load". Fixed in Phase 2 (PR #6, merged 2026-07-25) and pinned by `TwoDeviceSendTests`, which
+> reconnects the sender before sending because a two-device test without that step passes vacuously.
+> Kept here as a warning: if you find yourself reaching for `registrationId` to address a session,
+> you are re-introducing F1.
 
 ## WebSocket
 

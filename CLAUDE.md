@@ -8,22 +8,17 @@ Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md
 [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
 [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
 
-**Where this kit is (2026-07-24): behind ObscuraKit-Kotlin, and it is the critical path.** Phases 1
-and 2 landed in the proto, the server and Kotlin between 07-19 and 07-22. This kit's share of both is
-written on `swift/phase2-device-uuid` (**PR #6**) — Phase 1's throwing-persist residual, device-UUID
-addressing, the F9 own-device registry, honest `authorDeviceId`, and the Option B envelope. Every
-commit on it is self-labelled UNVERIFIED because the kit cannot be compiled on Linux (GRDB/SQLCipher
-needs CommonCrypto; see `docs/PITFALLS.md`).
+**Where this kit is (2026-07-25): Phase 2 is LANDED and PROVEN on `main`.** Phases 1 and 2 shipped
+across the proto, the server and both kits between 07-19 and 07-25. This kit's share — the
+throwing-persist residual, device-UUID session addressing, the F9 own-device registry, honest
+`authorDeviceId`, and the Option B envelope — merged via PRs #6, #8 and #9.
 
-**macOS CI is the oracle that can compile it, and PR #6 is red:** run `29925525672` (2026-07-22,
-`7f3cf55`) fails *at build time* in both jobs, with 11 errors — all
-`call can throw but is not marked with 'try'`, in `Tests/ScenarioTests/ObservationTests.swift`
-(lines 30, 46, 93, 153, 155) and `Tests/ScenarioTests/SyncBlobTests.swift` (lines 15, 16, 18, 19,
-67, 82). That is the expected fallout of making the persistence path throwing: `try` has to
-propagate to the call sites. It is mechanical, and **fixing it is the highest-value next action in
-this repo** — until the build is green, none of the Phase 1/2 logic here has been exercised at all.
-Until it merges, `main` still addresses sessions by `registrationId`, the two kits disagree on
-session addressing in both directions, and Phase 3 (the reset) should not start.
+It is **verified, not asserted**: macOS CI run `30138464166` executed
+`TwoDeviceSendTests` (two-device decrypt after a *sender reconnect*, the own-device registry, the
+link-approval approver half) and `AuthorDeviceIdTests` against a real server, and they passed. The
+UNVERIFIED labels on the original commits are historical — CI has since compiled and run them.
+`obscura-proto/PLAN.md` records the acceptance sign-off and four known gaps. **Phase 3 (the reset)
+is unblocked**; read those gaps before starting it.
 
 The rule that governs this repo:
 
@@ -56,16 +51,17 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
 - **No device-announce replay protection.**
 - `RoutingConformanceTests` **re-implements the audience mapping in the test harness** and
   discards the `field` name — so it passes without exercising production code.
-- `authorDeviceId` is a lie: `routeMessage` passes `sourceUserId` into that slot and
-  `ReceivedMessage.senderDeviceId` is hardcoded `nil`. (Fixed in Kotlin by Phase 2; the Swift fix is
-  written but unmerged — see the status note above. `SPEC.md` §0.10 is the contract.)
-- Signal sessions are addressed by `registrationId`, and `decrypt` defaults `senderRegId: 1` while
-  outbound sessions use the real one — inbound and outbound end up at different addresses. This is
-  `PLAN.md` F1/F4 and the cause of the README's "session desync under load".
-- `routeMessage` is non-throwing and swallows persistence errors, so a persist failure after a good
-  decrypt still acks — a latent violation of `SPEC.md` §0.9 rule 3. (Swift already satisfies the
-  primary invariant: it acks inside the `do` block and its rate limiter returns without acking.)
-  PR #6 fixes this for the TEXT and friend-graph paths — but **not** for MODEL_SYNC, see below.
+- ~~`authorDeviceId` is a lie~~ — **FIXED (Phase 2, PR #6).** It is now the device UUID of the
+  session that decrypted, and `ReceivedMessage.senderDeviceId` carries the sender's real device.
+  Pinned by `AuthorDeviceIdTests`. `SPEC.md` §0.10 is the contract.
+- ~~Signal sessions are addressed by `registrationId`; `decrypt` defaults `senderRegId: 1`~~ —
+  **FIXED (Phase 2, PR #6).** Sessions key on the device UUID in both directions, taken from
+  `Envelope.sender_device_id`. This was `PLAN.md` F1/F4 and the cause of the old README note about
+  "session desync under load". Pinned by `TwoDeviceSendTests`.
+- ~~`routeMessage` is non-throwing and swallows persistence errors~~ — **FIXED for the TEXT and
+  friend-graph paths (Phase 1 residual, PR #6):** persistence throws, so a failed durable write
+  propagates and the ack is skipped (`SPEC.md` §0.9 rule 3). **NOT fixed for MODEL_SYNC — see the
+  next entry, which is still live.**
 - **MODEL_SYNC is acked before it is durably persisted, and this is knowingly accepted — do not
   "fix" it here.** `routeMessage`'s `.modelSync` case calls `_ = await syncManager.handleIncoming(…)`,
   which is non-throwing, and every layer beneath swallows write errors: `SyncManager.handleIncoming`

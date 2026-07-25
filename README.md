@@ -13,10 +13,12 @@ framework; one consumer, no API-stability obligation.
 > none of them. They are being removed, and their logic moved into the app where it will exist
 > once. **This README still describes the old design — trust `SPEC.md` over it.**
 >
-> This kit also carries live defects that the reset will resolve: it hard-codes application field
-> names, narrows a `.friends` broadcast when an entry happens to carry a `conversationId`, has no
-> schema-migration mechanism at all, has no device-announce replay protection, and reports a
-> *userId* in a field documented as a device id. See `CLAUDE.md`.
+> This kit also carries live defects, most of which the reset will resolve: it hard-codes application
+> field names, narrows a `.friends` broadcast when an entry happens to carry a `conversationId`, has
+> no schema-migration mechanism at all, and has no device-announce replay protection. Two that the
+> reset will **not** resolve on its own: it acks `MODEL_SYNC` before durably persisting it, and it
+> sends `DEVICE_LINK_APPROVAL` messages it cannot receive. (Reporting a *userId* in a field
+> documented as a device id was on this list; Phase 2 fixed it.) See `CLAUDE.md`.
 
 **Why a native kit exists at all:** libsignal ships only as `libsignal-swift` (no supported
 shared core), and the push path must decrypt with the app closed — on iOS, inside a Notification
@@ -126,11 +128,11 @@ Tested with 123 unit tests (offline, <1s) and 17 integration tests (live server)
 - TTL cleanup must be called manually
 - The old `MessageActor` still exists alongside the ORM
 - `include()` works locally but not tested over the wire
-- Session desync happens occasionally under load — **diagnosed, fix pending.** `MessengerActor.decrypt`
-  defaults `senderRegId: 1` and no call site overrides it, so outbound sessions are filed at
-  `(userId, realRegId)` and inbound ones at `(userId, 1)`. The fix (address on the device UUID, per
-  `obscura-proto/SPEC.md` §0.10) is written on `swift/phase2-device-uuid` and needs a macOS
-  compile + test run before it can merge. See `docs/PITFALLS.md`.
+- ~~Session desync happens occasionally under load~~ — **diagnosed and FIXED** (Phase 2, PR #6,
+  merged 2026-07-25). `MessengerActor.decrypt` defaulted `senderRegId: 1` while outbound sessions
+  used the real one, so the two directions filed sessions at different addresses. Sessions now key on
+  the device UUID (`obscura-proto/SPEC.md` §0.10), verified by `TwoDeviceSendTests` and
+  `AuthorDeviceIdTests` on macOS CI against a real server.
 
 ## Build & Test
 
