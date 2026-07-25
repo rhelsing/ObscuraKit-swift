@@ -10,12 +10,20 @@ Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md
 
 **Where this kit is (2026-07-24): behind ObscuraKit-Kotlin, and it is the critical path.** Phases 1
 and 2 landed in the proto, the server and Kotlin between 07-19 and 07-22. This kit's share of both is
-written on `swift/phase2-device-uuid` — Phase 1's throwing-persist residual, device-UUID addressing,
-the F9 own-device registry, honest `authorDeviceId`, and the Option B envelope — and **every commit
-on it is self-labelled UNVERIFIED**, because the kit cannot be compiled on Linux (GRDB/SQLCipher
-needs CommonCrypto; see `docs/PITFALLS.md`). It needs a macOS compile + test run before it merges.
-Until then `main` still addresses sessions by `registrationId`, so the two kits disagree on session
-addressing in both directions, and Phase 3 (the reset) should not start.
+written on `swift/phase2-device-uuid` (**PR #6**) — Phase 1's throwing-persist residual, device-UUID
+addressing, the F9 own-device registry, honest `authorDeviceId`, and the Option B envelope. Every
+commit on it is self-labelled UNVERIFIED because the kit cannot be compiled on Linux (GRDB/SQLCipher
+needs CommonCrypto; see `docs/PITFALLS.md`).
+
+**macOS CI is the oracle that can compile it, and PR #6 is red:** run `29925525672` (2026-07-22,
+`7f3cf55`) fails *at build time* in both jobs, with 11 errors — all
+`call can throw but is not marked with 'try'`, in `Tests/ScenarioTests/ObservationTests.swift`
+(lines 30, 46, 93, 153, 155) and `Tests/ScenarioTests/SyncBlobTests.swift` (lines 15, 16, 18, 19,
+67, 82). That is the expected fallout of making the persistence path throwing: `try` has to
+propagate to the call sites. It is mechanical, and **fixing it is the highest-value next action in
+this repo** — until the build is green, none of the Phase 1/2 logic here has been exercised at all.
+Until it merges, `main` still addresses sessions by `registrationId`, the two kits disagree on
+session addressing in both directions, and Phase 3 (the reset) should not start.
 
 The rule that governs this repo:
 

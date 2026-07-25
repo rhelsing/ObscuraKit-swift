@@ -26,8 +26,9 @@ Swift-specific defect: `MessengerActor.decrypt(...)` defaults `senderRegId: 1` a
 site never overrides it, so outbound sessions are filed at `(userId, realRegId)` and inbound ones at
 `(userId, 1)` — the two directions use different addresses. This is the most likely explanation for
 "session desync happens occasionally under load" in the README. The fix is written on
-`swift/phase2-device-uuid` but is **unmerged and uncompiled** — it needs a macOS build and test run.
-Kotlin already migrated (PR #40).
+`swift/phase2-device-uuid` (PR #6), but that PR **does not build** — macOS CI run `29925525672`
+fails with 11 `call can throw but is not marked with 'try'` errors in `ObservationTests.swift` and
+`SyncBlobTests.swift`, the fallout of making persistence throwing. Kotlin already migrated (PR #40).
 
 ## WebSocket
 
