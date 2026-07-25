@@ -220,6 +220,10 @@ public class ObscuraClient {
     private var reconnectAttempts = 0
     private static let reconnectDelayMs: UInt64 = 1_000
     private static let reconnectMaxDelayMs: UInt64 = 30_000
+    /// F10: backoff between the two connect attempts in `processPendingMessages`. Short on purpose —
+    /// the push path runs inside a tight OS budget (an NSE gets ~30s), so a retry costing seconds
+    /// would be worse than no retry at all. Matches ObscuraKit-Kotlin's 250ms.
+    private static let pushDrainReconnectRetryNanos: UInt64 = 250_000_000
     private static let pingIntervalSeconds: TimeInterval = 30
 
     // Decrypt rate limiting: track failures per sender
@@ -772,9 +776,24 @@ public class ObscuraClient {
     public func processPendingMessages(timeout: TimeInterval) async -> ProcessedCounts {
         logger.log("[push] drain start (timeout=\(Int(timeout))s, connected=\(_connectionState == .connected))")
         if _connectionState != .connected {
+            // F10 (obscura-proto/PLAN.md). A failed connect returns all-zero counts, which is
+            // indistinguishable from "connected fine, nothing waiting" — on the PUSH-WAKE path that
+            // means: woken by a push, silently report no messages, leave them on the server. This
+            // kit at least logged it; ObscuraKit-Kotlin swallowed it entirely, where it showed up as
+            // a ~25% flaky PushTests. The connect failure was transient in every observed case
+            // (measured in Kotlin: the retry fired in 3 of 8 runs and recovered every time), so
+            // retry once before giving up.
+            //
+            // The backoff is deliberately short: an NSE has roughly 30 seconds total, so a retry
+            // costing seconds would be worse than no retry. The zero-count return is unchanged —
+            // making it distinguishable from "could not connect" is a Phase 4 API decision.
             do { try await connect() } catch {
-                logger.log("[push] drain abort — connect failed: \(error)")
-                return ProcessedCounts()
+                logger.log("[push] connect failed (attempt 1/2): \(error)")
+                try? await Task.sleep(nanoseconds: Self.pushDrainReconnectRetryNanos)
+                do { try await connect() } catch {
+                    logger.log("[push] drain ABORTED — could not connect after 2 attempts: \(error)")
+                    return ProcessedCounts()
+                }
             }
         }
 
