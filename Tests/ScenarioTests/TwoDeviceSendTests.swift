@@ -56,6 +56,46 @@ final class TwoDeviceSendTests: XCTestCase {
             "Device 2 must record itself in the own-device registry (loginAndProvision path)")
     }
 
+    /// The link-approval half of F9: after a real `validateAndApproveLink`, the **approver's**
+    /// registry must list both devices — that list is what `approveLink` ships and what
+    /// `announceDevices()` later broadcasts, so if it holds one device a friend can only ever learn
+    /// one of them.
+    ///
+    /// **Known divergence from ObscuraKit-Kotlin — the approvee side is NOT asserted here because it
+    /// does not work.** Kotlin routes an inbound `DEVICE_LINK_APPROVAL` to `handleLinkApproval`,
+    /// which calls `setOwnDevices(approvedDevices)` and stores the identity keys. Swift's
+    /// `routeMessage` has **no `case .deviceLinkApproval`** — it falls through `default: break`, so a
+    /// newly-linked Swift device silently discards the approval: no p2p keypair, no recovery key, no
+    /// friends export, and an own-device registry containing only itself. Swift *sends* approvals it
+    /// cannot *receive*. Recorded in `obscura-proto/PLAN.md` and this repo's `CLAUDE.md`; asserting
+    /// the broken behaviour here would only lock it in.
+    func testLinkApprovalPopulatesTheApproverRegistry() async throws {
+        let alice1 = try await ObscuraTestClient.register()
+        await rateLimitDelay()
+        let alice2 = try await ObscuraTestClient.loginAndProvision(alice1.username, deviceName: "Alice Laptop")
+        await rateLimitDelay()
+
+        try await alice2.connectWebSocket()
+        await rateLimitDelay()
+
+        let code = try XCTUnwrap(alice2.client.generateLinkCode(),
+            "the pending device must be able to generate a link code")
+        try await alice1.client.validateAndApproveLink(code)
+        await rateLimitDelay()
+
+        let approver = await alice1.devices.getOwnDevices()
+        print("  approver registry after validateAndApproveLink: \(approver.map { $0.deviceId })")
+        XCTAssertEqual(approver.count, 2,
+            "the approver must record BOTH devices — this list is what approveLink ships and what "
+            + "announceDevices() broadcasts (F9/F6)")
+        XCTAssertTrue(approver.contains { $0.deviceId == alice1.deviceId },
+            "approver registry must contain the approving device")
+        XCTAssertTrue(approver.contains { $0.deviceId == alice2.deviceId },
+            "approver registry must contain the newly-approved device")
+
+        alice2.disconnectWebSocket()
+    }
+
     /// **PLAN.md 0.1's actual acceptance criterion.** Alice has two devices; Bob befriends her,
     /// **reconnects**, then sends. Both of Alice's devices must receive AND decrypt.
     ///
