@@ -13,10 +13,12 @@ framework; one consumer, no API-stability obligation.
 > none of them. They are being removed, and their logic moved into the app where it will exist
 > once. **This README still describes the old design — trust `SPEC.md` over it.**
 >
-> This kit also carries live defects that the reset will resolve: it hard-codes application field
-> names, narrows a `.friends` broadcast when an entry happens to carry a `conversationId`, has no
-> schema-migration mechanism at all, has no device-announce replay protection, and reports a
-> *userId* in a field documented as a device id. See `CLAUDE.md`.
+> This kit also carries live defects, most of which the reset will resolve: it hard-codes application
+> field names, narrows a `.friends` broadcast when an entry happens to carry a `conversationId`, has
+> no schema-migration mechanism at all, and has no device-announce replay protection. Two that the
+> reset will **not** resolve on its own: it acks `MODEL_SYNC` before durably persisting it, and it
+> sends `DEVICE_LINK_APPROVAL` messages it cannot receive. (Reporting a *userId* in a field
+> documented as a device id was on this list; Phase 2 fixed it.) See `CLAUDE.md`.
 
 **Why a native kit exists at all:** libsignal ships only as `libsignal-swift` (no supported
 shared core), and the push path must decrypt with the app closed — on iOS, inside a Notification
