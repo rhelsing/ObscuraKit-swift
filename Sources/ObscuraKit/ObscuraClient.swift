@@ -1903,11 +1903,44 @@ public class ObscuraClient {
         NSLog("[ObscuraKit] routeMessage payload=%@ from=%@", WireCodec.decodeMessageType(msg.payload), String(sourceUserId.prefix(8)))
         switch msg.payload {
         case .friendRequest?:
-            try await friends.add(sourceUserId, msg.friendRequest.username, status: .pendingReceived)
+            // The payload username is a FIRST-CONTACT bootstrap only (SPEC §0.10 rule 5). This used
+            // to call friends.add() unconditionally, and FriendStore's INSERT OR REPLACE meant an
+            // already-accepted friend could re-send a FriendRequest to rename themselves — the name
+            // the kit puts on notifications — and reset their own status to .pendingReceived,
+            // dropping out of getAccepted() and out of fan-out.
+            if let existing = await friends.getFriend(sourceUserId) {
+                // Known peer: the name comes from our graph now, never from their payload. Refresh
+                // the device list (that IS ours to learn — the sending device was just added to the
+                // messenger's map by decrypt) and change nothing else.
+                if let messenger = _messenger {
+                    let deviceIds = await messenger.getDeviceIdsForUser(sourceUserId)
+                    if !deviceIds.isEmpty {
+                        try await friends.updateDevices(
+                            sourceUserId,
+                            devices: deviceIds.map { ["deviceId": $0, "deviceName": ""] })
+                    }
+                }
+                logger.log("friend request from already-known peer \(sourceUserId) "
+                    + "(status=\(existing.status.rawValue)); keeping stored name and status")
+            } else {
+                try await friends.add(sourceUserId, msg.friendRequest.username, status: .pendingReceived)
+            }
 
         case .friendResponse?:
+            // A response is only meaningful as the answer to a request WE sent. This used to call
+            // friends.add(..., .accepted) whenever accepted was true, so any authenticated stranger
+            // — friendship is not required to deliver a message — could insert themselves as an
+            // ACCEPTED friend under a name of their choosing, with no interaction from us.
             if msg.friendResponse.accepted {
-                try await friends.add(sourceUserId, msg.friendResponse.username, status: .accepted)
+                let existing = await friends.getFriend(sourceUserId)
+                if let existing, existing.status == .pendingSent {
+                    // Promote in place: updateStatus keeps the name WE recorded when we sent the
+                    // request. The payload username is not consulted (SPEC §0.5).
+                    await friends.updateStatus(sourceUserId, .accepted)
+                } else {
+                    logger.log("ignoring unsolicited FRIEND_RESPONSE from \(sourceUserId) "
+                        + "(local status=\(existing?.status.rawValue ?? "none"); expected pendingSent)")
+                }
             }
 
         case .text?:
