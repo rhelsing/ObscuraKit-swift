@@ -24,8 +24,9 @@ final class FriendGraphIntegrityTests: XCTestCase {
         let (alice, mallory) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
         let malloryId = try XCTUnwrap(mallory.userId)
-        let before = try XCTUnwrap(await alice.friends.getFriend(malloryId),
-            "Mallory must be in Alice's graph before the attack")
+        // NB: hoist the await — XCTUnwrap takes an autoclosure, which cannot be async.
+        let beforeRecord = await alice.friends.getFriend(malloryId)
+        let before = try XCTUnwrap(beforeRecord, "Mallory must be in Alice's graph before the attack")
         XCTAssertEqual(before.status, .accepted, "precondition: accepted")
         let realName = before.username
 
@@ -40,7 +41,8 @@ final class FriendGraphIntegrityTests: XCTestCase {
         _ = try? await alice.waitForMessage(timeout: 10)
         try await Task.sleep(nanoseconds: 500_000_000)
 
-        let after = try XCTUnwrap(await alice.friends.getFriend(malloryId), "Mallory must still be in the graph")
+        let afterRecord = await alice.friends.getFriend(malloryId)
+        let after = try XCTUnwrap(afterRecord, "Mallory must still be in the graph")
         print("  stored name before='\(realName)' after='\(after.username)' status=\(after.status.rawValue)")
 
         XCTAssertEqual(after.username, realName,
