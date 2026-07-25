@@ -54,6 +54,18 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
 - `routeMessage` is non-throwing and swallows persistence errors, so a persist failure after a good
   decrypt still acks — a latent violation of `SPEC.md` §0.9 rule 3. (Swift already satisfies the
   primary invariant: it acks inside the `do` block and its rate limiter returns without acking.)
+  PR #6 fixes this for the TEXT and friend-graph paths — but **not** for MODEL_SYNC, see below.
+- **MODEL_SYNC is acked before it is durably persisted, and this is knowingly accepted — do not
+  "fix" it here.** `routeMessage`'s `.modelSync` case calls `_ = await syncManager.handleIncoming(…)`,
+  which is non-throwing, and every layer beneath swallows write errors: `SyncManager.handleIncoming`
+  → `Model.handleSync` → `GSet.merge` / `LWWMap.merge` → `ModelStore.put`, still `try? await
+  db.write` (five sites in `ModelStore.swift`). A MODEL_SYNC whose write fails is acked, and an ack
+  is a DELETE. This is not a corner case: MODEL_SYNC carries every `directMessage`, `pix` and `story`
+  the app sends. Closing it means plumbing `throws` through the ORM and CRDT engine that Phase 3
+  **deletes** — hardening deletion-bound code, which is the failure mode `SPEC.md` §0.8 exists to
+  stop. The decision, its cost, and the narrow fallback if Phase 3 slips are recorded in
+  [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md), Phase 1 status block (2026-07-24). Phase 3
+  resolves it by construction — verify it does when the deletion lands.
 
 > **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
 > porting target and not a normative implementation. This file used to list its source files as
