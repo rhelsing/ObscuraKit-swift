@@ -36,6 +36,17 @@ duplicated, to serve five flat models in one app that uses almost none of them.
 
 Known live defects in this kit, documented so nobody rediscovers them as "improvements":
 
+- **This kit sends `DEVICE_LINK_APPROVAL` but cannot receive one.** `routeMessage` has no
+  `case .deviceLinkApproval` — an inbound approval falls through `default: break`. So a
+  newly-linked device silently discards everything the approval carries: the p2p keypair, the
+  recovery public key, the friends export, and the approver's own-device list. Its registry ends up
+  containing only itself, which means `announceDevices()` from that device can only ever tell a
+  friend about one device. ObscuraKit-Kotlin routes this to `handleLinkApproval`
+  (`setOwnDevices(approvedDevices)` + stores identity keys), so the two kits genuinely diverge on
+  device linking. Found 2026-07-24 while gathering Phase 2 acceptance evidence: CI showed
+  `getOwnDevices()=1` where Kotlin's equivalent fixture shows 2. The *approver* half works and is
+  pinned by `TwoDeviceSendTests.testLinkApprovalPopulatesTheApproverRegistry`; the approvee half is
+  deliberately not asserted, because asserting broken behaviour locks it in.
 - `SyncManager.resolveScopedRecipientUserIds` **hard-codes application field names**
   (`recipientUsername`, `conversationId`). SPEC §0.4 forbids this.
 - `SyncManager.resolveTargets` **narrows a `.friends` broadcast** to a direct send when an entry
