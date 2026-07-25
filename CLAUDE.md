@@ -4,8 +4,26 @@
 
 **This repo is mid-reset. Large parts of it are scheduled for deletion.**
 
-Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) and
+Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
+[`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
 [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+
+**Where this kit is (2026-07-24): behind ObscuraKit-Kotlin, and it is the critical path.** Phases 1
+and 2 landed in the proto, the server and Kotlin between 07-19 and 07-22. This kit's share of both is
+written on `swift/phase2-device-uuid` (**PR #6**) — Phase 1's throwing-persist residual, device-UUID
+addressing, the F9 own-device registry, honest `authorDeviceId`, and the Option B envelope. Every
+commit on it is self-labelled UNVERIFIED because the kit cannot be compiled on Linux (GRDB/SQLCipher
+needs CommonCrypto; see `docs/PITFALLS.md`).
+
+**macOS CI is the oracle that can compile it, and PR #6 is red:** run `29925525672` (2026-07-22,
+`7f3cf55`) fails *at build time* in both jobs, with 11 errors — all
+`call can throw but is not marked with 'try'`, in `Tests/ScenarioTests/ObservationTests.swift`
+(lines 30, 46, 93, 153, 155) and `Tests/ScenarioTests/SyncBlobTests.swift` (lines 15, 16, 18, 19,
+67, 82). That is the expected fallout of making the persistence path throwing: `try` has to
+propagate to the call sites. It is mechanical, and **fixing it is the highest-value next action in
+this repo** — until the build is green, none of the Phase 1/2 logic here has been exercised at all.
+Until it merges, `main` still addresses sessions by `registrationId`, the two kits disagree on
+session addressing in both directions, and Phase 3 (the reset) should not start.
 
 The rule that governs this repo:
 
@@ -28,7 +46,26 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
 - `RoutingConformanceTests` **re-implements the audience mapping in the test harness** and
   discards the `field` name — so it passes without exercising production code.
 - `authorDeviceId` is a lie: `routeMessage` passes `sourceUserId` into that slot and
-  `ReceivedMessage.senderDeviceId` is hardcoded `nil`.
+  `ReceivedMessage.senderDeviceId` is hardcoded `nil`. (Fixed in Kotlin by Phase 2; the Swift fix is
+  written but unmerged — see the status note above. `SPEC.md` §0.10 is the contract.)
+- Signal sessions are addressed by `registrationId`, and `decrypt` defaults `senderRegId: 1` while
+  outbound sessions use the real one — inbound and outbound end up at different addresses. This is
+  `PLAN.md` F1/F4 and the cause of the README's "session desync under load".
+- `routeMessage` is non-throwing and swallows persistence errors, so a persist failure after a good
+  decrypt still acks — a latent violation of `SPEC.md` §0.9 rule 3. (Swift already satisfies the
+  primary invariant: it acks inside the `do` block and its rate limiter returns without acking.)
+  PR #6 fixes this for the TEXT and friend-graph paths — but **not** for MODEL_SYNC, see below.
+- **MODEL_SYNC is acked before it is durably persisted, and this is knowingly accepted — do not
+  "fix" it here.** `routeMessage`'s `.modelSync` case calls `_ = await syncManager.handleIncoming(…)`,
+  which is non-throwing, and every layer beneath swallows write errors: `SyncManager.handleIncoming`
+  → `Model.handleSync` → `GSet.merge` / `LWWMap.merge` → `ModelStore.put`, still `try? await
+  db.write` (five sites in `ModelStore.swift`). A MODEL_SYNC whose write fails is acked, and an ack
+  is a DELETE. This is not a corner case: MODEL_SYNC carries every `directMessage`, `pix` and `story`
+  the app sends. Closing it means plumbing `throws` through the ORM and CRDT engine that Phase 3
+  **deletes** — hardening deletion-bound code, which is the failure mode `SPEC.md` §0.8 exists to
+  stop. The decision, its cost, and the narrow fallback if Phase 3 slips are recorded in
+  [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md), Phase 1 status block (2026-07-24). Phase 3
+  resolves it by construction — verify it does when the deletion lands.
 
 > **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
 > porting target and not a normative implementation. This file used to list its source files as

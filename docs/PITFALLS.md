@@ -14,11 +14,37 @@
 
 **`InMemorySignalProtocolStore` is fine for tests but not production.** Sessions are lost on process exit. Use `PersistentSignalStore` (GRDB-backed) which implements all 6 libsignal protocol interfaces with SQLite persistence.
 
-**Signal sessions are keyed as `(userId, registrationId)`.** Not `(userId, deviceId)`. The registrationId comes from the prekey bundle. The web client uses `SignalProtocolAddress(userId, registrationId)`. The `deviceMap` in MessengerActor maps deviceId → (userId, registrationId).
+**⚠️ Signal sessions are keyed as `(userId, registrationId)` — and that is the bug, not the design.**
+This describes the code as it stands on `main`; do **not** treat it as guidance. `registrationId`
+travels on exactly one wire surface (`PreKeyBundleResponse`), while the device UUID travels on all of
+them, so this addressing breaks multi-device delivery and makes `authorDeviceId` unattributable
+(`obscura-proto/PLAN.md` F1, F4). The contract is now `obscura-proto/SPEC.md` §0.10: address
+`ProtocolAddress` on the **device UUID**, select the inbound session from
+`Envelope.sender_device_id`, and select prekey bundles by device UUID with no fallback.
+
+Swift-specific defect: `MessengerActor.decrypt(...)` defaults `senderRegId: 1` and its only call
+site never overrides it, so outbound sessions are filed at `(userId, realRegId)` and inbound ones at
+`(userId, 1)` — the two directions use different addresses. This is the most likely explanation for
+"session desync happens occasionally under load" in the README. The fix is written on
+`swift/phase2-device-uuid` (PR #6), but that PR **does not build** — macOS CI run `29925525672`
+fails with 11 `call can throw but is not marked with 'try'` errors in `ObservationTests.swift` and
+`SyncBlobTests.swift`, the fallout of making persistence throwing. Kotlin already migrated (PR #40).
 
 ## WebSocket
 
-**The project uses `URLSessionWebSocketTask` (native Foundation).** Linux is no longer a supported build target. The previous WebSocketKit/SwiftNIO dependency was removed in March 2026.
+**The project uses `URLSessionWebSocketTask` (native Foundation).** The previous WebSocketKit/SwiftNIO dependency was removed in March 2026.
+
+**Linux is not a supported build target — but `URLSessionWebSocketTask` is not why.** Investigated
+2026-07-14 (`obscura-proto/PLAN.md` 0.4): the build walls at **GRDB's bundled SQLCipher**, which
+needs `CommonCrypto/CommonCrypto.h` (Apple-only), long before anything WebSocket-related is reached.
+SQLCipher is the at-rest cipher for the message store, the Signal session store is GRDB-backed, and
+the module is monolithic, so no crypto-only slice compiles either. What *does* build on Linux is
+libsignal v0.40.0's Rust FFI, given two environmental fixes: point `LIBCLANG_PATH` at the Android
+NDK's LLVM-18 libclang (clang 21's bindgen mis-parses vendored BoringSSL and fails on
+`GENERAL_NAME_new`), and put a `libxml2.so.2` shim on `LD_LIBRARY_PATH`. That is enough to prove
+protocol *mechanisms* at the libsignal level, and it is how the addressing split was demonstrated
+(`verification/AddressingProbe` on `verify/swift-addressing-probe`). Full end-to-end verification of
+this kit needs macOS CI. No SQLCipher fork — decided 2026-07-16.
 
 **The envelope loop must use a buffered queue for `waitForMessage()`.** If you create a fresh `AsyncStream` subscription after the message has already been processed by the loop, you miss it. The `messageQueue` array in ObscuraClient buffers processed messages for test consumption.
 
