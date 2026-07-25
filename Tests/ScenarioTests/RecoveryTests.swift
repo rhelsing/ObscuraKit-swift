@@ -98,7 +98,7 @@ final class RecoveryTests: XCTestCase {
         await rateLimitDelay()
 
         // Add some state
-        await alice.friends.add("bob-id", "bob", status: .accepted)
+        try await alice.friends.add("bob-id", "bob", status: .accepted)
 
         // Upload backup
         do {

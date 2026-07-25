@@ -76,14 +76,14 @@ final class DeviceRevocationFlowTests: XCTestCase {
         // Alice has messages from bob's two devices
         let alice = try await ObscuraTestClient.register()
 
-        await alice.friends.add("bob-id", "bob", status: .accepted, devices: [
+        try await alice.friends.add("bob-id", "bob", status: .accepted, devices: [
             ["deviceId": "bob-dev1", "deviceUUID": "uuid1"],
             ["deviceId": "bob-dev2", "deviceUUID": "uuid2"],
         ])
 
-        await alice.messages.add("bob", Message(messageId: "m1", conversationId: "bob", content: "from dev1", authorDeviceId: "bob-dev1"))
-        await alice.messages.add("bob", Message(messageId: "m2", conversationId: "bob", content: "from dev2", authorDeviceId: "bob-dev2"))
-        await alice.messages.add("bob", Message(messageId: "m3", conversationId: "bob", content: "from dev1 again", authorDeviceId: "bob-dev1"))
+        try await alice.messages.add("bob", Message(messageId: "m1", conversationId: "bob", content: "from dev1", authorDeviceId: "bob-dev1"))
+        try await alice.messages.add("bob", Message(messageId: "m2", conversationId: "bob", content: "from dev2", authorDeviceId: "bob-dev2"))
+        try await alice.messages.add("bob", Message(messageId: "m3", conversationId: "bob", content: "from dev1 again", authorDeviceId: "bob-dev1"))
 
         // Process revocation: bob-dev2 is revoked
         // 1. Delete messages from revoked device
@@ -91,7 +91,7 @@ final class DeviceRevocationFlowTests: XCTestCase {
         XCTAssertEqual(deleted, 1)
 
         // 2. Update device list (remove revoked device)
-        await alice.friends.updateDevices("bob-id", devices: [
+        try await alice.friends.updateDevices("bob-id", devices: [
             ["deviceId": "bob-dev1", "deviceUUID": "uuid1"],
         ])
 
@@ -110,8 +110,8 @@ final class DeviceRevocationFlowTests: XCTestCase {
         let bob2 = try await ObscuraTestClient.register()
 
         // bob2 has state
-        await bob2.friends.add("alice-id", "alice", status: .accepted)
-        await bob2.messages.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello"))
+        try await bob2.friends.add("alice-id", "alice", status: .accepted)
+        try await bob2.messages.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello"))
         await bob2.devices.storeIdentity(DeviceIdentity(coreUsername: bob2.username, deviceId: "bob2-dev", deviceUUID: "bob2-uuid"))
 
         // Receive revocation → self-brick

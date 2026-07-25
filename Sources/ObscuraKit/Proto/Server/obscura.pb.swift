@@ -253,6 +253,12 @@ struct Obscura_V1_Envelope: Sendable {
   /// The encrypted message payload
   var message: Data = Data()
 
+  /// UUID of the sending *device* (16 bytes), stamped by the server from the
+  /// sender's device-scoped JWT — the client cannot forge it. Used to select the
+  /// inbound Signal session (Phase 2). Hand-added to this committed generated file
+  /// mirroring `senderID` (field 2, bytes); protoc-gen-swift is unavailable here.
+  var senderDeviceID: Data = Data()
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -587,7 +593,7 @@ extension Obscura_V1_EnvelopeBatch: SwiftProtobuf.Message, SwiftProtobuf._Messag
 
 extension Obscura_V1_Envelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".Envelope"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}sender_id\0\u{1}timestamp\0\u{1}message\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}sender_id\0\u{1}timestamp\0\u{1}message\0\u{3}sender_device_id\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -599,6 +605,7 @@ extension Obscura_V1_Envelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
       case 2: try { try decoder.decodeSingularBytesField(value: &self.senderID) }()
       case 3: try { try decoder.decodeSingularUInt64Field(value: &self.timestamp) }()
       case 4: try { try decoder.decodeSingularBytesField(value: &self.message) }()
+      case 5: try { try decoder.decodeSingularBytesField(value: &self.senderDeviceID) }()
       default: break
       }
     }
@@ -617,6 +624,9 @@ extension Obscura_V1_Envelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
     if !self.message.isEmpty {
       try visitor.visitSingularBytesField(value: self.message, fieldNumber: 4)
     }
+    if !self.senderDeviceID.isEmpty {
+      try visitor.visitSingularBytesField(value: self.senderDeviceID, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -625,6 +635,7 @@ extension Obscura_V1_Envelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
     if lhs.senderID != rhs.senderID {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs.message != rhs.message {return false}
+    if lhs.senderDeviceID != rhs.senderDeviceID {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

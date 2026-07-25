@@ -15,8 +15,8 @@ public actor GatewayConnection {
     /// Ping interval in seconds — keeps connection alive through proxies/NATs.
     private static let pingIntervalSeconds: UInt64 = 30
 
-    private var envelopeQueue: [(id: Data, senderID: Data, timestamp: UInt64, message: Data)] = []
-    private var waiters: [(id: Int, continuation: CheckedContinuation<(id: Data, senderID: Data, timestamp: UInt64, message: Data), Error>)] = []
+    private var envelopeQueue: [(id: Data, senderID: Data, senderDeviceID: Data, timestamp: UInt64, message: Data)] = []
+    private var waiters: [(id: Int, continuation: CheckedContinuation<(id: Data, senderID: Data, senderDeviceID: Data, timestamp: UInt64, message: Data), Error>)] = []
     private var nextWaiterId = 0
 
     private var onPreKeyStatus: (@Sendable (Int32, Int32) -> Void)?
@@ -92,7 +92,7 @@ public actor GatewayConnection {
         Task { await disconnect() }
     }
 
-    public func waitForRawEnvelope(timeout: TimeInterval = 10) async throws -> (id: Data, senderID: Data, timestamp: UInt64, message: Data) {
+    public func waitForRawEnvelope(timeout: TimeInterval = 10) async throws -> (id: Data, senderID: Data, senderDeviceID: Data, timestamp: UInt64, message: Data) {
         if !envelopeQueue.isEmpty {
             return envelopeQueue.removeFirst()
         }
@@ -226,7 +226,7 @@ public actor GatewayConnection {
             onPreKeyStatus?(status.oneTimePreKeyCount, status.minThreshold)
         } else if case .envelopeBatch(let batch) = frame.payload {
             for envelope in batch.envelopes {
-                let raw = (id: envelope.id, senderID: envelope.senderID, timestamp: envelope.timestamp, message: envelope.message)
+                let raw = (id: envelope.id, senderID: envelope.senderID, senderDeviceID: envelope.senderDeviceID, timestamp: envelope.timestamp, message: envelope.message)
 
                 if !waiters.isEmpty {
                     let waiter = waiters.removeFirst()

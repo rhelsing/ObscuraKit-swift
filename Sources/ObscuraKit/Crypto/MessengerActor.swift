@@ -48,11 +48,33 @@ public actor MessengerActor {
         return bundles
     }
 
+    // MARK: - Addressing (Phase 2)
+
+    /// The deviceId slot of every ProtocolAddress. Constant because the device UUID in the name
+    /// slot already uniquely identifies the peer device; libsignal just needs SOME stable int here.
+    static let addrDeviceId: UInt32 = 1
+
+    /// THE single ProtocolAddress constructor for a peer device, used by BOTH send
+    /// (queueMessage/encrypt/processServerBundle) and receive (decrypt). name = device UUID,
+    /// deviceId = constant. A ProtocolAddress is a purely LOCAL store key that is never
+    /// transmitted. If send and receive ever built different addresses for the same device the
+    /// bidirectional session would split — this function is why they cannot. (Mirrors Kotlin
+    /// MessengerDomain.addressFor.)
+    static func addressFor(_ deviceUuid: String) throws -> ProtocolAddress {
+        try ProtocolAddress(name: deviceUuid, deviceId: addrDeviceId)
+    }
+
+    /// Enumerate the device UUIDs known for a user (for session-reset fan-out). The registrationId
+    /// slot of deviceMap is diagnostic only; addressing is by device UUID.
+    public func getDeviceIdsForUser(_ userId: String) -> [String] {
+        deviceMap.filter { $0.value.userId == userId }.map { $0.key }
+    }
+
     // MARK: - Encryption
 
-    /// Encrypt plaintext for a target user at a specific address
-    public func encrypt(_ targetUserId: String, _ plaintext: [UInt8], registrationId: UInt32) throws -> (type: CiphertextMessage.MessageType, body: [UInt8]) {
-        let address = try ProtocolAddress(name: targetUserId, deviceId: registrationId)
+    /// Encrypt plaintext for a target peer DEVICE, addressed by its device UUID (Phase 2).
+    public func encrypt(deviceUuid: String, _ plaintext: [UInt8]) throws -> (type: CiphertextMessage.MessageType, body: [UInt8]) {
+        let address = try Self.addressFor(deviceUuid)
 
         let ciphertext = try signalEncrypt(
             message: plaintext,
@@ -65,10 +87,16 @@ public actor MessengerActor {
         return (type: ciphertext.messageType, body: Array(ciphertext.serialize()))
     }
 
-    /// Establish session from prekey bundle response
+    /// Establish an outbound session from a prekey bundle response.
+    /// Phase 2: the session is keyed on the peer's DEVICE UUID at address (deviceUuid, 1) — the
+    /// SAME address decrypt() uses inbound — killing the old send/receive address split (F1). The
+    /// peer's real registrationId is still carried INSIDE the PreKeyBundle (Signal metadata), but
+    /// the bundle's deviceId slot is pinned to the addressing constant to match the store address.
     public func processServerBundle(_ bundleData: PreKeyBundleResponse, userId: String) throws {
         let regId = UInt32(bundleData.registrationId)
-        let address = try ProtocolAddress(name: userId, deviceId: regId)
+        let address = try Self.addressFor(bundleData.deviceId)
+        // Learn the device -> user mapping so getDeviceIdsForUser can enumerate this user's devices.
+        deviceMap[bundleData.deviceId] = (userId: userId, registrationId: regId)
 
         guard let identityKeyData = Data(base64Encoded: bundleData.identityKey) else {
             throw MessengerError.invalidBundle("invalid identityKey base64")
@@ -95,14 +123,14 @@ public actor MessengerActor {
         let bundle: PreKeyBundle
         if let preKeyPublic = preKeyPublic {
             bundle = try PreKeyBundle(
-                registrationId: regId, deviceId: regId,
+                registrationId: regId, deviceId: Self.addrDeviceId,
                 prekeyId: preKeyId, prekey: preKeyPublic,
                 signedPrekeyId: UInt32(spk.keyId), signedPrekey: signedPreKeyPublic,
                 signedPrekeySignature: Array(spkSigData), identity: identityKey
             )
         } else {
             bundle = try PreKeyBundle(
-                registrationId: regId, deviceId: regId,
+                registrationId: regId, deviceId: Self.addrDeviceId,
                 signedPrekeyId: UInt32(spk.keyId), signedPrekey: signedPreKeyPublic,
                 signedPrekeySignature: Array(spkSigData), identity: identityKey
             )
@@ -117,14 +145,25 @@ public actor MessengerActor {
 
     // MARK: - Decryption
 
-    /// Decrypt an envelope's encrypted message
-    public func decrypt(sourceUserId: String, content: Data, messageType: Int, senderRegId: UInt32 = 1) throws -> [UInt8] {
-        let address = try ProtocolAddress(name: sourceUserId, deviceId: senderRegId)
+    /// Decrypt an envelope's encrypted message.
+    ///
+    /// Phase 2 receive-side addressing. The caller passes the SENDER'S DEVICE UUID (from
+    /// `Envelope.senderDeviceID`, stamped by the server from the device-scoped JWT — unforgeable
+    /// by the sender). Signal sessions are pairwise device-to-device and a SignalMessage carries
+    /// no sender identity, so this is how we select the inbound session. There is no
+    /// candidate-registrationId loop and no `senderRegId: 1` default anymore — the address is the
+    /// SAME (deviceUuid, 1) the send path builds, closing the F1 split.
+    ///
+    /// A valid MAC proves possession of that session's chain key, which only the sender's device
+    /// holds, so `senderDeviceUuid` is a cryptographically sound attribution once decrypt succeeds.
+    public func decrypt(senderUserId: String, senderDeviceUuid: String, content: Data, messageType: Int) throws -> [UInt8] {
+        let address = try Self.addressFor(senderDeviceUuid)
 
+        let plaintext: [UInt8]
         if messageType == 1 {
             // PreKey message
             let preKeyMessage = try PreKeySignalMessage(bytes: Array(content))
-            return try signalDecryptPreKey(
+            plaintext = try signalDecryptPreKey(
                 message: preKeyMessage,
                 from: address,
                 sessionStore: sessionStore,
@@ -137,7 +176,7 @@ public actor MessengerActor {
         } else {
             // Whisper message
             let signalMessage = try SignalMessage(bytes: Array(content))
-            return try signalDecrypt(
+            plaintext = try signalDecrypt(
                 message: signalMessage,
                 from: address,
                 sessionStore: sessionStore,
@@ -145,6 +184,14 @@ public actor MessengerActor {
                 context: NullContext()
             )
         }
+
+        // Learn the sender's device so later fan-out to this user includes it (F6). The regId slot
+        // is diagnostic only; addressing is by device UUID.
+        if deviceMap[senderDeviceUuid] == nil {
+            deviceMap[senderDeviceUuid] = (userId: senderUserId, registrationId: Self.addrDeviceId)
+        }
+
+        return plaintext
     }
 
     // MARK: - Message Queuing
@@ -152,18 +199,19 @@ public actor MessengerActor {
     /// Encode a ClientMessage, encrypt it, wrap in EncryptedMessage, queue for sending
     /// Queue a message for batch sending. clientMessage is the protobuf payload.
     public func queueMessage(targetDeviceId: String, clientMessageData: Data, targetUserId: String? = nil) throws {
-        // Resolve target
-        let mapping = deviceMap[targetDeviceId]
-        let userId = targetUserId ?? mapping?.userId ?? targetDeviceId
-        guard let regId = mapping?.registrationId else {
-            throw MessengerError.invalidBundle("missing device mapping for \(targetDeviceId)")
+        // targetDeviceId IS the peer's device UUID — the address name slot (see addressFor).
+        // The session must already exist (processServerBundle built it at the same (deviceUuid, 1)
+        // address); encrypt throws if it does not. The owning userId is retained only so
+        // getDeviceIdsForUser can enumerate the user's devices for fan-out; it is NOT an address.
+        if let uid = targetUserId, deviceMap[targetDeviceId] == nil {
+            deviceMap[targetDeviceId] = (userId: uid, registrationId: Self.addrDeviceId)
         }
 
         // Use pre-serialized ClientMessage bytes
         let plaintext = Array(clientMessageData)
 
-        // Encrypt
-        let encrypted = try encrypt(userId, plaintext, registrationId: regId)
+        // Encrypt (addressed by device UUID, Phase 2)
+        let encrypted = try encrypt(deviceUuid: targetDeviceId, plaintext)
 
         // Wrap in EncryptedMessage protobuf
         var encMsg = Obscura_Client_V1_EncryptedMessage()

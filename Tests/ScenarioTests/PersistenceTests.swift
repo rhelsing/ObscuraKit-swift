@@ -109,7 +109,7 @@ final class PersistenceTests: XCTestCase {
         await rateLimitDelay()
 
         // Add a friend locally
-        await client1.friends.add("fake-user-id", "fakefriend", status: .accepted)
+        try await client1.friends.add("fake-user-id", "fakefriend", status: .accepted)
 
         let friends1 = await client1.friends.getAccepted()
         XCTAssertEqual(friends1.count, 1)
@@ -134,7 +134,7 @@ final class PersistenceTests: XCTestCase {
         await rateLimitDelay()
 
         // Store a message
-        await client1.messages.add("conv-123", Message(
+        try await client1.messages.add("conv-123", Message(
             messageId: "msg-1", conversationId: "conv-123",
             content: "persisted message", isSent: true
         ))
@@ -184,8 +184,8 @@ final class PersistenceTests: XCTestCase {
         try await client1.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
         await rateLimitDelay()
 
-        await client1.friends.add("friend-1", "alice", status: .accepted)
-        await client1.messages.add("conv-1", Message(messageId: "m1", conversationId: "conv-1", content: "test"))
+        try await client1.friends.add("friend-1", "alice", status: .accepted)
+        try await client1.messages.add("conv-1", Message(messageId: "m1", conversationId: "conv-1", content: "test"))
 
         // Logout — should NOT wipe data
         try await client1.logout()
@@ -211,8 +211,8 @@ final class PersistenceTests: XCTestCase {
         try await client1.register("test_\(Int.random(in: 100000...999999))", "testpass123456")
         await rateLimitDelay()
 
-        await client1.friends.add("friend-1", "alice", status: .accepted)
-        await client1.messages.add("conv-1", Message(messageId: "m1", conversationId: "conv-1", content: "test"))
+        try await client1.friends.add("friend-1", "alice", status: .accepted)
+        try await client1.messages.add("conv-1", Message(messageId: "m1", conversationId: "conv-1", content: "test"))
 
         // Wipe — should nuke everything
         try await client1.wipeDevice()
