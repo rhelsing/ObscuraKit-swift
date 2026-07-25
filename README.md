@@ -126,7 +126,11 @@ Tested with 123 unit tests (offline, <1s) and 17 integration tests (live server)
 - TTL cleanup must be called manually
 - The old `MessageActor` still exists alongside the ORM
 - `include()` works locally but not tested over the wire
-- Session desync happens occasionally under load (investigating)
+- Session desync happens occasionally under load — **diagnosed, fix pending.** `MessengerActor.decrypt`
+  defaults `senderRegId: 1` and no call site overrides it, so outbound sessions are filed at
+  `(userId, realRegId)` and inbound ones at `(userId, 1)`. The fix (address on the device UUID, per
+  `obscura-proto/SPEC.md` §0.10) is written on `swift/phase2-device-uuid` and needs a macOS
+  compile + test run before it can merge. See `docs/PITFALLS.md`.
 
 ## Build & Test
 

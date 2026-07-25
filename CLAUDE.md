@@ -4,8 +4,18 @@
 
 **This repo is mid-reset. Large parts of it are scheduled for deletion.**
 
-Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) and
+Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
+[`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
 [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+
+**Where this kit is (2026-07-24): behind ObscuraKit-Kotlin, and it is the critical path.** Phases 1
+and 2 landed in the proto, the server and Kotlin between 07-19 and 07-22. This kit's share of both is
+written on `swift/phase2-device-uuid` — Phase 1's throwing-persist residual, device-UUID addressing,
+the F9 own-device registry, honest `authorDeviceId`, and the Option B envelope — and **every commit
+on it is self-labelled UNVERIFIED**, because the kit cannot be compiled on Linux (GRDB/SQLCipher
+needs CommonCrypto; see `docs/PITFALLS.md`). It needs a macOS compile + test run before it merges.
+Until then `main` still addresses sessions by `registrationId`, so the two kits disagree on session
+addressing in both directions, and Phase 3 (the reset) should not start.
 
 The rule that governs this repo:
 
@@ -28,7 +38,14 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
 - `RoutingConformanceTests` **re-implements the audience mapping in the test harness** and
   discards the `field` name — so it passes without exercising production code.
 - `authorDeviceId` is a lie: `routeMessage` passes `sourceUserId` into that slot and
-  `ReceivedMessage.senderDeviceId` is hardcoded `nil`.
+  `ReceivedMessage.senderDeviceId` is hardcoded `nil`. (Fixed in Kotlin by Phase 2; the Swift fix is
+  written but unmerged — see the status note above. `SPEC.md` §0.10 is the contract.)
+- Signal sessions are addressed by `registrationId`, and `decrypt` defaults `senderRegId: 1` while
+  outbound sessions use the real one — inbound and outbound end up at different addresses. This is
+  `PLAN.md` F1/F4 and the cause of the README's "session desync under load".
+- `routeMessage` is non-throwing and swallows persistence errors, so a persist failure after a good
+  decrypt still acks — a latent violation of `SPEC.md` §0.9 rule 3. (Swift already satisfies the
+  primary invariant: it acks inside the `do` block and its rate limiter returns without acking.)
 
 > **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
 > porting target and not a normative implementation. This file used to list its source files as
