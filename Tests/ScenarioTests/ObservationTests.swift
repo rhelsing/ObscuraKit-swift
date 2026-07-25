@@ -27,7 +27,7 @@ final class ObservationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
 
         // Add a friend — should trigger second emission
-        await actor.add("alice-id", "alice", status: .accepted)
+        try await actor.add("alice-id", "alice", status: .accepted)
 
         await fulfillment(of: [expectation], timeout: 5)
         task.cancel()
@@ -43,7 +43,7 @@ final class ObservationTests: XCTestCase {
         let actor = try FriendActor()
 
         // Add a pending friend first
-        await actor.add("bob-id", "bob", status: .pendingReceived)
+        try await actor.add("bob-id", "bob", status: .pendingReceived)
 
         var emitted: [[Friend]] = []
         let expectation = XCTestExpectation(description: "accepted emits")
@@ -90,7 +90,7 @@ final class ObservationTests: XCTestCase {
 
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        await actor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello"))
+        try await actor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello"))
 
         await fulfillment(of: [expectation], timeout: 5)
         task.cancel()
@@ -150,9 +150,9 @@ final class ObservationTests: XCTestCase {
 
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        await actor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hi"))
+        try await actor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hi"))
         try await Task.sleep(nanoseconds: 100_000_000)
-        await actor.add("bob", Message(messageId: "m2", conversationId: "bob", content: "hey"))
+        try await actor.add("bob", Message(messageId: "m2", conversationId: "bob", content: "hey"))
 
         await fulfillment(of: [expectation], timeout: 5)
         task.cancel()

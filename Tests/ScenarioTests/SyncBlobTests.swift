@@ -12,11 +12,11 @@ final class SyncBlobTests: XCTestCase {
         let friendActor = try FriendActor()
         let messageActor = try MessageActor()
 
-        await friendActor.add("alice-id", "alice", status: .accepted)
-        await friendActor.add("carol-id", "carol", status: .pendingReceived)
+        try await friendActor.add("alice-id", "alice", status: .accepted)
+        try await friendActor.add("carol-id", "carol", status: .pendingReceived)
 
-        await messageActor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello alice", isSent: true))
-        await messageActor.add("alice", Message(messageId: "m2", conversationId: "alice", content: "hi back", isSent: false))
+        try await messageActor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello alice", isSent: true))
+        try await messageActor.add("alice", Message(messageId: "m2", conversationId: "alice", content: "hi back", isSent: false))
 
         // Export
         let friends = await friendActor.getAll()
@@ -64,7 +64,7 @@ final class SyncBlobTests: XCTestCase {
         // Import friends
         for f in parsed.friends {
             let status = FriendStatus(rawValue: f["status"] as? String ?? "") ?? .pendingSent
-            await device2Friends.add(
+            try await device2Friends.add(
                 f["userId"] as! String,
                 f["username"] as! String,
                 status: status
@@ -79,7 +79,7 @@ final class SyncBlobTests: XCTestCase {
                 content: m["content"] as! String,
                 isSent: m["isSent"] as? Bool ?? false
             )
-            await device2Messages.add(m["conversationId"] as! String, msg)
+            try await device2Messages.add(m["conversationId"] as! String, msg)
         }
 
         // Verify
