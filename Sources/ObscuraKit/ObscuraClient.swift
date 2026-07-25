@@ -264,7 +264,12 @@ public class ObscuraClient {
 
     /// File-backed client (production). All state persists to `dataDirectory/obscura.sqlite`.
     /// On init, restores Signal identity from DB if one exists.
-    public init(apiURL: String, dataDirectory: String, userId: String? = nil, logger: ObscuraLogger = PrintLogger()) throws {
+    /// - Parameter keychainAccessGroup: shared keychain access group for the SQLCipher key. Pass
+    ///   `nil` (default) for today's behaviour. Required if a Notification Service Extension must
+    ///   open this database — see `obscura-proto/KIT_API.md` P2, and note the extension also needs
+    ///   `dataDirectory` to be an App Group container path, which is the caller's to supply.
+    public init(apiURL: String, dataDirectory: String, userId: String? = nil,
+                keychainAccessGroup: String? = nil, logger: ObscuraLogger = PrintLogger()) throws {
         self.logger = logger
 
         // Ensure directory exists with iOS Data Protection (encrypted at rest)
@@ -277,7 +282,7 @@ public class ObscuraClient {
         // SQLCipher encryption: per-user key from Keychain
         var config = Configuration()
         if let userId = userId {
-            let key = DatabaseSecret.getOrCreate(userId: userId)
+            let key = DatabaseSecret.getOrCreate(userId: userId, accessGroup: keychainAccessGroup)
             config.prepareDatabase { db in
                 try db.usePassphrase(key)
                 try db.execute(sql: "PRAGMA kdf_iter = 1") // key is already 256-bit entropy
