@@ -101,7 +101,10 @@ public class Model {
     internal var onBroadcast: ((String, ModelEntry) async throws -> Void)?
 
     /// Callback for sending signals — set by SyncManager
-    internal var onSignalSend: ((Data) async -> Void)?
+    /// Send an ephemeral signal. The second parameter is the signal's `contextId` — the
+    /// conversation it belongs to — WITHOUT which the sender cannot resolve an audience and
+    /// falls back to broadcasting a 1:1 signal to every friend. See `SyncManager.sendSignal`.
+    internal var onSignalSend: ((Data, String) async -> Void)?
 
     /// TTL manager — set by schema()
     internal var ttlManager: TTLManager?

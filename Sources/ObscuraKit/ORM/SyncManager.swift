@@ -25,18 +25,37 @@ public class SyncManager {
         }
 
         // Wire up signal sending
-        model.onSignalSend = { [weak self] msgData in
-            await self?.broadcastSignal(msgData)
+        model.onSignalSend = { [weak self] msgData, contextId in
+            await self?.sendSignal(msgData, contextId: contextId)
         }
     }
 
-    /// Broadcast a signal (MODEL_SIGNAL) to all friends.
-    private func broadcastSignal(_ msgData: Data) async {
+    /// Send a signal (MODEL_SIGNAL) to the conversation it belongs to.
+    ///
+    /// This used to fan out to `friends.getAccepted()` while `contextId` carried the canonical
+    /// two-party `"userIdA_userIdB"` conversation id — so every accepted friend learned, in real
+    /// time, that you were typing to a *named* third party.
+    ///
+    /// The rule is the one `resolveTargets` already applies to `.direct` entries, and it fails
+    /// CLOSED: an id that does not name exactly two participants sends nothing at all. Dropping an
+    /// ephemeral typing indicator costs nothing; guessing its audience leaks the conversation.
+    private func sendSignal(_ msgData: Data, contextId: String) async {
         guard let client = client else { return }
-        let friends = await client.friends.getAccepted()
-        for friend in friends {
+
+        let participants = contextId.split(separator: "_").map(String.init).filter { !$0.isEmpty }
+        guard participants.count == 2 else {
+            client.logger.log(
+                "signal dropped: contextId is not a canonical two-party value — refusing to broadcast a 1:1 signal"
+            )
+            return
+        }
+
+        // Everyone in the conversation except this user. Own devices are deliberately excluded:
+        // a typing indicator is for the other party, and echoing it to your own devices is noise
+        // the app has never asked for.
+        for userId in participants where userId != client.userId {
             do {
-                try await client.sendRawMessage(to: friend.userId, clientMessageData: msgData)
+                try await client.sendRawMessage(to: userId, clientMessageData: msgData)
             } catch {
                 // Signals are best-effort — don't crash on failure
             }
