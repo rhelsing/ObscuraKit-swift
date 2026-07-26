@@ -41,13 +41,13 @@ public actor FriendActor {
 
     public init(db: DatabaseQueue) throws {
         self.db = db
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     public init() throws {
         self.db = try DatabaseQueue()
         try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     // MARK: - Reactive Streams (GRDB ValueObservation)
@@ -92,24 +92,6 @@ public actor FriendActor {
         return AsyncValueObservation(observation: observation, in: db)
     }
 
-    private static func createTables(_ db: DatabaseQueue) throws {
-        try db.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS friends (
-                    user_id TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    devices TEXT NOT NULL DEFAULT '[]',
-                    recovery_public_key BLOB,
-                    devices_updated_at INTEGER NOT NULL DEFAULT 0,
-                    is_verified INTEGER NOT NULL DEFAULT 0,
-                    verified_at INTEGER,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                )
-            """)
-        }
-    }
 
     // SPEC §0.9 rule 3: a durable write that backs an acked message must be able to fail loudly,
     // so the envelope loop skips the ack instead of deleting an un-persisted message server-side.

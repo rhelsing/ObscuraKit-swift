@@ -39,13 +39,13 @@ public actor DeviceActor {
 
     public init(db: DatabaseQueue) throws {
         self.db = db
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     public init() throws {
         self.db = try DatabaseQueue()
         try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     // MARK: - Reactive Streams
@@ -72,31 +72,6 @@ public actor DeviceActor {
         return AsyncValueObservation(observation: observation, in: db)
     }
 
-    private static func createTables(_ db: DatabaseQueue) throws {
-        try db.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS device_identity (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    core_username TEXT NOT NULL,
-                    device_id TEXT NOT NULL,
-                    device_uuid TEXT NOT NULL,
-                    p2p_public_key BLOB,
-                    p2p_private_key BLOB,
-                    recovery_public_key BLOB,
-                    link_pending INTEGER NOT NULL DEFAULT 0
-                )
-            """)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS own_devices (
-                    device_uuid TEXT PRIMARY KEY,
-                    device_id TEXT NOT NULL,
-                    device_name TEXT NOT NULL,
-                    signal_identity_key BLOB,
-                    registration_id INTEGER
-                )
-            """)
-        }
-    }
 
     public func storeIdentity(_ identity: DeviceIdentity) async {
         try? await db.write { db in

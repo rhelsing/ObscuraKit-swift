@@ -25,45 +25,7 @@ public class PersistentSignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyS
     }
 
     private func createTables() throws {
-        try db.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS signal_local_identity (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    key_pair BLOB NOT NULL,
-                    registration_id INTEGER NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS signal_identities (
-                    address TEXT PRIMARY KEY,
-                    key_data BLOB NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS signal_prekeys (
-                    key_id INTEGER PRIMARY KEY,
-                    record BLOB NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS signal_signed_prekeys (
-                    key_id INTEGER PRIMARY KEY,
-                    record BLOB NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS signal_sessions (
-                    address TEXT PRIMARY KEY,
-                    record BLOB NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS signal_sender_keys (
-                    key_id TEXT PRIMARY KEY,
-                    record BLOB NOT NULL
-                )
-            """)
-        }
+        try ObscuraSchema.migrate(db)
 
         // Restore persisted identity if available
         if let (keyPair, regId) = try loadPersistedIdentity() {

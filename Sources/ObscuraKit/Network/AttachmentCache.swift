@@ -10,21 +10,9 @@ public class AttachmentCache {
 
     public init(db: DatabaseQueue) throws {
         self.db = db
-        try createTable()
+        try ObscuraSchema.migrate(db)
     }
 
-    private func createTable() throws {
-        try db.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS attachment_cache (
-                    attachment_id TEXT NOT NULL PRIMARY KEY,
-                    plaintext BLOB NOT NULL,
-                    size_bytes INTEGER NOT NULL,
-                    cached_at INTEGER NOT NULL
-                )
-            """)
-        }
-    }
 
     /// Check cache for attachment. Returns decrypted bytes or nil.
     public func get(_ attachmentId: String) async -> Data? {
