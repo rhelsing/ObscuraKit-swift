@@ -11,50 +11,16 @@ public class ModelStore {
 
     public init(db: DatabaseQueue) throws {
         self.db = db
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     /// In-memory store for testing
     public init() throws {
         self.db = try DatabaseQueue()
         try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
-    private static func createTables(_ db: DatabaseQueue) throws {
-        try db.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS model_entries (
-                    model_name TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    data TEXT NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    signature BLOB NOT NULL,
-                    author_device_id TEXT NOT NULL,
-                    PRIMARY KEY (model_name, id)
-                )
-            """)
-
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS associations (
-                    parent_type TEXT NOT NULL,
-                    parent_id TEXT NOT NULL,
-                    child_type TEXT NOT NULL,
-                    child_id TEXT NOT NULL,
-                    PRIMARY KEY (parent_type, parent_id, child_type, child_id)
-                )
-            """)
-
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS ttl (
-                    model_name TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    expires_at INTEGER NOT NULL,
-                    PRIMARY KEY (model_name, id)
-                )
-            """)
-        }
-    }
 
     // MARK: - Model Entries
 

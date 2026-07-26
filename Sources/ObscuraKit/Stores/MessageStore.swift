@@ -26,13 +26,13 @@ public actor MessageActor {
 
     public init(db: DatabaseQueue) throws {
         self.db = db
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     public init() throws {
         self.db = try DatabaseQueue()
         try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
-        try Self.createTables(db)
+        try ObscuraSchema.migrate(db)
     }
 
     // MARK: - Reactive Streams
@@ -57,24 +57,6 @@ public actor MessageActor {
         return AsyncValueObservation(observation: observation, in: db)
     }
 
-    private static func createTables(_ db: DatabaseQueue) throws {
-        try db.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS messages (
-                    message_id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    is_sent INTEGER NOT NULL DEFAULT 0,
-                    author_device_id TEXT,
-                    stored_at INTEGER NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, timestamp)
-            """)
-        }
-    }
 
     // SPEC §0.9 rule 3: durable persistence must be able to fail loudly. Swallowing a write
     // error here (the old `try?`) meant the receive loop would ack — and the server would DELETE —
