@@ -227,8 +227,9 @@ extension TypedModel {
 
         guard let msgData = try? msg.serializedData() else { return }
 
-        // Send to all friends (same fan-out as MODEL_SYNC) via the model's callback.
-        await model.onSignalSend?(msgData)
+        // Send to the conversation — NOT to the friend list. `contextID` is what lets the
+        // sender resolve that audience; without it a 1:1 signal fans out to everyone.
+        await model.onSignalSend?(msgData, signal.contextID)
     }
 }
 
@@ -281,7 +282,7 @@ extension Model {
         msg.modelSignal = signal
         msg.timestamp = payload.timestamp
         guard let msgData = try? msg.serializedData() else { return }
-        await onSignalSend?(msgData)
+        await onSignalSend?(msgData, signal.contextID)
     }
 }
 
