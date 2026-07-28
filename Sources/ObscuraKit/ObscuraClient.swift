@@ -1313,24 +1313,48 @@ public class ObscuraClient {
         // Deduplicated because the app may legitimately name the same user twice — e.g. both
         // participants of a canonical `userIdA_userIdB` conversation, one of whom is you.
         var seen = Set<String>()
-        for recipient in recipientUserIds where recipient != userId && seen.insert(recipient).inserted {
-            try await sendToAllDevices(recipient, msg)
-        }
+        let targets = recipientUserIds.filter { $0 != userId && seen.insert($0).inserted }
 
-        // Own OTHER devices. The `!=` is property 1 above: without it this device encrypts to itself.
-        let ownDevices = await devices.getOwnDevices().filter { $0.deviceId != self.deviceId }
-        guard !ownDevices.isEmpty, let uid = userId else { return }
-        let messenger = try requireMessenger()
-        let msgData = try msg.serializedData()
-        for device in ownDevices {
+        // PER-RECIPIENT, not all-or-nothing. `sendToAllDevices` throws for a recipient with no
+        // registered devices, so letting the first failure escape would abandon recipients 2..N —
+        // and, worse, skip the own-device self-sync below, so the user's own other devices would
+        // silently never receive something they wrote. One unreachable friend must not cost the
+        // other four, or the sender's own copy.
+        var failures: [(String, Error)] = []
+        for recipient in targets {
             do {
-                try await messenger.queueMessage(targetDeviceId: device.deviceId,
-                                                 clientMessageData: msgData, targetUserId: uid)
+                try await sendToAllDevices(recipient, msg)
             } catch {
-                logger.log("self-sync failed for device \(device.deviceId): \(error)")
+                failures.append((recipient, error))
+                logger.log("SEND FAILED to \(recipient.prefix(8)) for \(modelKey)/\(entryId.prefix(20)): \(error)")
             }
         }
-        _ = try? await messenger.flushMessages()
+
+        // Own OTHER devices. Runs whether or not a recipient failed — see above. The `!=` is
+        // §5 property 1: without it this device encrypts to itself.
+        let ownDevices = await devices.getOwnDevices().filter { $0.deviceId != self.deviceId }
+        if !ownDevices.isEmpty, let uid = userId {
+            let messenger = try requireMessenger()
+            let msgData = try msg.serializedData()
+            for device in ownDevices {
+                do {
+                    try await messenger.queueMessage(targetDeviceId: device.deviceId,
+                                                     clientMessageData: msgData, targetUserId: uid)
+                } catch {
+                    logger.log("self-sync failed for device \(device.deviceId): \(error)")
+                }
+            }
+            _ = try? await messenger.flushMessages()
+        }
+
+        // Throw only when NOBODY named got it. A partial failure is logged and survivable — the
+        // entry is stored, the other recipients have it, and the caller can retry. A total failure
+        // is different in kind: the app believes it sent something that reached no one, and it must
+        // be able to tell the user so.
+        if !targets.isEmpty && failures.count == targets.count {
+            throw ObscuraError.sendFailed(
+                "\(modelKey)/\(entryId.prefix(20)) reached none of its \(targets.count) recipient(s)")
+        }
     }
 
     public func sendModelSync(to friendUserId: String, model: String, entryId: String, op: String = "CREATE", data: Data) async throws {
@@ -2528,6 +2552,10 @@ public class ObscuraClient {
         case deviceLinkFailed(String)
         case invalidSchema(String)
         case directRoutingUnresolved(String)
+        /// A `send` reached none of its named recipients. Distinct from a PARTIAL failure, which is
+        /// logged and survivable — this one means the app believes it sent something that got
+        /// nowhere. Matches Kotlin's `ObscuraError.SendFailed` and the bridge's `SEND_FAILED`.
+        case sendFailed(String)
 
         /// Stable, machine-readable code for cross-boundary propagation (mirrors
         /// Kotlin `ObscuraError.code`). The bridge rejects promises with this so JS
@@ -2544,6 +2572,7 @@ public class ObscuraClient {
             case .deviceLinkFailed: return "DEVICE_LINK_FAILED"
             case .invalidSchema: return "INVALID_SCHEMA"
             case .directRoutingUnresolved: return "DIRECT_ROUTING_UNRESOLVED"
+            case .sendFailed: return "SEND_FAILED"
             }
         }
 
@@ -2559,6 +2588,7 @@ public class ObscuraClient {
             case .deviceLinkFailed(let reason): return "Device link failed: \(reason)"
             case .invalidSchema(let msg): return "Invalid schema: \(msg)"
             case .directRoutingUnresolved(let msg): return msg
+            case .sendFailed(let msg): return "Send failed: \(msg)"
             }
         }
     }
