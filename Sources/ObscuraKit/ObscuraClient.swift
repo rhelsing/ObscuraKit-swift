@@ -1270,6 +1270,69 @@ public class ObscuraClient {
     }
 
     /// Send a MODEL_SYNC message to a friend. Throws if not friends.
+    /// Send an application entry (`obscura-proto/KIT_API.md` §5) — the outbox half of the thin kit,
+    /// paired with ``inbox`` on the receive side and ``entries`` for local storage.
+    ///
+    /// **The caller names the recipients** (SPEC §0.4). The kit fans out to every device of every
+    /// listed userId, plus this user's own *other* devices, and makes **no delivery decision of its
+    /// own** — no audience resolution, no reading of `payload` to discover who it is for. That is the
+    /// whole difference from ``sendModelSync(to:model:entryId:op:data:)``, which resolves a friend
+    /// and goes with the ORM in §10 step 4.
+    ///
+    /// Two properties §5 asks to be proven rather than assumed, both pinned by Kotlin's
+    /// `EntrySendTests` and mirrored here:
+    ///
+    /// 1. **The sending device is excluded from its own fan-out.** `getOwnDevices()` includes this
+    ///    device, and a message encrypted to yourself is at best waste and at worst a duplicate the
+    ///    app must dedupe.
+    /// 2. **The sender gets no inbox row.** Nothing loops back locally, so the app writes its own
+    ///    outgoing entry to ``entries`` — one write path in the kit, two in the app.
+    ///
+    /// An empty `recipientUserIds` is legitimate and not an error: it means "my own devices only",
+    /// which is what a self-scoped model wants. Failing loud is for an audience the kit was asked to
+    /// *guess*, and here it never guesses.
+    public func send(
+        to recipientUserIds: [String],
+        modelKey: String,
+        entryId: String,
+        op: String = "CREATE",
+        sentAt: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000),
+        payload: Data
+    ) async throws {
+        var sync = Obscura_Client_V1_ModelSync()
+        sync.model = modelKey
+        sync.id = entryId
+        sync.op = WireCodec.encodeOp(op)
+        sync.timestamp = sentAt
+        sync.data = payload
+        sync.authorDeviceID = deviceId ?? ""
+
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.modelSync = sync
+
+        // Deduplicated because the app may legitimately name the same user twice — e.g. both
+        // participants of a canonical `userIdA_userIdB` conversation, one of whom is you.
+        var seen = Set<String>()
+        for recipient in recipientUserIds where recipient != userId && seen.insert(recipient).inserted {
+            try await sendToAllDevices(recipient, msg)
+        }
+
+        // Own OTHER devices. The `!=` is property 1 above: without it this device encrypts to itself.
+        let ownDevices = await devices.getOwnDevices().filter { $0.deviceId != self.deviceId }
+        guard !ownDevices.isEmpty, let uid = userId else { return }
+        let messenger = try requireMessenger()
+        let msgData = try msg.serializedData()
+        for device in ownDevices {
+            do {
+                try await messenger.queueMessage(targetDeviceId: device.deviceId,
+                                                 clientMessageData: msgData, targetUserId: uid)
+            } catch {
+                logger.log("self-sync failed for device \(device.deviceId): \(error)")
+            }
+        }
+        _ = try? await messenger.flushMessages()
+    }
+
     public func sendModelSync(to friendUserId: String, model: String, entryId: String, op: String = "CREATE", data: Data) async throws {
         guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
         var sync = Obscura_Client_V1_ModelSync()
