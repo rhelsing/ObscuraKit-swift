@@ -1,0 +1,88 @@
+import Foundation
+
+/// What a payload arm is allowed to do on receipt (`obscura-proto/KIT_API.md` §4).
+///
+/// Every arm MUST be classified, because **the classification is what makes SPEC §0.9 checkable
+/// rather than aspirational**. "Never ack before persisting" is not a rule the code can follow until
+/// something says, per arm, *what persisting means for this one*.
+///
+/// Ported from `ObscuraKit-Kotlin`'s `PayloadClass.kt` (PR #49). §10 has Kotlin design first and
+/// Swift port the proven shape — the two kits co-designing is how they ended up disagreeing on
+/// behaviour while agreeing on the wire.
+enum PayloadClass: Equatable {
+    /// Application content. Goes in the inbox; the app drains it. Ack only after the row commits.
+    case inboxed
+
+    /// Mutates kit-owned state (friend graph, devices, sessions). Ack only after the kit's write.
+    case kitInternal
+
+    /// Ephemeral by design, no durable delivery guarantee. MAY be acked without persistence.
+    case droppable
+
+    /// Classified in §4 as kit-internal, and implemented by **neither** kit.
+    ///
+    /// Kept distinct from ``kitInternal`` on purpose. These arms are acked and destroyed today, and
+    /// the temptation is to sweep them into the inbox with the unknown arms — but §4.2 is explicit
+    /// that the fallback keys on **absence from the classification table**, not absence from the
+    /// handler. If unimplemented kit work landed in the inbox, the inbox would become the place it
+    /// goes to be forgotten, and §4's classification would stop meaning anything.
+    ///
+    /// Each has a recorded resolution in §4.2: four are Phase 3 deletions, and
+    /// `DEVICE_RECOVERY_ANNOUNCE` is a deliberate deferral — it cannot fire, because
+    /// `enableRecoveryPhrase` defaults to false and obscura-pix ships no recovery UI.
+    case unimplemented
+}
+
+/// The §4 classification table, as code.
+///
+/// The `default` branch is load-bearing: an arm this kit has never heard of is **inboxed unparsed**
+/// (§4.1), not left unacked. That is not a coin-flip between two reasonable options — declining to
+/// ack composes with the server's eviction into a remote wipe:
+///
+/// > any authenticated user may send to any device → a never-acked message is never deleted and
+/// > redelivers forever → the server's queue caps at 1000 per device and evicts **oldest-first,
+/// > silently** → a stranger looping unknown arms pushes the recipient's real undelivered mail off
+/// > the back of the queue.
+///
+/// Declining to ack is right when the failure is *ours and transient* — disk full, a migration not
+/// yet applied, something that will work next launch. An unknown arm is neither, so the retry is
+/// unbounded by construction.
+///
+/// - Note: Swift's generated oneof has no `PAYLOAD_NOT_SET` case; an unset payload is `nil`, which
+///   lands in the same `default` and is inboxed for the same reason.
+func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> PayloadClass {
+    switch payload {
+    // The app's entire data path.
+    case .modelSync?:
+        return .inboxed
+
+    // Kit-owned state. All of these have live handlers in `ObscuraClient.routeMessage` EXCEPT
+    // `deviceLinkApproval`, which this kit sends but cannot receive — a known divergence from
+    // Kotlin, recorded in CLAUDE.md, in code the reset keeps. It is classified honestly here rather
+    // than being demoted to `.unimplemented`: the arm is real kit-internal work with a real handler
+    // on the other kit, and hiding that in a different bucket would make the gap harder to find.
+    case .friendRequest?, .friendResponse?, .friendSync?,
+         .deviceAnnounce?, .deviceLinkApproval?,
+         .sessionReset?, .syncBlob?, .sentSync?:
+        return .kitInternal
+
+    // Typing indicators. `client.proto` says "in-memory only", and §4 permits acking these without
+    // persistence — the ONLY class for which that is allowed.
+    case .modelSignal?:
+        return .droppable
+
+    // Legacy. Deleted by `RESET.md`; still routed while it exists.
+    case .text?:
+        return .kitInternal
+
+    // Classified, unimplemented — see the enum case. Not inbox fodder.
+    case .deviceRecoveryAnnounce?, .historyChunk?, .syncRequest?,
+         .settingsSync?, .readSync?,
+         .contentReference?, .chunkedContentReference?:
+        return .unimplemented
+
+    // Unknown or future arm, and an unset payload. Inbox it unparsed rather than destroy it.
+    default:
+        return .inboxed
+    }
+}
