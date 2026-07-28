@@ -233,7 +233,9 @@ final class InboxStoreTests: XCTestCase {
             )
         )
 
-        let row = try XCTUnwrap(try await inbox.peek().first)
+        // The await is hoisted: XCTUnwrap takes an autoclosure, which cannot contain one.
+        let rows = try await inbox.peek()
+        let row = try XCTUnwrap(rows.first)
 
         XCTAssertEqual(row.kind, "UNKNOWN_ARM")
         XCTAssertNil(row.modelKey)
