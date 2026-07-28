@@ -174,6 +174,44 @@ public enum ObscuraSchema {
                 )
             """)
 
+            // ── Inbox ────────────────────────────────────────────────────────────────────
+            // The durable inbox (`obscura-proto/KIT_API.md` §3). Ported from the Kotlin shape
+            // (ObscuraKit-Kotlin PR #49) rather than co-designed — §10 has Kotlin design first
+            // precisely so the two kits stop diverging on behaviour.
+            //
+            // Note this lands in `v1` rather than a `v2`, which is the tripwire earning its keep:
+            // with `eraseDatabaseOnSchemaChange` on, GRDB sees `sqlite_master` changed and rebuilds,
+            // so adding a table is an edit here rather than a migration to author. When the tripwire
+            // comes off, this becomes a real `registerMigration("v2")`.
+            //
+            // `AUTOINCREMENT` is not decoration: a plain `INTEGER PRIMARY KEY` aliases rowid, and
+            // SQLite REUSES rowids after deletion — so a drained-then-refilled inbox would hand out
+            // ids that go backwards, while `peek` orders by id.
+            //
+            // `envelope_id ... UNIQUE` plus `INSERT OR IGNORE` is the dedupe key (§3.3 rule 8).
+            // Persist-then-ack GUARANTEES redelivery — the ack is best-effort and its failure is
+            // swallowed — so without this the design would be strictly LESS idempotent than the ORM
+            // it replaces, whose `INSERT OR REPLACE` absorbed duplicates by accident.
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS inbox_rows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    envelope_id TEXT NOT NULL UNIQUE,
+                    kind TEXT NOT NULL,
+                    received_at INTEGER NOT NULL,
+                    sender_user_id TEXT NOT NULL,
+                    sender_device_id TEXT,
+                    sender_display_name TEXT,
+                    model_key TEXT,
+                    entry_id TEXT,
+                    op TEXT,
+                    sent_at INTEGER,
+                    payload BLOB NOT NULL
+                )
+            """)
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_inbox_id ON inbox_rows(id)
+            """)
+
             // ── ORM ──────────────────────────────────────────────────────────────────────
             // DELETED BY PHASE 3 (`obscura-proto/RESET.md`). When that lands, remove these
             // three statements from `v1` — with the tripwire on, GRDB notices `sqlite_master`
@@ -243,6 +281,7 @@ public enum ObscuraSchema {
         "signal_sessions",
         "signal_sender_keys",
         "attachment_cache",
+        "inbox_rows",
         "model_entries",
         "associations",
         "ttl",

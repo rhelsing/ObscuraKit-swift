@@ -81,6 +81,19 @@ public class ObscuraClient {
     public let devices: DeviceActor
     public let gateway: GatewayConnection
 
+    /// The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API.
+    ///
+    /// **Runs ALONGSIDE the ORM on purpose, and that is a migration step, not a design.** §10 orders
+    /// the reset so the deletion comes last: both kits gain `inbox` before obscura-pix switches to
+    /// it, and only then is the old surface removed. Deleting first would break pix on both platforms
+    /// — the kits are consumed from source with no published-version buffer — for the whole duration
+    /// of the port, with no way to tell a real regression from expected breakage.
+    ///
+    /// The cost of that ordering is that a MODEL_SYNC is currently persisted **twice**: once as a
+    /// model entry by the ORM, and once as an inbox row here. Deliberate and temporary; it ends at
+    /// §10 step 4, when the ORM comes out.
+    public let inbox: InboxStore
+
     // Messenger is initialized after register/login with real keys
     private var _messenger: MessengerActor?
     public private(set) var persistentSignalStore: PersistentSignalStore?
@@ -259,7 +272,9 @@ public class ObscuraClient {
         self.friends = try FriendActor()
         self.messages = try MessageActor()
         self.devices = try DeviceActor()
+        self.inbox = try InboxStore()
         self.gateway = GatewayConnection(api: api, logger: logger)
+        wireInboxLogging()
     }
 
     /// File-backed client (production). All state persists to `dataDirectory/obscura.sqlite`.
@@ -305,7 +320,9 @@ public class ObscuraClient {
         self.friends = try FriendActor(db: db)
         self.messages = try MessageActor(db: db)
         self.devices = try DeviceActor(db: db)
+        self.inbox = try InboxStore(db: db)
         self.gateway = GatewayConnection(api: api, logger: logger)
+        wireInboxLogging()
 
         // Restore Signal store from persisted DB if identity exists
         let store = try PersistentSignalStore(db: db)
@@ -1858,7 +1875,13 @@ public class ObscuraClient {
             // catch below and we SKIP the ack — the message stays on the server for retry rather
             // than being deleted un-persisted. authorDeviceId is the decrypting session's device
             // UUID (== senderDeviceId, proven by the MAC), never the userId (the F4 lie).
-            try await routeMessage(clientMsg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId)
+            // `Envelope.id` is 16 raw UUID bytes on the wire. The inbox's dedupe key must be a
+            // STABLE text form of them — the same canonical encoding the rest of the kit uses for
+            // user and device ids, so two encodings of one envelope can never produce two rows.
+            try await routeMessage(
+                clientMsg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
+                envelopeId: bytesToUuid(raw.id)
+            )
 
             // Emit to event subscribers
             let received = ReceivedMessage(
@@ -1904,8 +1927,44 @@ public class ObscuraClient {
 
     // MARK: - Internal: Message Routing
 
-    private func routeMessage(_ msg: Obscura_Client_V1_ClientMessage, sourceUserId: String, senderDeviceId: String) async throws {
+    /// Persist a decrypted message, by class (`obscura-proto/KIT_API.md` §4).
+    ///
+    /// Called from the envelope loop **before** the ack, and it throws on a failed durable write so
+    /// the ack is skipped and the message survives on the server (SPEC §0.9 rule 3).
+    ///
+    /// `classify` decides what each arm is *allowed* to do; the switch below then routes it. The old
+    /// `default: break` swallowed seven arms and let the caller ack them, destroying them silently.
+    private func routeMessage(
+        _ msg: Obscura_Client_V1_ClientMessage,
+        sourceUserId: String,
+        senderDeviceId: String,
+        envelopeId: String
+    ) async throws {
         NSLog("[ObscuraKit] routeMessage payload=%@ from=%@", WireCodec.decodeMessageType(msg.payload), String(sourceUserId.prefix(8)))
+
+        switch classify(msg.payload) {
+        case .inboxed:
+            try await inboxMessage(msg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
+                                   envelopeId: envelopeId)
+            // MODEL_SYNC continues to the ORM as well — see `inboxMessage`. Everything else that is
+            // inboxed (an unknown arm) has no further handling by design.
+            if case .modelSync? = msg.payload {} else { return }
+
+        case .unimplemented:
+            // Classified in §4 but implemented by neither kit. Today's behaviour (drop, then ack) is
+            // preserved deliberately — §4.2 keys the inbox fallback on absence from the
+            // classification TABLE, not absence from the handler, or the inbox becomes where
+            // unimplemented kit work goes to be forgotten. What changes is that it is no longer
+            // silent. Four of these are Phase 3 deletions; DEVICE_RECOVERY_ANNOUNCE is a deliberate
+            // deferral and cannot currently fire at all.
+            logger.log("RECV UNIMPLEMENTED arm=\(WireCodec.decodeMessageType(msg.payload)) "
+                + "from=\(sourceUserId.prefix(8)) (dropped and acked — see KIT_API.md §4.2)")
+            return
+
+        case .kitInternal, .droppable:
+            break // fall through to the handlers below
+        }
+
         switch msg.payload {
         case .friendRequest?:
             // The payload username is a FIRST-CONTACT bootstrap only (SPEC §0.10 rule 5). This used
@@ -2078,7 +2137,83 @@ public class ObscuraClient {
             await clearSessionsWithUser(sourceUserId)
 
         default:
-            break
+            // Unreachable: `classify` sent everything else to the inbox or to the unimplemented
+            // branch above. Logged rather than asserted so a proto change cannot crash the receive
+            // loop, but it should never fire.
+            logger.log("routeMessage: \(WireCodec.decodeMessageType(msg.payload)) classified "
+                + "kit-internal with no handler")
+        }
+    }
+
+    /// Write an inboxed payload to the durable inbox.
+    ///
+    /// Order matters: the inbox row commits before the caller acks. If it throws, nothing is acked
+    /// and the message stays on the server — which is the whole point of persist-then-ack and the
+    /// reason this is not an event stream.
+    ///
+    /// For MODEL_SYNC the caller then continues into the ORM path as well. **Both, during §10 steps
+    /// 2–3**: the ORM still owns what obscura-pix reads, so skipping it would break the app long
+    /// before it has anywhere else to read from.
+    private func inboxMessage(
+        _ msg: Obscura_Client_V1_ClientMessage,
+        sourceUserId: String,
+        senderDeviceId: String,
+        envelopeId: String
+    ) async throws {
+        var isModelSync = false
+        if case .modelSync? = msg.payload { isModelSync = true }
+        let sync = msg.modelSync
+
+        let inserted = try await inbox.put(
+            InboxRecord(
+                envelopeId: envelopeId,
+                kind: WireCodec.decodeMessageType(msg.payload),
+                receivedAt: UInt64(Date().timeIntervalSince1970 * 1000),
+                senderUserId: sourceUserId,
+                senderDeviceId: senderDeviceId,
+                // SPEC §0.5: the name comes from OUR friend graph, keyed on the authenticated
+                // sender, never from the payload. Nil when they are not a friend — §7 covers what
+                // the app should show then, and it is not a peer-chosen string.
+                senderDisplayName: await friends.getFriend(sourceUserId)?.username,
+                // ModelSync-derived, so nil for an unknown arm — there is nothing to derive from.
+                modelKey: isModelSync ? sync.model : nil,
+                entryId: isModelSync ? sync.id : nil,
+                // `WireCodec.decodeOp`, not the raw enum: the inbox is read by the app across a
+                // bridge, so this must be the app-facing CREATE/UPDATE/DELETE that §3.1 specifies
+                // and that the ORM path already emits. Interpolating the generated enum would give
+                // Swift's `opCreate` against Kotlin's `OP_CREATE` — one wire, two spellings.
+                op: isModelSync ? WireCodec.decodeOp(sync.op) : nil,
+                sentAt: isModelSync ? clampFutureTimestamp(sync.timestamp) : nil,
+                // Opaque bytes. For an unknown arm this is the whole serialized message, because the
+                // kit cannot know which sub-field would have been the payload.
+                payload: isModelSync ? sync.data : ((try? msg.serializedData()) ?? Data())
+            )
+        )
+
+        if !inserted {
+            // A redelivered envelope. Not an error: persist-then-ack guarantees this happens, and
+            // absorbing it here is what keeps depth() and the app's counts honest. Still ack.
+            logger.log("RECV DUPLICATE envelope=\(envelopeId.prefix(12)) "
+                + "kind=\(WireCodec.decodeMessageType(msg.payload)) (already inboxed)")
+        }
+    }
+
+    /// SPEC §2.4: a peer-supplied timestamp is clamped before it is stored, not after.
+    ///
+    /// Without this a peer can set `sentAt` far in the future and win every REPLACE conflict forever
+    /// — the tie-break can only order writes it can compare honestly.
+    private func clampFutureTimestamp(_ sentAt: UInt64) -> UInt64 {
+        min(sentAt, UInt64(Date().timeIntervalSince1970 * 1000) + 60_000)
+    }
+
+    /// A discard is data loss the app chose deliberately, and §3.3 rule 5 requires it be logged as a
+    /// security-relevant event rather than being the quiet path.
+    private func wireInboxLogging() {
+        let log = logger
+        Task { [inbox] in
+            await inbox.setOnDiscard { ids, reason in
+                log.log("INBOX DISCARD \(ids.count) row(s) reason=\"\(reason)\" ids=\(ids)")
+            }
         }
     }
 
