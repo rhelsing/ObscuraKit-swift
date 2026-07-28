@@ -81,8 +81,9 @@ final class PayloadClassTests: XCTestCase {
     func testFriendAndDeviceArmsAreKitInternal() {
         let kitInternal: [Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
             .friendRequest(.init()), .friendResponse(.init()), .friendSync(.init()),
-            .deviceAnnounce(.init()), .deviceLinkApproval(.init()),
+            .deviceAnnounce(.init()),
             .sessionReset(.init()), .syncBlob(.init()), .sentSync(.init()),
+            // `.deviceLinkApproval` is deliberately absent — see `divergesFromKotlin`.
         ]
 
         for arm in kitInternal {
