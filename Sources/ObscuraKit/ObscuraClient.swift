@@ -94,6 +94,13 @@ public class ObscuraClient {
     /// §10 step 4, when the ORM comes out.
     public let inbox: InboxStore
 
+    /// Raw storage for application entries (`obscura-proto/KIT_API.md` §8.1) — the other half of the
+    /// thin kit's app-facing surface. `inbox` is how messages arrive; this is where the app keeps
+    /// what it made of them.
+    ///
+    /// Deliberately NOT the ORM: that is the engine being deleted. This is the table being kept.
+    public let entries: EntryStore
+
     // Messenger is initialized after register/login with real keys
     private var _messenger: MessengerActor?
     public private(set) var persistentSignalStore: PersistentSignalStore?
@@ -273,6 +280,7 @@ public class ObscuraClient {
         self.messages = try MessageActor()
         self.devices = try DeviceActor()
         self.inbox = try InboxStore()
+        self.entries = try EntryStore()
         self.gateway = GatewayConnection(api: api, logger: logger)
         wireInboxLogging()
     }
@@ -321,6 +329,7 @@ public class ObscuraClient {
         self.messages = try MessageActor(db: db)
         self.devices = try DeviceActor(db: db)
         self.inbox = try InboxStore(db: db)
+        self.entries = try EntryStore(db: db)
         self.gateway = GatewayConnection(api: api, logger: logger)
         wireInboxLogging()
 
