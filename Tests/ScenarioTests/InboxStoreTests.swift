@@ -13,8 +13,8 @@ import GRDB
 /// copy once the kit has acked, because **an ACK is a DELETE**.
 final class InboxStoreTests: XCTestCase {
 
-    private func makeInbox() throws -> InboxStore {
-        try InboxStore(db: try DatabaseQueue())
+    private func makeInbox(onDiscard: (@Sendable ([Int64], String) -> Void)? = nil) throws -> InboxStore {
+        try InboxStore(db: try DatabaseQueue(), onDiscard: onDiscard)
     }
 
     private func record(
@@ -72,6 +72,30 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(String(decoding: rows[0].payload, as: UTF8.self), "original",
                        "INSERT OR IGNORE keeps the first write; a later copy of the same envelope cannot overwrite it")
+    }
+
+    /// **`put` must never report "stored" for a message it did not store.** This is the precondition
+    /// the entire feature rests on: the caller acks on a successful `put`, and an ack is a DELETE, so
+    /// a `put` that lies destroys the message.
+    ///
+    /// The subtle version of that lie is why this exists. `INSERT OR IGNORE` suppresses EVERY
+    /// constraint, not just the `envelope_id UNIQUE` it is written for — so `changesCount`, the
+    /// obvious "did a row get added?" implementation, reports a NOT NULL or CHECK violation exactly
+    /// as it reports a harmless redelivery. The caller acks on a redelivery.
+    ///
+    /// Dropping the table is a blunt way to make the write fail, and that is the point: whatever the
+    /// reason, "the row is not there" must reach the caller as a throw and never as `false`.
+    func testPutThrowsRatherThanReportingStoredWhenTheRowIsNotThere() async throws {
+        let db = try DatabaseQueue()
+        let inbox = try InboxStore(db: db)
+        try await db.write { db in try db.execute(sql: "DROP TABLE inbox_rows") }
+
+        do {
+            _ = try await inbox.put(record("env_1"))
+            XCTFail("put must throw when the row cannot be stored, never return false")
+        } catch {
+            // expected
+        }
     }
 
     // MARK: - §3.3 rule 3: peek is side-effect free
@@ -152,12 +176,10 @@ final class InboxStoreTests: XCTestCase {
     /// pins that the hook actually fires. It is the entire reason discard is a separate method from
     /// consume rather than a flag: the SQL is identical, the accountability is not.
     func testDiscardRemovesRowsAndReportsThemForTheSecurityLog() async throws {
-        let inbox = try makeInbox()
+        let box = DiscardBox()
+        let inbox = try makeInbox { ids, reason in box.record(ids: ids, reason: reason) }
         try await inbox.put(record("env_1"))
         try await inbox.put(record("env_2"))
-
-        let box = DiscardBox()
-        await inbox.setOnDiscard { ids, reason in box.record(ids: ids, reason: reason) }
 
         let rows = try await inbox.peek()
         try await inbox.discard([rows[0].id], reason: "unknown modelKey from a newer peer")
@@ -168,9 +190,8 @@ final class InboxStoreTests: XCTestCase {
     }
 
     func testDiscardingNothingDoesNotLogASecurityEvent() async throws {
-        let inbox = try makeInbox()
         let box = DiscardBox()
-        await inbox.setOnDiscard { ids, reason in box.record(ids: ids, reason: reason) }
+        let inbox = try makeInbox { ids, reason in box.record(ids: ids, reason: reason) }
 
         try await inbox.discard([], reason: "nothing to do")
 

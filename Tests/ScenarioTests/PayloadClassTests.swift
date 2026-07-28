@@ -68,7 +68,6 @@ final class PayloadClassTests: XCTestCase {
         let unimplemented: [Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
             .deviceRecoveryAnnounce(.init()), .historyChunk(.init()), .syncRequest(.init()),
             .settingsSync(.init()), .readSync(.init()),
-            .contentReference(.init()), .chunkedContentReference(.init()),
         ]
 
         for arm in unimplemented {
@@ -82,8 +81,9 @@ final class PayloadClassTests: XCTestCase {
     func testFriendAndDeviceArmsAreKitInternal() {
         let kitInternal: [Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
             .friendRequest(.init()), .friendResponse(.init()), .friendSync(.init()),
-            .deviceAnnounce(.init()), .deviceLinkApproval(.init()),
+            .deviceAnnounce(.init()),
             .sessionReset(.init()), .syncBlob(.init()), .sentSync(.init()),
+            // `.deviceLinkApproval` is deliberately absent — see `divergesFromKotlin`.
         ]
 
         for arm in kitInternal {
@@ -95,24 +95,47 @@ final class PayloadClassTests: XCTestCase {
     /// Cross-kit agreement, spelled out: these are the exact classifications
     /// `ObscuraKit-Kotlin`'s `PayloadClassTest` asserts. The kits may differ in how they store a row;
     /// they may not differ in whether a given arm is stored at all.
+    /// Arms this kit deliberately classifies differently from Kotlin, with the reason. Anything not
+    /// in this set must match exactly — the point of the test below is that drift has to be declared
+    /// here, in writing, rather than just happening.
+    private static let divergesFromKotlin: [String: String] = [
+        "DEVICE_LINK_APPROVAL":
+            "Kotlin classifies this kit-internal and HANDLES it; this kit cannot receive one "
+            + "(CLAUDE.md). Kit-internal-with-no-handler now throws, which would never ack a LIVE "
+            + "flow and wedge the server queue — so it is bucketed unimplemented (drop + ack, "
+            + "loudly) until the handler exists. Delete this entry when it does.",
+    ]
+
     func testEveryArmHasTheSameClassAsTheKotlinKit() {
         let expected: [String: PayloadClass] = [
             "MODEL_SYNC": .inboxed,
             "FRIEND_REQUEST": .kitInternal, "FRIEND_RESPONSE": .kitInternal, "FRIEND_SYNC": .kitInternal,
-            "DEVICE_ANNOUNCE": .kitInternal, "DEVICE_LINK_APPROVAL": .kitInternal,
+            "DEVICE_ANNOUNCE": .kitInternal,
             "SESSION_RESET": .kitInternal, "SYNC_BLOB": .kitInternal, "SENT_SYNC": .kitInternal,
             "TEXT": .kitInternal,
             "MODEL_SIGNAL": .droppable,
             "DEVICE_RECOVERY_ANNOUNCE": .unimplemented, "HISTORY_CHUNK": .unimplemented,
             "SYNC_REQUEST": .unimplemented, "SETTINGS_SYNC": .unimplemented,
-            "READ_SYNC": .unimplemented, "CONTENT_REFERENCE": .unimplemented,
-            "CHUNKED_CONTENT_REFERENCE": .unimplemented,
+            "READ_SYNC": .unimplemented,
+            // See `divergesFromKotlin` below.
+            "DEVICE_LINK_APPROVAL": .unimplemented,
+            // §4's normative table, not §4.3's deletion plan — the deletion has not happened and a
+            // public sender still exists, so dropping these would have the receiver ack away an AES
+            // key that was just shipped over Signal.
+            "CONTENT_REFERENCE": .inboxed, "CHUNKED_CONTENT_REFERENCE": .inboxed,
         ]
 
         XCTAssertEqual(expected.count, Self.allArms.count, "every arm needs a cross-kit expectation")
         for arm in Self.allArms {
             let name = WireCodec.decodeMessageType(arm)
-            XCTAssertEqual(classify(arm), expected[name], "\(name) diverges from the Kotlin kit")
+            XCTAssertEqual(classify(arm), expected[name], "\(name) does not match its expectation")
+        }
+
+        // The declared divergences must all still be real arms, so the list cannot rot after an arm
+        // is deleted or a handler is finally written.
+        let armNames = Set(Self.allArms.map { WireCodec.decodeMessageType($0) })
+        for name in Self.divergesFromKotlin.keys {
+            XCTAssertTrue(armNames.contains(name), "\(name) is declared divergent but is not an arm")
         }
     }
 }

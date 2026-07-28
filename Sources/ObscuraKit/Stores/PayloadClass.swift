@@ -56,15 +56,29 @@ func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> Payl
     case .modelSync?:
         return .inboxed
 
-    // Kit-owned state. All of these have live handlers in `ObscuraClient.routeMessage` EXCEPT
-    // `deviceLinkApproval`, which this kit sends but cannot receive — a known divergence from
-    // Kotlin, recorded in CLAUDE.md, in code the reset keeps. It is classified honestly here rather
-    // than being demoted to `.unimplemented`: the arm is real kit-internal work with a real handler
-    // on the other kit, and hiding that in a different bucket would make the gap harder to find.
+    // Kit-owned state, all with live handlers in `ObscuraClient.routeMessage`.
     case .friendRequest?, .friendResponse?, .friendSync?,
-         .deviceAnnounce?, .deviceLinkApproval?,
-         .sessionReset?, .syncBlob?, .sentSync?:
+         .deviceAnnounce?, .sessionReset?, .syncBlob?, .sentSync?:
         return .kitInternal
+
+    // ⚠️ **A DELIBERATE DIVERGENCE FROM KOTLIN, and the only one.** Kotlin classifies this
+    // `KIT_INTERNAL` and handles it; this kit sends `DEVICE_LINK_APPROVAL` and **cannot receive
+    // one** — the gap recorded in `CLAUDE.md`, in code the reset keeps.
+    //
+    // It is bucketed `.unimplemented` rather than `.kitInternal` because of what the two do at the
+    // ack. `.kitInternal` with no handler now THROWS (see `routeMessage`'s `default`), which is
+    // right for an arm nobody sends — it leaves the message on the server until a handler exists.
+    // But device linking is a LIVE flow: obscura-pix uses it, and Kotlin sends the approval. So
+    // throwing would mean an envelope that can never be handled and is never acked, redelivering on
+    // every reconnect, filling a server queue that caps at 1000 and evicts oldest-first. That is the
+    // remote-wedge shape this design exists to avoid, arrived at from the other direction.
+    //
+    // So it is dropped and acked, loudly, which is what this kit already did — the linking payload
+    // (p2p private key, recovery public key, friends export, approver's device list) is lost and the
+    // user retries linking. **The real fix is the handler**, not this classification. When it lands,
+    // move this case up to `.kitInternal` and delete the divergence entry in `PayloadClassTests`.
+    case .deviceLinkApproval?:
+        return .unimplemented
 
     // Typing indicators. `client.proto` says "in-memory only", and §4 permits acking these without
     // persistence — the ONLY class for which that is allowed.
@@ -75,10 +89,21 @@ func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> Payl
     case .text?:
         return .kitInternal
 
-    // Classified, unimplemented — see the enum case. Not inbox fodder.
+    // Attachment references. §4 classifies these INBOXED and §4.3 resolves them as Phase 3
+    // deletions — but the deletion has NOT happened: both arms are still in client.proto and the
+    // kits still expose public senders. Classifying them unimplemented while a live public API can
+    // send them means the kit uploads the blob, ships the AES key over Signal, and the RECEIVER
+    // acks and destroys the key. They follow §4's normative table until arms and senders are
+    // deleted together: inboxing an arm nobody sends costs nothing, dropping one somebody CAN send
+    // costs the message.
+    case .contentReference?, .chunkedContentReference?:
+        return .inboxed
+
+    // Classified, unimplemented — see the enum case. Not inbox fodder. None has a live sender:
+    // `deviceRecoveryAnnounce` is gated behind a default-off flag and the rest have no sender
+    // anywhere (§4.3).
     case .deviceRecoveryAnnounce?, .historyChunk?, .syncRequest?,
-         .settingsSync?, .readSync?,
-         .contentReference?, .chunkedContentReference?:
+         .settingsSync?, .readSync?:
         return .unimplemented
 
     // Unknown or future arm, and an unset payload. Inbox it unparsed rather than destroy it.

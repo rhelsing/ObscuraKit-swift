@@ -80,22 +80,22 @@ public struct InboxRecord: Sendable, Equatable {
 public actor InboxStore {
     private let db: DatabaseQueue
 
-    /// Set by the client so a discard reaches the security log rather than vanishing.
-    var onDiscard: (@Sendable ([Int64], String) -> Void)?
+    /// Reports a discard to the security log. Taken at construction rather than set afterwards: a
+    /// store that is reachable before its hook is wired can lose a discard silently, which is the
+    /// quiet path §3.3 rule 5 forbids.
+    private let onDiscard: (@Sendable ([Int64], String) -> Void)?
 
-    public init(db: DatabaseQueue) throws {
+    public init(db: DatabaseQueue, onDiscard: (@Sendable ([Int64], String) -> Void)? = nil) throws {
         self.db = db
+        self.onDiscard = onDiscard
         try ObscuraSchema.migrate(db)
     }
 
-    public init() throws {
+    public init(onDiscard: (@Sendable ([Int64], String) -> Void)? = nil) throws {
         self.db = try DatabaseQueue()
+        self.onDiscard = onDiscard
         try db.write { db in try db.execute(sql: "PRAGMA secure_delete = ON") }
         try ObscuraSchema.migrate(db)
-    }
-
-    func setOnDiscard(_ handler: @escaping @Sendable ([Int64], String) -> Void) {
-        onDiscard = handler
     }
 
     /// Persist a decrypted message. **Kit-internal**: called from the receive loop before the ack,
@@ -110,6 +110,10 @@ public actor InboxStore {
     @discardableResult
     func put(_ record: InboxRecord) async throws -> Bool {
         try await db.write { db in
+            let existedBefore = try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM inbox_rows WHERE envelope_id = ?)",
+                arguments: [record.envelopeId]) ?? false
+
             try db.execute(sql: """
                 INSERT OR IGNORE INTO inbox_rows (
                     envelope_id, kind, received_at, sender_user_id, sender_device_id,
@@ -120,9 +124,20 @@ public actor InboxStore {
                 record.senderDeviceId, record.senderDisplayName, record.modelKey, record.entryId,
                 record.op, record.sentAt.map { Int64($0) }, record.payload,
             ])
-            // `changes` is 0 when OR IGNORE suppressed the insert — i.e. this envelope was already
-            // stored. That is the redelivery case, and it is expected rather than exceptional.
-            return db.changesCount > 0
+
+            // Assert the postcondition the ack depends on, rather than inferring it from a row
+            // count. `changesCount` tells you "did OR IGNORE suppress something" — and OR IGNORE
+            // suppresses EVERY constraint, not just the `envelope_id UNIQUE` it is documented
+            // against. A NOT NULL or CHECK violation would report exactly like a redelivery, and the
+            // caller ACKS on a redelivery, so the server would delete a message never stored.
+            let existsNow = try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM inbox_rows WHERE envelope_id = ?)",
+                arguments: [record.envelopeId]) ?? false
+            guard existsNow else {
+                throw DatabaseError(message: "inbox row for envelope \(record.envelopeId) is absent "
+                    + "after insert; refusing to report it as stored")
+            }
+            return !existedBefore
         }
     }
 
@@ -147,7 +162,11 @@ public actor InboxStore {
                     modelKey: row["model_key"],
                     entryId: row["entry_id"],
                     op: row["op"],
-                    sentAt: (row["sent_at"] as Int64?).map { UInt64($0) },
+                    // Saturating, not `UInt64(_:)`: that TRAPS on a negative value, which would be a
+                    // hard crash in `peek` — and a negative `sent_at` is reachable, because
+                    // `ModelSync.timestamp` is proto3 `uint64` and Kotlin's protobuf surfaces it as
+                    // a signed Long. A row written by a peer kit must never be able to crash a drain.
+                    sentAt: (row["sent_at"] as Int64?).map { $0 < 0 ? 0 : UInt64($0) },
                     payload: row["payload"]
                 )
             }
@@ -159,11 +178,23 @@ public actor InboxStore {
     /// Idempotent, and a subset is fine — partial progress is normal, not an error path.
     public func consume(_ ids: [Int64]) async throws {
         guard !ids.isEmpty else { return }
-        try await db.write { db in
-            try db.execute(sql: "DELETE FROM inbox_rows WHERE id IN (\(databaseQuestionMarks(count: ids.count)))",
-                           arguments: StatementArguments(ids))
+        // Chunked because each id binds one SQL variable and SQLite caps that at 999 on older
+        // builds. The app chooses the batch size, so a large `peek` followed by `consume` would
+        // throw "too many SQL variables" — exactly when a backlog exists, i.e. the one situation
+        // where the drain must not stall (§3.5).
+        for chunk in stride(from: 0, to: ids.count, by: deleteChunk).map({
+            Array(ids[$0..<min($0 + deleteChunk, ids.count)])
+        }) {
+            try await db.write { db in
+                try db.execute(
+                    sql: "DELETE FROM inbox_rows WHERE id IN (\(databaseQuestionMarks(count: chunk.count)))",
+                    arguments: StatementArguments(chunk))
+            }
         }
     }
+
+    /// Comfortably under SQLite's 999-variable floor.
+    private let deleteChunk = 500
 
     /// Drop rows the app declares it can **never** process.
     ///
