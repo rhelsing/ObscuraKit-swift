@@ -1357,6 +1357,76 @@ public class ObscuraClient {
         }
     }
 
+    // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
+    //
+    // These reach the app through `client.model(name).typing(...)` today, which is the only reason
+    // the app still touches the ORM at all — and `RESET.md` KEEPS signals while deleting the ORM
+    // around them. `ModelSignal.swift` was already keep-forever code that happened to live in
+    // `ORM/`; this is the door that lets it stay after the directory goes.
+    //
+    // `modelKey` is opaque, exactly as it is on the inbox and the entry store: it names the app's
+    // conversation namespace and the kit neither parses nor validates it. That is what makes this a
+    // relocation rather than the ORM growing a new entrance.
+
+    /// Announce that this user is typing in a conversation.
+    ///
+    /// Throttled to at most once every 2s. Delivered to the conversation's participants only — never
+    /// broadcast; the audience comes from the canonical two-party `conversationId`, and a value that
+    /// does not name exactly two participants is DROPPED rather than widened (the leak fixed on
+    /// 2026-07-25).
+    public func sendTyping(modelKey: String, conversationId: String) async {
+        await sendSignalDirect(modelKey: modelKey, kind: "typing", conversationId: conversationId)
+    }
+
+    /// Explicitly stop typing.
+    public func stopTyping(modelKey: String, conversationId: String) async {
+        await sendSignalDirect(modelKey: modelKey, kind: "stoppedTyping", conversationId: conversationId)
+    }
+
+    /// Who is currently typing in a conversation, by display name.
+    ///
+    /// Auto-expires; a signal with no refresh disappears on its own, which is what makes signals
+    /// droppable (`KIT_API.md` §4) rather than something the inbox has to carry.
+    public nonisolated func observeTyping(modelKey: String, conversationId: String) -> SignalObservation {
+        SignalObservation(
+            store: SignalStoreRegistry.shared.store,
+            model: modelKey,
+            signal: SignalType.typing.rawValue,
+            data: ["conversationId": conversationId]
+        )
+    }
+
+    private func sendSignalDirect(modelKey: String, kind: String, conversationId: String) async {
+        if kind == "typing" {
+            let key = "typing:\(modelKey):\(conversationId)"
+            let now = Date()
+            if let last = SignalThrottle.shared.lastSent[key], now.timeIntervalSince(last) < 2.0 { return }
+            SignalThrottle.shared.lastSent[key] = now
+        }
+
+        var signal = Obscura_Client_V1_ModelSignal()
+        signal.model = modelKey
+        signal.kind = WireCodec.encodeSignalKind(kind)
+        signal.contextID = conversationId
+
+        var msg = Obscura_Client_V1_ClientMessage()
+        msg.modelSignal = signal
+        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
+        guard let msgData = try? msg.serializedData() else { return }
+
+        // The same fail-CLOSED audience rule the ORM path uses: a contextId that does not name
+        // exactly two participants sends NOTHING. Dropping an ephemeral typing indicator costs
+        // nothing; guessing its audience leaks the conversation.
+        let participants = conversationId.split(separator: "_").map(String.init).filter { !$0.isEmpty }
+        guard participants.count == 2 else {
+            logger.log("signal dropped: contextId is not a canonical two-party value — refusing to broadcast a 1:1 signal")
+            return
+        }
+        for participant in participants where participant != userId {
+            try? await sendRawMessage(to: participant, clientMessageData: msgData)
+        }
+    }
+
     public func sendModelSync(to friendUserId: String, model: String, entryId: String, op: String = "CREATE", data: Data) async throws {
         guard await friends.isFriend(friendUserId) else { throw ObscuraError.notFriends(friendUserId) }
         var sync = Obscura_Client_V1_ModelSync()
