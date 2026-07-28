@@ -68,7 +68,6 @@ final class PayloadClassTests: XCTestCase {
         let unimplemented: [Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
             .deviceRecoveryAnnounce(.init()), .historyChunk(.init()), .syncRequest(.init()),
             .settingsSync(.init()), .readSync(.init()),
-            .contentReference(.init()), .chunkedContentReference(.init()),
         ]
 
         for arm in unimplemented {
@@ -105,8 +104,11 @@ final class PayloadClassTests: XCTestCase {
             "MODEL_SIGNAL": .droppable,
             "DEVICE_RECOVERY_ANNOUNCE": .unimplemented, "HISTORY_CHUNK": .unimplemented,
             "SYNC_REQUEST": .unimplemented, "SETTINGS_SYNC": .unimplemented,
-            "READ_SYNC": .unimplemented, "CONTENT_REFERENCE": .unimplemented,
-            "CHUNKED_CONTENT_REFERENCE": .unimplemented,
+            "READ_SYNC": .unimplemented,
+            // §4's normative table, not §4.3's deletion plan — the deletion has not happened and a
+            // public sender still exists, so dropping these would have the receiver ack away an AES
+            // key that was just shipped over Signal.
+            "CONTENT_REFERENCE": .inboxed, "CHUNKED_CONTENT_REFERENCE": .inboxed,
         ]
 
         XCTAssertEqual(expected.count, Self.allArms.count, "every arm needs a cross-kit expectation")

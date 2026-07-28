@@ -279,10 +279,9 @@ public class ObscuraClient {
         self.friends = try FriendActor()
         self.messages = try MessageActor()
         self.devices = try DeviceActor()
-        self.inbox = try InboxStore()
+        self.inbox = try InboxStore(onDiscard: Self.discardLogger(logger))
         self.entries = try EntryStore()
         self.gateway = GatewayConnection(api: api, logger: logger)
-        wireInboxLogging()
     }
 
     /// File-backed client (production). All state persists to `dataDirectory/obscura.sqlite`.
@@ -328,10 +327,9 @@ public class ObscuraClient {
         self.friends = try FriendActor(db: db)
         self.messages = try MessageActor(db: db)
         self.devices = try DeviceActor(db: db)
-        self.inbox = try InboxStore(db: db)
+        self.inbox = try InboxStore(db: db, onDiscard: Self.discardLogger(logger))
         self.entries = try EntryStore(db: db)
         self.gateway = GatewayConnection(api: api, logger: logger)
-        wireInboxLogging()
 
         // Restore Signal store from persisted DB if identity exists
         let store = try PersistentSignalStore(db: db)
@@ -1788,6 +1786,10 @@ public class ObscuraClient {
         await friends.clearAll()
         await messages.clearAll()
         await devices.clearAll()
+        // The §3.3 rule 2 carve-out, and the reason it is worded as a MUST: the inbox holds
+        // DECRYPTED plaintext — full payloads, the resolved sender name, the model key. A wipe that
+        // spared it would leave exactly the content a revocation is meant to destroy.
+        try? await inbox.wipe()
     }
 
     // MARK: - Internal: Send to all devices of a user
@@ -1884,9 +1886,18 @@ public class ObscuraClient {
             // catch below and we SKIP the ack — the message stays on the server for retry rather
             // than being deleted un-persisted. authorDeviceId is the decrypting session's device
             // UUID (== senderDeviceId, proven by the MAC), never the userId (the F4 lie).
-            // `Envelope.id` is 16 raw UUID bytes on the wire. The inbox's dedupe key must be a
-            // STABLE text form of them — the same canonical encoding the rest of the kit uses for
-            // user and device ids, so two encodings of one envelope can never produce two rows.
+            // `Envelope.id` is the inbox's DEDUPE KEY, so it gets the same length check
+            // `sender_device_id` already gets above — and for the same reason: SPEC §0.10 treats
+            // everything the relay stamps as untrusted.
+            //
+            // Without it, `bytesToUuid` falls back to raw hex for non-16-byte input, so an EMPTY id
+            // (proto3's default) becomes "" for every envelope. They would all hash to one key: the
+            // first inserts and is acked, and every one after is suppressed by INSERT OR IGNORE,
+            // reported as a duplicate, and ACKED — the server deleting messages never stored.
+            guard raw.id.count == 16 else {
+                throw ObscuraError.provisionFailed(
+                    "Envelope id is \(raw.id.count) bytes, expected 16; cannot use it as a dedupe key")
+            }
             try await routeMessage(
                 clientMsg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
                 envelopeId: bytesToUuid(raw.id)
@@ -1956,7 +1967,14 @@ public class ObscuraClient {
             try await inboxMessage(msg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
                                    envelopeId: envelopeId)
             // MODEL_SYNC continues to the ORM as well — see `inboxMessage`. Everything else that is
-            // inboxed (an unknown arm) has no further handling by design.
+            // inboxed (an unknown arm, an attachment reference) has no further handling by design.
+            //
+            // The ORM continuation below MUST NOT be able to block the ack. It is non-throwing today
+            // (the knowingly-accepted MODEL_SYNC swallow in CLAUDE.md), so this is currently a
+            // statement of intent rather than a guard — but Kotlin's equivalent DID gate the ack and
+            // became a remote wedge, so the boundary is written down on both sides. `inbox.put`
+            // returning is what §3.3 rule 1 gates the ack on; a temporary parallel write into an
+            // engine being deleted is not.
             if case .modelSync? = msg.payload {} else { return }
 
         case .unimplemented:
@@ -2146,11 +2164,17 @@ public class ObscuraClient {
             await clearSessionsWithUser(sourceUserId)
 
         default:
-            // Unreachable: `classify` sent everything else to the inbox or to the unimplemented
-            // branch above. Logged rather than asserted so a proto change cannot crash the receive
-            // loop, but it should never fire.
-            logger.log("routeMessage: \(WireCodec.decodeMessageType(msg.payload)) classified "
-                + "kit-internal with no handler")
+            // A kit-internal arm with no handler must NOT be acked — the ack would destroy the only
+            // copy of a message this kit is supposed to own. Kotlin throws here for the same reason.
+            //
+            // This is reachable TODAY: `.deviceLinkApproval` is classified kit-internal and this kit
+            // cannot receive one (the divergence recorded in CLAUDE.md). It carries the p2p private
+            // key, the recovery public key, the friends export and the approver's device list — so
+            // logging and returning meant a newly-linked device dropped all of that and acked it
+            // away permanently. Throwing leaves it on the server until the handler exists.
+            throw ObscuraError.provisionFailed(
+                "\(WireCodec.decodeMessageType(msg.payload)) is classified kit-internal but this kit "
+                + "has no handler; refusing to ack it away")
         }
     }
 
@@ -2176,7 +2200,12 @@ public class ObscuraClient {
         let inserted = try await inbox.put(
             InboxRecord(
                 envelopeId: envelopeId,
-                kind: WireCodec.decodeMessageType(msg.payload),
+                // Must match Kotlin byte for byte — the app reads one `kind` column from two kits,
+                // and §4.1 has pix's drain BRANCH on it. WireCodec returns "" for an unset payload,
+                // which is a poor value for a NOT NULL column read across a bridge; both kits now
+                // share the UNKNOWN sentinel.
+                kind: WireCodec.decodeMessageType(msg.payload).isEmpty
+                    ? "UNKNOWN" : WireCodec.decodeMessageType(msg.payload),
                 receivedAt: UInt64(Date().timeIntervalSince1970 * 1000),
                 senderUserId: sourceUserId,
                 senderDeviceId: senderDeviceId,
@@ -2217,12 +2246,14 @@ public class ObscuraClient {
 
     /// A discard is data loss the app chose deliberately, and §3.3 rule 5 requires it be logged as a
     /// security-relevant event rather than being the quiet path.
-    private func wireInboxLogging() {
-        let log = logger
-        Task { [inbox] in
-            await inbox.setOnDiscard { ids, reason in
-                log.log("INBOX DISCARD \(ids.count) row(s) reason=\"\(reason)\" ids=\(ids)")
-            }
+    ///
+    /// - Note: the hook is passed at construction rather than set afterwards. A detached
+    ///   `Task { await inbox.setOnDiscard … }` from the initializer leaves a window in which the
+    ///   store is reachable with no hook, and a `discard` in that window is data loss with no record
+    ///   — precisely the quiet path rule 5 forbids.
+    private static func discardLogger(_ logger: ObscuraLogger) -> @Sendable ([Int64], String) -> Void {
+        { ids, reason in
+            logger.log("INBOX DISCARD \(ids.count) row(s) reason=\"\(reason)\" ids=\(ids)")
         }
     }
 

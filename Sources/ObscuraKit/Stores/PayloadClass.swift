@@ -75,10 +75,21 @@ func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> Payl
     case .text?:
         return .kitInternal
 
-    // Classified, unimplemented — see the enum case. Not inbox fodder.
+    // Attachment references. §4 classifies these INBOXED and §4.3 resolves them as Phase 3
+    // deletions — but the deletion has NOT happened: both arms are still in client.proto and the
+    // kits still expose public senders. Classifying them unimplemented while a live public API can
+    // send them means the kit uploads the blob, ships the AES key over Signal, and the RECEIVER
+    // acks and destroys the key. They follow §4's normative table until arms and senders are
+    // deleted together: inboxing an arm nobody sends costs nothing, dropping one somebody CAN send
+    // costs the message.
+    case .contentReference?, .chunkedContentReference?:
+        return .inboxed
+
+    // Classified, unimplemented — see the enum case. Not inbox fodder. None has a live sender:
+    // `deviceRecoveryAnnounce` is gated behind a default-off flag and the rest have no sender
+    // anywhere (§4.3).
     case .deviceRecoveryAnnounce?, .historyChunk?, .syncRequest?,
-         .settingsSync?, .readSync?,
-         .contentReference?, .chunkedContentReference?:
+         .settingsSync?, .readSync?:
         return .unimplemented
 
     // Unknown or future arm, and an unset payload. Inbox it unparsed rather than destroy it.
