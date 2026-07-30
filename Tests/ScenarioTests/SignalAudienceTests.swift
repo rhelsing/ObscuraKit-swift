@@ -2,14 +2,6 @@ import XCTest
 @testable import ObscuraKit
 
 /// Local copy — `SignalTests` declares its own as `private`, so it is not visible here.
-private struct DirectMessageAudienceTest: SyncModel {
-    static let modelName = "directMessage"
-    static let sync: SyncStrategy = .gset
-    var conversationId: String
-    var content: String
-    var senderUsername: String
-}
-
 /// Who receives an ephemeral signal.
 ///
 /// `SignalTests` proves a typing indicator *arrives*. Nothing proved it did not arrive somewhere
@@ -25,6 +17,11 @@ private struct DirectMessageAudienceTest: SyncModel {
 /// singleton shared by every client in the test process, so "Carol's store holds it" is
 /// indistinguishable from "Bob's store holds it" and would pass either way.
 final class SignalAudienceTests: XCTestCase {
+
+    // No model is registered anywhere in this file, deliberately. Signals do not need a schema —
+    // `modelKey` is an opaque namespace string, exactly as it is on the inbox and the entry store —
+    // and proving that here is what shows signals survive §10 step 4, when the ORM goes.
+
 
     private var msgDef: ModelDefinition {
         ModelDefinition(
@@ -51,10 +48,9 @@ final class SignalAudienceTests: XCTestCase {
         try await ObscuraTestClient.becomeFriends(alice, carol)
 
         for c in [alice, bob, carol] { c.client.schema([msgDef]) }
-        let aliceMessages = alice.client.register(DirectMessageAudienceTest.self)
 
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
-        await aliceMessages.typing(conversationId: convId)
+        await alice.client.sendTyping(modelKey: "directMessage", conversationId: convId)
 
         // The peer must still get it — a fix that silences the feature is not a fix.
         let bobGot = try await bob.waitForMessage(timeout: 10)
@@ -86,12 +82,11 @@ final class SignalAudienceTests: XCTestCase {
         try await ObscuraTestClient.becomeFriends(alice, bob)
 
         for c in [alice, bob] { c.client.schema([msgDef]) }
-        let aliceMessages = alice.client.register(DirectMessageAudienceTest.self)
 
         // `SPEC.md` §1.2 says fail loud rather than guess an audience. For an ephemeral signal
         // the correct failure is to send nothing: dropping a typing indicator costs nothing,
         // guessing its audience leaks the conversation.
-        await aliceMessages.typing(conversationId: "not-a-conversation-id")
+        await alice.client.sendTyping(modelKey: "directMessage", conversationId: "not-a-conversation-id")
         do {
             let leaked = try await bob.waitForMessage(timeout: 5)
             XCTFail("a signal whose audience cannot be resolved was still sent: \(leaked.type)")
@@ -101,7 +96,7 @@ final class SignalAudienceTests: XCTestCase {
 
         // Fail closed, not fall over: the next well-formed signal must still go out.
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
-        await aliceMessages.typing(conversationId: convId)
+        await alice.client.sendTyping(modelKey: "directMessage", conversationId: convId)
         let recovered = try await bob.waitForMessage(timeout: 10)
         XCTAssertEqual(recovered.type, "MODEL_SIGNAL", "a dropped signal must not wedge the send path")
 
@@ -128,10 +123,9 @@ final class SignalAudienceTests: XCTestCase {
         try await ObscuraTestClient.becomeFriends(alice, carol)
 
         for c in [alice, bob, carol] { c.client.schema([msgDef]) }
-        let aliceMessages = alice.client.register(DirectMessageAudienceTest.self)
 
         let threeParty = [alice.userId!, bob.userId!, carol.userId!].sorted().joined(separator: "_")
-        await aliceMessages.typing(conversationId: threeParty)
+        await alice.client.sendTyping(modelKey: "directMessage", conversationId: threeParty)
 
         for (name, client) in [("bob", bob), ("carol", carol)] {
             do {
