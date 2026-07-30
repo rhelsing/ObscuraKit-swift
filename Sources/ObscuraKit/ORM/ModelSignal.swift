@@ -69,9 +69,23 @@ public actor SignalStore {
     public func receive(_ payload: ModelSignalPayload) {
         let key = signalKey(model: payload.model, signal: payload.signal, data: payload.data)
 
-        // Drop stale signals (older than 5 seconds)
+        // Drop stale signals (older than 5 seconds).
+        //
+        // ⚠️ The subtraction MUST NOT be `now - payload.timestamp`. `payload.timestamp` is
+        // peer-supplied and unclamped — it is `ClientMessage.timestamp` off the wire — so a peer
+        // whose clock is even a millisecond ahead makes that expression negative, and `UInt64`
+        // subtraction **traps**. A trap is not catchable, so `processEnvelope`'s `do/catch` cannot
+        // contain it: the app dies.
+        //
+        // Any authenticated user can deliver a MODEL_SIGNAL (friendship is not required to send —
+        // `KIT_API.md` §4.1), and Kotlin's sender stamps `System.currentTimeMillis()`, so an Android
+        // peer with a slightly fast clock was enough. Remote crash, no privileges needed.
+        //
+        // Comparing instead of subtracting is total. A future timestamp is treated as fresh, which is
+        // the same thing SPEC §2.4 does for a peer-supplied time it cannot trust: clamp toward now
+        // rather than reject.
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        if now - payload.timestamp > 5_000 { return }
+        if payload.timestamp < now && now - payload.timestamp > 5_000 { return }
 
         let expiresAt = now + expiryMs
         let username = payload.data["senderUsername"] ?? payload.authorDeviceId
