@@ -1,6 +1,6 @@
 # Client API — Auth, Connection, Friends, Devices
 
-Everything below the ORM. An app developer uses these for auth, social graph, and device management. The ORM sits on top of this.
+Auth, social graph, device management. This is the whole client API now — the ORM that used to sit on top of it was deleted (`obscura-proto/RESET.md` §10 step 4). Entries reach the app through `client.inbox`, are stored via `client.entries`, and are sent with `client.send(to:modelKey:entryId:op:sentAt:payload:)`.
 
 ## Client Initialization
 
@@ -71,7 +71,7 @@ Both are cancelled by `disconnect()` or `deinit`.
 
 ## Friends
 
-Friends are the social graph — they define who you sync to. Not ORM content.
+Friends are the social graph. The kit uses them to address devices and to resolve a sender's display name (`obscura-proto/SPEC.md` §0.5) — it does **not** use them to decide an audience. The caller names recipients (§0.4).
 
 ```swift
 // Send friend request (encrypted FRIEND_REQUEST)
@@ -150,14 +150,12 @@ try await client.announceDevices()
 ## Sending Messages
 
 ```swift
-// Text message (uses ClientMessage.TEXT, not ORM)
-try await client.send(to: friendUserId, "Hello!")
+// An application entry — the app names the recipients and supplies opaque bytes.
+try await client.send(
+    to: [friendUserId], modelKey: "directMessage", entryId: entryId, payload: jsonBytes)
 
 // Raw protobuf message (advanced)
 try await client.sendRawMessage(to: friendUserId, clientMessageData: protoBytes)
-
-// ORM model sync (automatic — happens when you call model.create())
-// You don't call this directly. SyncManager handles it.
 ```
 
 ## Receiving Messages
@@ -166,7 +164,7 @@ The envelope loop in `connect()` handles all incoming messages automatically:
 - TEXT → stored in `MessageActor`
 - FRIEND_REQUEST → stored in `FriendActor`
 - FRIEND_RESPONSE → updates friend status
-- MODEL_SYNC → routed to correct ORM model via `SyncManager`
+- MODEL_SYNC → written to `client.inbox` as a durable row, then acked (an ack is a DELETE, so the write comes first)
 - DEVICE_ANNOUNCE → updates friend's device list
 - SYNC_BLOB → imports state from linked device
 - SENT_SYNC → stores message as "sent" on other own devices

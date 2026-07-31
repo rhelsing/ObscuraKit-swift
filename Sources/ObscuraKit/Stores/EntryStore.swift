@@ -25,13 +25,16 @@ public struct StoredEntry: Sendable, Equatable {
 /// Ported from `ObscuraKit-Kotlin`'s `EntryStore.kt`. `InboxStore` is how messages arrive; this is
 /// where the app keeps what it made of them. Together they are the whole data path.
 ///
-/// ## Why it exists separately from `ModelStore`
+/// ## Why it exists separately from the deleted `ModelStore`
 ///
-/// **The table is being kept; the engine above it is being deleted.** `ORM/ModelStore` reads and
-/// writes these same `model_entries` rows, but it lives inside the directory `RESET.md` removes, and
-/// it is the bottom of a stack — CRDT merge, TTL, query DSL, schema parser — that goes with it. So
-/// the store the app keeps cannot be that one; it has to be a type that survives the deletion, over
-/// the same rows. Hence a new file with no ORM imports, rather than making `ModelStore` public.
+/// **The table was kept; the engine above it was deleted.** `ORM/ModelStore` read and wrote these
+/// same `model_entries` rows, but it was the bottom of a stack — CRDT merge, TTL, query DSL, schema
+/// parser — that `RESET.md` removes entire. So the store the app keeps could not be that one; it had
+/// to be a type that survives the deletion, over the same rows. Hence a separate file with no ORM
+/// imports, rather than making `ModelStore` public.
+///
+/// The table is now two columns lighter (`ObscuraSchema` `v2`): `signature` held a keyless hash
+/// nothing verified, and the separate `ttl` table went with `TTLManager`.
 ///
 /// ## Three methods, and there is no fourth
 ///
@@ -65,15 +68,11 @@ public actor EntryStore {
     /// defensiveness (SPEC §0.4).
     public func put(model: String, entry: StoredEntry) async throws {
         try await db.write { db in
-            // `signature` is `NOT NULL` and holds the dead keyless hash from `Model.sign` — nothing
-            // verifies it, and `RESET.md` drops the column in §10 step 4. Until then the schema
-            // demands a value, so it gets an empty one rather than a fabricated hash that might look
-            // meaningful to a later reader.
             try db.execute(sql: """
                 INSERT OR REPLACE INTO model_entries
-                    (model_name, id, data, timestamp, signature, author_device_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, arguments: [model, entry.id, entry.data, Int64(entry.sentAt), Data(), entry.authorDeviceId])
+                    (model_name, id, data, timestamp, author_device_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, arguments: [model, entry.id, entry.data, Int64(entry.sentAt), entry.authorDeviceId])
         }
     }
 
@@ -101,7 +100,7 @@ public actor EntryStore {
     /// - Note: Kotlin's `EntryStore.delete` soft-deletes, because that table carries a `deleted`
     ///   column and its `selectByModel` filters on it, while `model_entries` here has no such column.
     ///   The observable behaviour is identical — the entry stops appearing in `all` — and the app
-    ///   cannot tell the difference through the bridge. Both columns go in step 4 anyway.
+    ///   cannot tell the difference through the bridge.
     public func delete(model: String, id: String) async throws {
         try await db.write { db in
             try db.execute(sql: "DELETE FROM model_entries WHERE model_name = ? AND id = ?",

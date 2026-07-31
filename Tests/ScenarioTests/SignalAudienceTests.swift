@@ -1,7 +1,6 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Local copy — `SignalTests` declares its own as `private`, so it is not visible here.
 /// Who receives an ephemeral signal.
 ///
 /// `SignalTests` proves a typing indicator *arrives*. Nothing proved it did not arrive somewhere
@@ -18,17 +17,13 @@ import XCTest
 /// indistinguishable from "Bob's store holds it" and would pass either way.
 final class SignalAudienceTests: XCTestCase {
 
-    // No model is registered anywhere in this file, deliberately. Signals do not need a schema —
-    // `modelKey` is an opaque namespace string, exactly as it is on the inbox and the entry store —
-    // and proving that here is what shows signals survive §10 step 4, when the ORM goes.
-
-
-    private var msgDef: ModelDefinition {
-        ModelDefinition(
-            name: "directMessage", sync: .gset, syncScope: .friends,
-            fields: ["conversationId": .string, "content": .string, "senderUsername": .string]
-        )
-    }
+    // No model is registered anywhere in this file. Signals do not need a schema — `modelKey` is an
+    // opaque namespace string, exactly as it is on the inbox and the entry store — which is what
+    // let them survive §10 step 4 when the ORM went.
+    //
+    // That claim was written here while every test in the file still called `client.schema([msgDef])`
+    // on each participant first, so it described an intention rather than the code. The `msgDef`
+    // property and its three call sites are gone; the comment is now true.
 
     /// Alice types to Bob. Carol — Alice's friend, but not in that conversation — must hear nothing.
     func testTypingReachesThePeerAndNotAnUninvolvedFriend() async throws {
@@ -47,7 +42,6 @@ final class SignalAudienceTests: XCTestCase {
         try await ObscuraTestClient.becomeFriends(alice, bob)
         try await ObscuraTestClient.becomeFriends(alice, carol)
 
-        for c in [alice, bob, carol] { c.client.schema([msgDef]) }
 
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
         await alice.client.sendTyping(modelKey: "directMessage", conversationId: convId)
@@ -81,7 +75,6 @@ final class SignalAudienceTests: XCTestCase {
         await rateLimitDelay()
         try await ObscuraTestClient.becomeFriends(alice, bob)
 
-        for c in [alice, bob] { c.client.schema([msgDef]) }
 
         // `SPEC.md` §1.2 says fail loud rather than guess an audience. For an ephemeral signal
         // the correct failure is to send nothing: dropping a typing indicator costs nothing,
@@ -122,7 +115,6 @@ final class SignalAudienceTests: XCTestCase {
         try await ObscuraTestClient.becomeFriends(alice, bob)
         try await ObscuraTestClient.becomeFriends(alice, carol)
 
-        for c in [alice, bob, carol] { c.client.schema([msgDef]) }
 
         let threeParty = [alice.userId!, bob.userId!, carol.userId!].sorted().joined(separator: "_")
         await alice.client.sendTyping(modelKey: "directMessage", conversationId: threeParty)

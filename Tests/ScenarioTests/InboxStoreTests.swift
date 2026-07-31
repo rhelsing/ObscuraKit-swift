@@ -44,9 +44,12 @@ final class InboxStoreTests: XCTestCase {
     /// best-effort and its failure is swallowed, so the server's per-connection cursor re-sends on
     /// the next connection. That is correct behaviour — losing the message would be worse.
     ///
-    /// Today that redelivery is harmless only because of the engine being deleted: `ModelStore.put`
-    /// is `INSERT OR REPLACE`, so a re-delivered entry overwrites itself. Put a monotonic id in
-    /// front of it without a dedupe key and the same redelivery inserts a SECOND row.
+    /// The deleted engine absorbed redelivery **by accident**: `ModelStore.put` was
+    /// `INSERT OR REPLACE` keyed on `(model, id)`, so a re-delivered entry overwrote itself. The
+    /// inbox is keyed on a monotonic `id` instead, so nothing about its primary key would collide —
+    /// without `envelope_id UNIQUE` and `INSERT OR IGNORE` (§3.3 rule 8) the same redelivery would
+    /// insert a SECOND row, and the replacement would be strictly *less* idempotent than what it
+    /// replaced.
     func testRedeliveredEnvelopeDoesNotCreateASecondRow() async throws {
         let inbox = try makeInbox()
 

@@ -42,8 +42,14 @@ final class ReconnectTests: XCTestCase {
         bob.disconnectWebSocket()
     }
 
-    /// ORM content survives reconnect cycle.
-    func testORM_survivesReconnect() async throws {
+    /// Entries survive a reconnect cycle — the one sent while Bob was connected AND the one the
+    /// server queued while he was not.
+    ///
+    /// The assertion is against the INBOX, not against the wake-up. A `waitForMessage` proves an
+    /// envelope arrived; only the durable row proves it survived, and after an ack the row is the
+    /// only copy there is (`obscura-proto/SPEC.md` §0.9). Both ids are checked by name rather than
+    /// by counting, so "delivered twice" cannot pass as "both delivered".
+    func testEntriesSurviveReconnect() async throws {
         let alice = try await ObscuraTestClient.register()
         await rateLimitDelay()
         let bob = try await ObscuraTestClient.register()
@@ -54,21 +60,23 @@ final class ReconnectTests: XCTestCase {
         await rateLimitDelay()
         try await ObscuraTestClient.becomeFriends(alice, bob)
 
-        let storyDef = ModelDefinition(name: "story", sync: .gset, syncScope: .friends,
-                                       fields: ["content": .string])
-        alice.client.schema([storyDef])
-        bob.client.schema([storyDef])
+        let beforeId = "story_before_\(UUID().uuidString)"
+        let duringId = "story_during_\(UUID().uuidString)"
 
-        // Create story before disconnect
-        _ = try await alice.client.model("story")!.create(["content": "before drop"])
+        // Sent while Bob is connected
+        try await alice.client.send(
+            to: [bob.userId!], modelKey: "story", entryId: beforeId,
+            payload: try JSONSerialization.data(withJSONObject: ["content": "before drop"]))
         _ = try await bob.waitForMessage(timeout: 10)
 
         // Disconnect Bob
         await bob.client.gateway.disconnect()
         await rateLimitDelay()
 
-        // Alice creates while Bob is reconnecting
-        _ = try await alice.client.model("story")!.create(["content": "during reconnect"])
+        // Alice sends while Bob is reconnecting — the server queues this one
+        try await alice.client.send(
+            to: [bob.userId!], modelKey: "story", entryId: duringId,
+            payload: try JSONSerialization.data(withJSONObject: ["content": "during reconnect"]))
         await rateLimitDelay()
 
         // Wait for Bob to reconnect
@@ -76,10 +84,13 @@ final class ReconnectTests: XCTestCase {
 
         // Bob should get the queued story
         let msg = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(msg.type, "MODEL_SYNC") // MODEL_SYNC
+        XCTAssertEqual(msg.type, "MODEL_SYNC")
 
-        let bobStories = await bob.client.model("story")!.all()
-        XCTAssertEqual(bobStories.count, 2)
+        let stored = try await bob.client.inbox.peek(limit: 200).compactMap(\.entryId)
+        XCTAssertTrue(stored.contains(beforeId),
+                      "the entry sent before the drop must still be stored after the reconnect")
+        XCTAssertTrue(stored.contains(duringId),
+                      "the entry queued during the drop must arrive and be stored")
 
         alice.disconnectWebSocket()
         bob.disconnectWebSocket()

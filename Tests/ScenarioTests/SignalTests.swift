@@ -17,17 +17,13 @@ final class SignalTests: XCTestCase {
         await rateLimitDelay()
         try await ObscuraTestClient.becomeFriends(alice, bob)
 
-        // Define directMessage model on both
-        let msgDef = ModelDefinition(name: "directMessage", sync: .gset, syncScope: .friends,
-                                     fields: ["conversationId": .string, "content": .string, "senderUsername": .string])
-        alice.client.schema([msgDef])
-        bob.client.schema([msgDef])
-
-        let aliceMessages = alice.client.register(DirectMessageTest.self)
+        // No schema, no registered model. Signals never needed one — `modelKey` is an opaque
+        // conversation namespace, and the audience comes from `conversationId`. This used to go
+        // through `client.schema(...)` plus `client.register(DirectMessageTest.self).typing(...)`.
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
 
         // Alice sends typing signal
-        await aliceMessages.typing(conversationId: convId)
+        await alice.client.sendTyping(modelKey: "directMessage", conversationId: convId)
 
         // Bob should receive it (MODEL_SIGNAL type 31)
         let received = try await bob.waitForMessage(timeout: 10)
@@ -119,13 +115,4 @@ final class SignalTests: XCTestCase {
         let afterStop = await store.isActive(model: "directMessage", signal: "typing", data: ["conversationId": "conv1"])
         XCTAssertFalse(afterStop, "stoppedTyping should remove indicator immediately")
     }
-}
-
-// Test model
-private struct DirectMessageTest: SyncModel {
-    static let modelName = "directMessage"
-    static let sync: SyncStrategy = .gset
-    var conversationId: String
-    var content: String
-    var senderUsername: String
 }

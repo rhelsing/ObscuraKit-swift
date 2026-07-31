@@ -60,7 +60,7 @@ ObscuraClient.startEnvelopeLoop()
     │   │   ├─ FRIEND_REQ  → friends.add()  ─── GRDB write ─── ValueObservation fires
     │   │   ├─ FRIEND_RESP → friends.updateStatus()
     │   │   ├─ DEVICE_ANN  → friends.updateDevices() (verify signature first)
-    │   │   ├─ MODEL_SYNC  → orm.handleSync()
+    │   │   ├─ MODEL_SYNC  → inbox.put() ── durable row ── app drains it
     │   │   ├─ SYNC_BLOB   → import friends + messages (own userId only)
     │   │   ├─ SENT_SYNC   → messages.add() (own userId only)
     │   │   ├─ FRIEND_SYNC → friends.add/remove() (own userId only)
@@ -76,9 +76,14 @@ SwiftUI View: .task { for await msgs in client.messages.observeMessages(id).valu
               ──── GRDB ValueObservation fires automatically, view re-renders
 ```
 
-## Key Invariant
+## Key Invariant — for kit-owned state
 
-**The view never asks for data. Data comes to the view.**
+Friends, devices and messages are kit-owned and push to the view. **Application entries are not:**
+a MODEL_SYNC becomes a row in `client.inbox`, and the app drains it (`peek` → merge → write →
+`consume`). The kit does not observe application data, because it no longer stores any
+(`obscura-proto/KIT_API.md` §3).
+
+**For everything the kit does own: the view never asks for data. Data comes to the view.**
 
 1. GRDB writes happen in the envelope loop (background)
 2. `ValueObservation` detects the write automatically

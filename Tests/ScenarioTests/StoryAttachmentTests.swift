@@ -1,120 +1,73 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Scenario 10: Story Attachments — against actual server
-/// Create story with image via ORM ModelSync, deliver to friend
+/// Scenario 10: Story attachments — the **bytes path**, against a real server.
+///
+/// `obscura-proto/RESET.md` keeps attachment encryption, upload and download while deleting the
+/// `content_reference` *message*: pix's attachments ride inside a `model_sync` entry, so an
+/// attachment is an upload plus an id in an opaque payload. These two tests are the whole of that
+/// claim — an entry naming an uploaded blob reaches the recipient, and the recipient can fetch the
+/// bytes it names.
+///
+/// Two former cases here (`10.1`, `10.5`) built a `ModelEntry` and pushed it through `GSet`, then
+/// asserted that the dictionary they had just written came back. That is a storage round trip, not
+/// a story: it is `EntryStoreTests.testPutThenAllReturnsWhatWasWritten` and
+/// `testUnicodeAndNestedPayloadsSurviveUnchanged`, over the store that still exists. They went with
+/// the engine rather than being ported to assert the same thing twice.
 final class StoryAttachmentTests: XCTestCase {
 
-    // MARK: - 10.1: Image-only story via ORM
+    /// A story entry naming an uploaded attachment reaches the recipient's inbox with the
+    /// attachment id intact.
+    ///
+    /// The payload is opaque to the kit (SPEC §0.4) — `mediaRef` is an application field, and the
+    /// assertion below reads it back out of the *stored bytes* rather than from any kit-parsed
+    /// structure, because there is no longer anything in the kit that would parse it.
+    func testAStoryEntryCarriesItsAttachmentIdToTheRecipientsInbox() async throws {
+        let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
-    func testScenario10_1_ImageStoryCreation() async throws {
-        let store = try ModelStore()
-        let gset = GSet(store: store, modelName: "story")
-
-        let id = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_img"
-        let entry = ModelEntry(
-            id: id,
-            data: [
-                "mediaRef": "att_12345",
-                "contentType": "image/jpeg",
-            ],
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            signature: Data(),
-            authorDeviceId: "dev1"
-        )
-
-        let result = await gset.add(entry)
-        XCTAssertEqual(result.data["mediaRef"] as? String, "att_12345")
-        XCTAssertEqual(result.data["contentType"] as? String, "image/jpeg")
-        // No text content — image only
-        XCTAssertNil(result.data["content"])
-    }
-
-    // MARK: - 10.2: Story syncs to friend via ModelSync
-
-    func testScenario10_2_StorySyncToFriend() async throws {
-        let alice = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-        let bob = try await ObscuraTestClient.register()
-        await rateLimitDelay()
-
-        // Upload image
         var imageData = Data([0xFF, 0xD8, 0xFF, 0xE0])
         imageData.append(Data(repeating: 0x99, count: 1000))
-        let uploadResult = try await alice.api.uploadAttachment(imageData)
-        let attachmentId = uploadResult.id
+        let attachmentId = try await alice.api.uploadAttachment(imageData).id
         await rateLimitDelay()
 
-        // Bob connects
-        try await bob.connectWebSocket()
+        let entryId = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_media"
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "mediaRef": attachmentId,
+            "contentType": "image/jpeg",
+        ])
+        try await alice.client.send(
+            to: [bob.userId!], modelKey: "story", entryId: entryId, payload: payload)
         await rateLimitDelay()
 
-        // Alice sends ModelSync + ContentReference for story
-
-        // Build MODEL_SYNC with story data
-        var sync = Obscura_Client_V1_ModelSync()
-        sync.model = "story"
-        sync.id = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_media"
-        sync.op = .create
-        sync.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        sync.data = Data("{\"mediaRef\":\"\(attachmentId)\",\"contentType\":\"image/jpeg\"}".utf8)
-        sync.authorDeviceID = alice.deviceId ?? "unknown"
-
-        var msg = Obscura_Client_V1_ClientMessage()
-        msg.modelSync = sync
-        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        try await alice.sendRaw(to: bob.userId!, try msg.serializedData())
-        await rateLimitDelay()
-
-        // Bob receives MODEL_SYNC
-        let received = try await bob.waitForMessage(timeout: 10)
-        XCTAssertEqual(received.type, "MODEL_SYNC", "Should be MODEL_SYNC")
+        let received = try await bob.waitForMessage(timeout: 15)
+        XCTAssertEqual(received.type, "MODEL_SYNC")
         XCTAssertEqual(received.sourceUserId, alice.userId!)
+
+        // The inbox row is the delivery — the wake-up above is droppable (§0.9 rule 4).
+        let row = try await bob.client.inbox.peek(limit: 200).first { $0.entryId == entryId }
+        let stored = try XCTUnwrap(row, "the story must be in Bob's inbox")
+        XCTAssertEqual(stored.modelKey, "story")
+        let decoded = try JSONSerialization.jsonObject(with: stored.payload) as? [String: Any]
+        XCTAssertEqual(decoded?["mediaRef"] as? String, attachmentId,
+                       "the attachment id must survive the round trip byte for byte")
 
         bob.disconnectWebSocket()
     }
 
-    // MARK: - 10.3: Receiver can download attachment
-
-    func testScenario10_3_ReceiverDownloadsAttachment() async throws {
+    /// The recipient can fetch the bytes an entry names. Upload and download are separately
+    /// authenticated against the server, so this does not depend on the messaging path at all.
+    func testTheRecipientCanDownloadTheAttachmentBytes() async throws {
         let alice = try await ObscuraTestClient.register()
         await rateLimitDelay()
         let bob = try await ObscuraTestClient.register()
         await rateLimitDelay()
 
-        // Alice uploads
         var imageData = Data([0xFF, 0xD8, 0xFF, 0xE0])
         imageData.append(Data(repeating: 0x77, count: 800))
-        let uploadResult = try await alice.api.uploadAttachment(imageData)
-        let attachmentId = uploadResult.id
+        let attachmentId = try await alice.api.uploadAttachment(imageData).id
         await rateLimitDelay()
 
-        // Bob downloads (both users can access after auth)
         let downloaded = try await bob.api.fetchAttachment(attachmentId)
         XCTAssertEqual(downloaded, imageData, "Downloaded should match uploaded")
-    }
-
-    // MARK: - 10.5: Story with text + image
-
-    func testScenario10_5_StoryWithTextAndImage() async throws {
-        let store = try ModelStore()
-        let gset = GSet(store: store, modelName: "story")
-
-        let id = "story_\(UInt64(Date().timeIntervalSince1970 * 1000))_both"
-        let entry = ModelEntry(
-            id: id,
-            data: [
-                "content": "check out this sunset",
-                "mediaRef": "att_67890",
-                "contentType": "image/jpeg",
-            ],
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            signature: Data(),
-            authorDeviceId: "dev1"
-        )
-
-        let result = await gset.add(entry)
-        XCTAssertEqual(result.data["content"] as? String, "check out this sunset")
-        XCTAssertEqual(result.data["mediaRef"] as? String, "att_67890")
     }
 }
