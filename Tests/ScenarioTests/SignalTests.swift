@@ -17,17 +17,13 @@ final class SignalTests: XCTestCase {
         await rateLimitDelay()
         try await ObscuraTestClient.becomeFriends(alice, bob)
 
-        // Define directMessage model on both
-        let msgDef = ModelDefinition(name: "directMessage", sync: .gset, syncScope: .friends,
-                                     fields: ["conversationId": .string, "content": .string, "senderUsername": .string])
-        alice.client.schema([msgDef])
-        bob.client.schema([msgDef])
-
-        let aliceMessages = alice.client.register(DirectMessageTest.self)
+        // No schema, no registered model. Signals never needed one — `modelKey` is an opaque
+        // conversation namespace, and the audience comes from `conversationId`. This used to go
+        // through `client.schema(...)` plus `client.register(DirectMessageTest.self).typing(...)`.
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
 
         // Alice sends typing signal
-        await aliceMessages.typing(conversationId: convId)
+        await alice.client.sendTyping(modelKey: "directMessage", conversationId: convId)
 
         // Bob should receive it (MODEL_SIGNAL type 31)
         let received = try await bob.waitForMessage(timeout: 10)
@@ -49,14 +45,9 @@ final class SignalTests: XCTestCase {
         // Directly test the SignalStore's staleness check
         let store = SignalStore()
 
-        // Create a signal with a timestamp 10 seconds in the past
-        let stalePayload = ModelSignalPayload(
-            model: "directMessage",
-            signal: .typing,
-            data: ["conversationId": "conv1"],
-            authorDeviceId: "device1"
-        )
-        // Manually create a stale version
+        // A signal timestamped 10 seconds in the past. It has to be built as JSON and decoded
+        // rather than constructed: `ModelSignalPayload.init(model:signal:data:authorDeviceId:)`
+        // stamps `Date()` itself, so there is no initialiser that can produce a stale one.
         let staleData = """
         {"model":"directMessage","signal":"typing","data":{"conversationId":"conv1"},"authorDeviceId":"device1","timestamp":\(UInt64(Date().timeIntervalSince1970 * 1000) - 10_000)}
         """.data(using: .utf8)!
@@ -119,13 +110,4 @@ final class SignalTests: XCTestCase {
         let afterStop = await store.isActive(model: "directMessage", signal: "typing", data: ["conversationId": "conv1"])
         XCTAssertFalse(afterStop, "stoppedTyping should remove indicator immediately")
     }
-}
-
-// Test model
-private struct DirectMessageTest: SyncModel {
-    static let modelName = "directMessage"
-    static let sync: SyncStrategy = .gset
-    var conversationId: String
-    var content: String
-    var senderUsername: String
 }

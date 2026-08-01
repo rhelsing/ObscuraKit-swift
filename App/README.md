@@ -1,5 +1,21 @@
 # Obscura iOS App
 
+> ### ⚠️ This app does not currently build, and the instructions below are stale.
+>
+> It was written against `client.register(Story.self)`, `stories.create(...)` and the query DSL —
+> the ORM that `obscura-proto/RESET.md` §10 step 4 deleted. Porting it means rewriting its premise,
+> not fixing call sites: there is no longer a kit-side model object to observe, because the kit no
+> longer stores application data. An app on the current API sends with
+> `client.send(to:modelKey:entryId:payload:)` and reads by draining `client.inbox` into its own
+> store.
+>
+> The real consumer of this kit is **`obscura-pix`**, which is on the current API and covered by
+> CI. `App/` is not built by CI and has not been touched since 2026-06-29. Treat it as a historical
+> sample pending a decision to port or delete it, not as a working demo.
+>
+> The libsignal FFI instructions below are still accurate and still useful — that part is
+> independent of the kit's API.
+
 SwiftUI app that links against the ObscuraKit Swift package.
 
 ## Prerequisites

@@ -1,21 +1,20 @@
 import Foundation
 
-/// ECS-style signals for ORM models — ephemeral, not persisted.
-/// Typing indicators, read receipts, presence — real-time state that auto-expires.
+/// Ephemeral signals — typing indicators, read receipts, presence. Real-time state that
+/// auto-expires and is never persisted, which is what makes it DROPPABLE
+/// (`obscura-proto/KIT_API.md` §4) rather than something the inbox has to carry.
 ///
-/// Signals are declared on the model:
 /// ```swift
-/// struct DirectMessage: SyncModel {
-///     static let signals: [SignalType] = [.typing, .read]
-///     ...
-/// }
+/// await client.sendTyping(modelKey: "directMessage", conversationId: convId)
+/// for await who in client.observeTyping(modelKey: "directMessage", conversationId: convId).values {}
 /// ```
 ///
-/// Used via purpose-built methods:
-/// ```swift
-/// messages.typing(conversationId: convId)
-/// for await who in messages.observeTyping(conversationId: convId) { ... }
-/// ```
+/// **This file lived in `ORM/` and is keep-forever code** (`obscura-proto/RESET.md`). It moved here
+/// rather than being deleted with the engine, minus two extensions — `extension TypedModel` and
+/// `extension Model` — which were the ORM's entrance to signals and referenced ORM types. Their
+/// replacement is `ObscuraClient.sendTyping` / `stopTyping` / `observeTyping`, which take the
+/// `modelKey` as an opaque string exactly as the inbox and the entry store do. That is what makes
+/// this a relocation rather than a surviving fragment of the engine.
 
 // MARK: - Signal Types
 
@@ -139,17 +138,19 @@ public struct SignalObservation {
     let signal: String
     let data: [String: String]
 
-    /// Stream of active signalers. Polls every 300ms.
+    /// Stream of active signalers, **by display name** — not by author device ID, whatever the
+    /// name `authorDeviceId` on the payload suggests. `SignalStore.getActive` returns
+    /// `senderUsername`. Polls every 300ms.
     ///
-    /// - Warning: This does **not** emit author device IDs, despite what this comment said for
-    ///   as long as it existed. `SignalStore.getActive` returns `senderUsername` — a display
-    ///   name taken from the message *payload*, which is attacker-controlled: a peer chooses how
-    ///   they are labelled on screen. See obscura-proto `SPEC.md` §0.5 — a sender's name MUST
-    ///   come from the local friend graph, keyed on the authenticated envelope, never the payload.
+    /// Both defects this warning used to describe are fixed, and the fixes are what make the
+    /// display name safe to emit:
     ///
-    ///   Note the related defect on the receive path: `routeMessage` passes `sourceUserId` into
-    ///   the `authorDeviceId` slot, and `ReceivedMessage.senderDeviceId` is hardcoded `nil`. So
-    ///   this kit cannot currently produce a real device id at all. Kotlin has the same bug.
+    /// - The name no longer comes from the payload. `routeMessage`'s `.modelSignal` case looks
+    ///   `sourceUserId` up in the local friend graph, so a peer can no longer choose how they are
+    ///   labelled on screen (`obscura-proto/SPEC.md` §0.5).
+    /// - `authorDeviceId` is no longer `sourceUserId`. It is the device UUID of the session that
+    ///   decrypted, proven by the MAC (SPEC §0.10 rule 4, Phase 2) — which is what makes the
+    ///   per-author dedupe in `SignalStore.receive` and `remove` correct rather than accidental.
     public var values: AsyncStream<[String]> {
         AsyncStream { continuation in
             let task = Task {
@@ -166,137 +167,6 @@ public struct SignalObservation {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-}
-
-// MARK: - TypedModel signal extensions
-
-extension TypedModel {
-    /// Send a typing indicator for a conversation.
-    /// Auto-throttled: won't send more than once per 2 seconds.
-    public func typing(conversationId: String) async {
-        let key = "typing:\(conversationId)"
-        let now = Date()
-        if let last = SignalThrottle.shared.lastSent[key], now.timeIntervalSince(last) < 2.0 {
-            return // Throttled
-        }
-        SignalThrottle.shared.lastSent[key] = now
-        await sendSignal(.typing, data: ["conversationId": conversationId, "senderUsername": senderUsername])
-    }
-
-    /// Explicitly stop typing.
-    public func stopTyping(conversationId: String) async {
-        await sendSignal(.stoppedTyping, data: ["conversationId": conversationId])
-    }
-
-    /// Send a read receipt.
-    public func read(conversationId: String) async {
-        await sendSignal(.read, data: ["conversationId": conversationId])
-    }
-
-    /// Observe who is typing in a conversation.
-    /// Returns a stream of active author device IDs.
-    public func observeTyping(conversationId: String) -> SignalObservation {
-        SignalObservation(
-            store: signalStore,
-            model: T.modelName,
-            signal: SignalType.typing.rawValue,
-            data: ["conversationId": conversationId]
-        )
-    }
-
-    /// Observe read receipts for a conversation.
-    public func observeRead(conversationId: String) -> SignalObservation {
-        SignalObservation(
-            store: signalStore,
-            model: T.modelName,
-            signal: SignalType.read.rawValue,
-            data: ["conversationId": conversationId]
-        )
-    }
-
-    // MARK: - Internal
-
-    private var senderUsername: String {
-        model.username.isEmpty ? model.deviceId : model.username
-    }
-
-    private var signalStore: SignalStore {
-        SignalStoreRegistry.shared.store
-    }
-
-    private func sendSignal(_ type: SignalType, data: [String: String]) async {
-        let kind = WireCodec.encodeSignalKind(type.rawValue)
-
-        var signal = Obscura_Client_V1_ModelSignal()
-        signal.model = T.modelName
-        signal.kind = kind
-        signal.contextID = data["conversationId"] ?? ""
-
-        // Typed MODEL_SIGNAL payload — no JSON. Sender identity and timestamp ride on
-        // the authenticated ClientMessage envelope, not the payload.
-        var msg = Obscura_Client_V1_ClientMessage()
-        msg.modelSignal = signal
-        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        guard let msgData = try? msg.serializedData() else { return }
-
-        // Send to the conversation — NOT to the friend list. `contextID` is what lets the
-        // sender resolve that audience; without it a 1:1 signal fans out to everyone.
-        await model.onSignalSend?(msgData, signal.contextID)
-    }
-}
-
-// MARK: - Untyped Model signal extensions
-//
-// The RN bridge works with untyped `Model` instances (via `client.model(name)`),
-// not `TypedModel<T>`, so it needs the same typing API the Kotlin untyped ORM
-// model exposes. Mirrors the `TypedModel` extension above, keyed on `self.name`.
-
-extension Model {
-    /// Send a typing indicator for a conversation. Auto-throttled (≤ once / 2s).
-    public func typing(conversationId: String) async {
-        let key = "typing:\(name):\(conversationId)"
-        let now = Date()
-        if let last = SignalThrottle.shared.lastSent[key], now.timeIntervalSince(last) < 2.0 {
-            return
-        }
-        SignalThrottle.shared.lastSent[key] = now
-        let sender = username.isEmpty ? deviceId : username
-        await sendSignal(.typing, data: ["conversationId": conversationId, "senderUsername": sender])
-    }
-
-    /// Explicitly stop typing.
-    public func stopTyping(conversationId: String) async {
-        await sendSignal(.stoppedTyping, data: ["conversationId": conversationId])
-    }
-
-    /// Observe the active typer set for a conversation (author device IDs).
-    public func observeTyping(conversationId: String) -> SignalObservation {
-        SignalObservation(
-            store: SignalStoreRegistry.shared.store,
-            model: name,
-            signal: SignalType.typing.rawValue,
-            data: ["conversationId": conversationId]
-        )
-    }
-
-    private func sendSignal(_ type: SignalType, data: [String: String]) async {
-        let payload = ModelSignalPayload(
-            model: name,
-            signal: type,
-            data: data,
-            authorDeviceId: deviceId
-        )
-        var signal = Obscura_Client_V1_ModelSignal()
-        signal.model = name
-        signal.kind = WireCodec.encodeSignalKind(type.rawValue)
-        signal.contextID = data["conversationId"] ?? ""
-        var msg = Obscura_Client_V1_ClientMessage()
-        msg.modelSignal = signal
-        msg.timestamp = payload.timestamp
-        guard let msgData = try? msg.serializedData() else { return }
-        await onSignalSend?(msgData, signal.contextID)
     }
 }
 

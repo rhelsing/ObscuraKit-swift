@@ -2,13 +2,21 @@
 
 ## ⚠️ Read this before changing anything
 
-**This repo is mid-reset. Large parts of it are scheduled for deletion.**
+**The reset has landed. Do not re-add what it removed.**
 
 Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
 [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
 [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
 
-**Where this kit is (2026-07-25): Phase 2 is LANDED and PROVEN on `main`.** Phases 1 and 2 shipped
+**Where this kit is (2026-07-31): Phase 3 — the reset — has landed. Phase 2 before it.**
+The ORM, CRDT engine, query DSL, audience-routing engine, schema parser and TTL manager are
+deleted (`RESET.md` §10 step 4). What replaced them: `client.send(to:modelKey:entryId:op:sentAt:payload:)`
+for the outbox, `client.inbox` (peek/consume/discard/depth) for the receive path, and
+`client.entries` for storage. Merge and audience resolution live in obscura-pix now, once.
+`ObscuraSchema` grew a real `v2` migration and the erase-on-schema-change tripwire is OFF —
+**never edit an applied migration; add a new one.**
+
+**Phase 2 is LANDED and PROVEN on `main`.** Phases 1 and 2 shipped
 across the proto, the server and both kits between 07-19 and 07-25. This kit's share — the
 throwing-persist residual, device-UUID session addressing, the F9 own-device registry, honest
 `authorDeviceId`, and the Option B envelope — merged via PRs #6, #8 and #9.
@@ -17,17 +25,18 @@ It is **verified, not asserted**: macOS CI run `30138464166` executed
 `TwoDeviceSendTests` (two-device decrypt after a *sender reconnect*, the own-device registry, the
 link-approval approver half) and `AuthorDeviceIdTests` against a real server, and they passed. The
 UNVERIFIED labels on the original commits are historical — CI has since compiled and run them.
-`obscura-proto/PLAN.md` records the acceptance sign-off and four known gaps. **Phase 3 (the reset)
-is unblocked**; read those gaps before starting it.
+`obscura-proto/PLAN.md` records the acceptance sign-off and four known gaps.
 
 The rule that governs this repo:
 
 > **If the kit reads it, it is a field in `client.proto`.
 > If it is not in `client.proto`, the kit MUST NOT read it.**
 
-**Do not "improve" the ORM, the CRDT layer, the query builder, the audience/routing engine, or
-the schema parser. They are on the deletion list.** They exist here *and* in ObscuraKit-Kotlin,
-duplicated, to serve five flat models in one app that uses almost none of them.
+**Do not re-add an ORM, a CRDT layer, a query builder, an audience/routing engine, or a schema
+parser.** They existed here *and* in ObscuraKit-Kotlin, duplicated, to serve five flat models in one
+app that used almost none of them. `KIT_API.md` §9 names the failure mode to watch for: the entry
+store grows a filter, then an index abstraction, then observation, and the deleted engine has been
+rebuilt under a new name.
 
 Known live defects in this kit, documented so nobody rediscovers them as "improvements":
 
@@ -42,15 +51,22 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
   `getOwnDevices()=1` where Kotlin's equivalent fixture shows 2. The *approver* half works and is
   pinned by `TwoDeviceSendTests.testLinkApprovalPopulatesTheApproverRegistry`; the approvee half is
   deliberately not asserted, because asserting broken behaviour locks it in.
-- `SyncManager.resolveScopedRecipientUserIds` **hard-codes application field names**
-  (`recipientUsername`, `conversationId`). SPEC §0.4 forbids this.
-- `SyncManager.resolveTargets` **narrows a `.friends` broadcast** to a direct send when an entry
-  happens to carry one of those fields. A `friends` audience must reach all accepted friends.
-- **No schema migration mechanism exists** — every store is `CREATE TABLE IF NOT EXISTS`. Adding
-  a column to an existing install is currently impossible.
 - **No device-announce replay protection.**
-- `RoutingConformanceTests` **re-implements the audience mapping in the test harness** and
-  discards the `field` name — so it passes without exercising production code.
+- `ProcessedCounts` still hard-codes `"pix"` and `"directMessage"` in kit source
+  (`classifyForPushCounts`), which §0.4 forbids. ObscuraKit-Kotlin has the identical defect. The fix
+  changes a bridge-facing type on both platforms and is deliberately a separate change.
+- `sendModelSync(to:model:entryId:op:data:)` still gates on friendship and sends to exactly one
+  friend. Prefer `send(to:...)`. Its Kotlin twin survives too; both are follow-ups.
+- **`send(to:_ text:)` — the legacy TEXT send — still exists here, and ObscuraKit-Kotlin deleted its
+  equivalent in the same PR that removed the ORM.** Not observable through the bridge (pix sends
+  entries only), so it is a source-level divergence rather than a behavioural one, but it is a
+  divergence and it belongs on this list rather than in someone's memory.
+- ~~`SyncManager` hard-codes application field names~~ / ~~narrows a `.friends` broadcast~~ /
+  ~~`RoutingConformanceTests` re-implements the audience mapping~~ — **all deleted with the routing
+  engine (Phase 3).** Audience resolution is the app's, and `obscura-pix` vendors the routing
+  guards.
+- ~~No schema migration mechanism exists~~ — **FIXED.** `Storage/ObscuraSchema.swift` owns every
+  table via `DatabaseMigrator`; `v2` is the first migration that carries data across.
 - ~~`authorDeviceId` is a lie~~ — **FIXED (Phase 2, PR #6).** It is now the device UUID of the
   session that decrypted, and `ReceivedMessage.senderDeviceId` carries the sender's real device.
   Pinned by `AuthorDeviceIdTests`. `SPEC.md` §0.10 is the contract.
@@ -62,17 +78,13 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
   friend-graph paths (Phase 1 residual, PR #6):** persistence throws, so a failed durable write
   propagates and the ack is skipped (`SPEC.md` §0.9 rule 3). **NOT fixed for MODEL_SYNC — see the
   next entry, which is still live.**
-- **MODEL_SYNC is acked before it is durably persisted, and this is knowingly accepted — do not
-  "fix" it here.** `routeMessage`'s `.modelSync` case calls `_ = await syncManager.handleIncoming(…)`,
-  which is non-throwing, and every layer beneath swallows write errors: `SyncManager.handleIncoming`
-  → `Model.handleSync` → `GSet.merge` / `LWWMap.merge` → `ModelStore.put`, still `try? await
-  db.write` (five sites in `ModelStore.swift`). A MODEL_SYNC whose write fails is acked, and an ack
-  is a DELETE. This is not a corner case: MODEL_SYNC carries every `directMessage`, `pix` and `story`
-  the app sends. Closing it means plumbing `throws` through the ORM and CRDT engine that Phase 3
-  **deletes** — hardening deletion-bound code, which is the failure mode `SPEC.md` §0.8 exists to
-  stop. The decision, its cost, and the narrow fallback if Phase 3 slips are recorded in
-  [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md), Phase 1 status block (2026-07-24). Phase 3
-  resolves it by construction — verify it does when the deletion lands.
+- ~~**MODEL_SYNC is acked before it is durably persisted**~~ — **RESOLVED BY CONSTRUCTION (Phase 3).**
+  The five `try? await db.write` sites that swallowed the error were inside `ModelStore.swift`, which
+  no longer exists. A MODEL_SYNC now takes exactly one durable write — `inbox.put`, which `throws` —
+  and `routeMessage` propagates it, so a failed write skips the ack and the server redelivers
+  (`SPEC.md` §0.9 rule 3). This was accepted knowingly for the duration of §10 steps 1–3 rather than
+  hardening deletion-bound code (§0.8); the decision and its cost are in
+  [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md), Phase 1 status block (2026-07-24).
 
 > **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
 > porting target and not a normative implementation. This file used to list its source files as

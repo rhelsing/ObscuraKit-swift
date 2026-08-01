@@ -41,19 +41,21 @@ public struct ReceivedMessage: Sendable {
     public let model: String?
 }
 
-/// Result of `processPendingMessages(timeout:)` — counts of envelopes drained, by ORM model.
+/// Result of `processPendingMessages(timeout:)` — counts of envelopes drained, keyed by model.
 /// The bridge uses these to pick generic notification text. `otherCount` is debug-only; the
 /// bridge ignores it.
 ///
 /// - Warning: This type hard-codes the application's model names (`"pix"`, `"directMessage"`)
 ///   in `classifyForPushCounts`, which the kit boundary forbids — a kit must treat a model name
-///   as an opaque key (obscura-proto `SPEC.md` §0.4). Being replaced by counts keyed on the
-///   opaque model name, with notification copy supplied by the app.
+///   as an opaque key (obscura-proto `SPEC.md` §0.4). The fix is counts keyed on the opaque model
+///   name, with notification copy supplied by the app; it is a follow-up because it changes the
+///   bridge contract on both platforms at once, and it is deliberately NOT bundled with the ORM
+///   deletion, which changes no bridge-facing type.
 ///
-///   It also previously claimed "shape is identical to Kotlin's `ProcessedCounts`, so both
-///   platforms implement the same notification logic." That is **no longer true** — Kotlin
-///   moved to a generic `modelCounts` map. The claim was left in place while it was false,
-///   which is exactly the failure mode the reset exists to stop.
+///   A previous version of this warning claimed Kotlin had already "moved to a generic
+///   `modelCounts` map", making the two kits divergent. **That was false when written and is false
+///   now** — `ObscuraKit-Kotlin`'s `ProcessedCounts` still carries the same three Ints and the same
+///   two hard-coded names. Both kits are wrong in the same way, which is the only good news here.
 public struct ProcessedCounts: Sendable {
     public let pixCount: Int
     public let messageCount: Int
@@ -81,24 +83,21 @@ public class ObscuraClient {
     public let devices: DeviceActor
     public let gateway: GatewayConnection
 
-    /// The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API.
+    /// The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API, and now the
+    /// only place an inbound MODEL_SYNC lands.
     ///
-    /// **Runs ALONGSIDE the ORM on purpose, and that is a migration step, not a design.** §10 orders
-    /// the reset so the deletion comes last: both kits gain `inbox` before obscura-pix switches to
-    /// it, and only then is the old surface removed. Deleting first would break pix on both platforms
-    /// — the kits are consumed from source with no published-version buffer — for the whole duration
-    /// of the port, with no way to tell a real regression from expected breakage.
-    ///
-    /// The cost of that ordering is that a MODEL_SYNC is currently persisted **twice**: once as a
-    /// model entry by the ORM, and once as an inbox row here. Deliberate and temporary; it ends at
-    /// §10 step 4, when the ORM comes out.
+    /// It ran ALONGSIDE the ORM through §10 steps 2–3, so that obscura-pix had somewhere to move to
+    /// before the old surface went away; the cost was that every MODEL_SYNC was persisted twice, once
+    /// as a model entry and once as an inbox row. §10 step 4 ended that — the ORM is gone and the
+    /// double write with it.
     public let inbox: InboxStore
 
     /// Raw storage for application entries (`obscura-proto/KIT_API.md` §8.1) — the other half of the
     /// thin kit's app-facing surface. `inbox` is how messages arrive; this is where the app keeps
     /// what it made of them.
     ///
-    /// Deliberately NOT the ORM: that is the engine being deleted. This is the table being kept.
+    /// It stores and returns rows. It does not merge them, expire them, or decide who they go to —
+    /// the app owns all three (`obscura-proto/SPEC.md` §0.4).
     public let entries: EntryStore
 
     // Messenger is initialized after register/login with real keys
@@ -189,11 +188,6 @@ public class ObscuraClient {
     /// Buffered message queue for waitForMessage
     private var messageQueue: [ReceivedMessage] = []
     // messageWaiters removed — waitForMessage now polls messageQueue directly
-
-    /// ORM sync manager — routes MODEL_SYNC messages to correct model.
-    internal var _ormSyncManager: SyncManager?
-    internal var _ormModels: [String: Model] = [:]
-    internal var _ormTTLManager: TTLManager?
 
     /// Events stream — every received message after routing (multi-observer)
     private var eventContinuations: [AsyncStream<ReceivedMessage>.Continuation] = []
@@ -797,7 +791,7 @@ public class ObscuraClient {
     }
 
     /// Drain queued envelopes after a silent push wake. Connects if needed, waits up to `timeout`
-    /// seconds (returning early when the queue stays empty for 500ms), categorizes by ORM model,
+    /// seconds (returning early when the queue stays empty for 500ms), categorizes by model,
     /// and returns counts. Does NOT disconnect afterwards — the OS will freeze the app when done.
     ///
     /// The bridge layer uses the returned counts to post a generic local notification
@@ -855,8 +849,9 @@ public class ObscuraClient {
     private func classifyForPushCounts(
         _ msg: ReceivedMessage, pix: inout Int, message: inout Int, other: inout Int
     ) {
-        // MODEL_SYNC (type 30) carries the ORM model name — the authoritative categorization.
-        // Legacy TEXT/CONTENT_REFERENCE paths go to `other` since our app uses ORM exclusively.
+        // MODEL_SYNC (type 30) carries the model name straight off the proto — no schema needed,
+        // which is why the push path never depended on the engine that was deleted. Legacy
+        // TEXT/CONTENT_REFERENCE paths go to `other`; the app sends neither.
         if msg.type == "MODEL_SYNC", let clientMsg = try? Obscura_Client_V1_ClientMessage(serializedBytes: msg.rawBytes) {
             switch clientMsg.modelSync.model {
             case "pix":            pix += 1; return
@@ -1269,15 +1264,16 @@ public class ObscuraClient {
         try await sendToAllDevices(friendUserId, msg)
     }
 
-    /// Send a MODEL_SYNC message to a friend. Throws if not friends.
     /// Send an application entry (`obscura-proto/KIT_API.md` §5) — the outbox half of the thin kit,
     /// paired with ``inbox`` on the receive side and ``entries`` for local storage.
     ///
     /// **The caller names the recipients** (SPEC §0.4). The kit fans out to every device of every
     /// listed userId, plus this user's own *other* devices, and makes **no delivery decision of its
     /// own** — no audience resolution, no reading of `payload` to discover who it is for. That is the
-    /// whole difference from ``sendModelSync(to:model:entryId:op:data:)``, which resolves a friend
-    /// and goes with the ORM in §10 step 4.
+    /// whole difference from ``sendModelSync(to:model:entryId:op:data:)``, which sends to exactly one
+    /// friend and refuses a non-friend. Prefer this one; that one is a §0.4 follow-up recorded in
+    /// `CLAUDE.md`, not in the proto — it is a kit-local wart, not part of the contract — and it
+    /// stands only because `EdgeCaseTests` uses it as a one-liner.
     ///
     /// Two properties §5 asks to be proven rather than assumed, both pinned by Kotlin's
     /// `EntrySendTests` and mirrored here:
@@ -1359,14 +1355,14 @@ public class ObscuraClient {
 
     // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
     //
-    // These reach the app through `client.model(name).typing(...)` today, which is the only reason
-    // the app still touches the ORM at all — and `RESET.md` KEEPS signals while deleting the ORM
-    // around them. `ModelSignal.swift` was already keep-forever code that happened to live in
-    // `ORM/`; this is the door that lets it stay after the directory goes.
+    // These used to reach the app through `client.model(name).typing(...)`, which was the last
+    // reason the app touched the ORM at all — and `RESET.md` KEEPS signals while deleting the engine
+    // around them. `ModelSignal.swift` was keep-forever code that happened to live in `ORM/`; these
+    // three methods are the door that let it stay after the directory went (it is now `Wire/`).
     //
     // `modelKey` is opaque, exactly as it is on the inbox and the entry store: it names the app's
-    // conversation namespace and the kit neither parses nor validates it. That is what makes this a
-    // relocation rather than the ORM growing a new entrance.
+    // conversation namespace and the kit neither parses nor validates it. That is what made this a
+    // relocation rather than a new entrance to the engine.
 
     /// Announce that this user is typing in a conversation.
     ///
@@ -1414,9 +1410,9 @@ public class ObscuraClient {
         msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
         guard let msgData = try? msg.serializedData() else { return }
 
-        // The same fail-CLOSED audience rule the ORM path uses: a contextId that does not name
-        // exactly two participants sends NOTHING. Dropping an ephemeral typing indicator costs
-        // nothing; guessing its audience leaks the conversation.
+        // Fail CLOSED: a contextId that does not name exactly two participants sends NOTHING.
+        // Dropping an ephemeral typing indicator costs nothing; guessing its audience leaks the
+        // conversation.
         let participants = conversationId.split(separator: "_").map(String.init).filter { !$0.isEmpty }
         guard participants.count == 2 else {
             logger.log("signal dropped: contextId is not a canonical two-party value — refusing to broadcast a 1:1 signal")
@@ -1440,95 +1436,6 @@ public class ObscuraClient {
         var msg = Obscura_Client_V1_ClientMessage()
         msg.modelSync = sync
         try await sendToAllDevices(friendUserId, msg)
-    }
-
-    /// SyncManager-friendly overload with all fields.
-    public func sendModelSync(to friendUserId: String? = nil, toSelf: Bool = false, model: String, entryId: String, op: String = "CREATE", data: Data, timestamp: UInt64 = 0, authorDeviceId: String = "", signature: Data = Data()) async throws {
-        var sync = Obscura_Client_V1_ModelSync()
-        sync.model = model
-        sync.id = entryId
-        sync.op = WireCodec.encodeOp(op)
-        sync.timestamp = timestamp != 0 ? timestamp : UInt64(Date().timeIntervalSince1970 * 1000)
-        sync.data = data
-        sync.authorDeviceID = authorDeviceId.isEmpty ? (deviceId ?? "") : authorDeviceId
-
-        var msg = Obscura_Client_V1_ClientMessage()
-        msg.modelSync = sync
-
-        if let targetUserId = friendUserId {
-            guard await friends.isFriend(targetUserId) else { throw ObscuraError.notFriends(targetUserId) }
-            try await sendToAllDevices(targetUserId, msg)
-        }
-
-        if toSelf {
-            // Self-sync: send to all own devices except this one
-            let messenger = try requireMessenger()
-            guard let uid = userId else { throw ObscuraError.notAuthenticated }
-            let ownDevices = await devices.getOwnDevices()
-            let msgData = try msg.serializedData()
-
-            for device in ownDevices where device.deviceId != self.deviceId {
-                do {
-                    try await messenger.queueMessage(targetDeviceId: device.deviceId, clientMessageData: msgData, targetUserId: uid)
-                } catch {
-                    logger.log("self-sync failed for device \(device.deviceId): \(error)")
-                }
-            }
-            if !ownDevices.filter({ $0.deviceId != self.deviceId }).isEmpty {
-                _ = try await messenger.flushMessages()
-            }
-        }
-    }
-
-    // MARK: - ORM Schema
-
-    /// Define ORM models. Call once after login, before connect.
-    /// Attaches models to client as `client.model("story")` etc.
-    public func schema(_ definitions: [ModelDefinition]) {
-        let store: ModelStore
-        if let db = sharedDb {
-            store = (try? ModelStore(db: db)) ?? (try! ModelStore())
-        } else {
-            store = (try? ModelStore()) ?? (try! ModelStore())
-        }
-
-        let syncManager = SyncManager(client: self)
-        let ttlManager = TTLManager(store: store)
-
-        for def in definitions {
-            let model = Model(name: def.name, definition: def, store: store)
-            model.deviceId = self.deviceId ?? ""
-            model.username = self.username ?? ""
-            model.ttlManager = ttlManager
-            syncManager.register(def.name, model)
-            _ormModels[def.name] = model
-        }
-
-        ttlManager.setModelResolver { [weak self] name in self?._ormModels[name] }
-        _ormSyncManager = syncManager
-        _ormTTLManager = ttlManager
-    }
-
-    /// Define models from typed SyncModel types. Call once after auth, like a Rails migration.
-    ///
-    /// ```swift
-    /// client.defineModels(DirectMessage.self, Story.self, Profile.self, AppSettings.self)
-    /// ```
-    public func defineModels(_ types: any SyncModel.Type...) {
-        let definitions = types.map { type in
-            ModelDefinition(
-                name: type.modelName,
-                sync: type.sync,
-                syncScope: type.scope,
-                ttl: type.ttl
-            )
-        }
-        schema(definitions)
-    }
-
-    /// Access a registered ORM model by name.
-    public func model(_ name: String) -> Model? {
-        _ormModels[name]
     }
 
     // MARK: - Query Helpers
@@ -1603,95 +1510,6 @@ public class ObscuraClient {
         }
     }
 
-    /// Parse schema JSON from JS and define ORM models. Caches for cold start.
-    public func defineModelsFromJson(_ jsonString: String) throws {
-        guard let data = jsonString.data(using: .utf8),
-              let schema = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else {
-            throw ObscuraError.provisionFailed("Invalid schema JSON")
-        }
-
-        var definitions: [ModelDefinition] = []
-        for (name, config) in schema {
-            let syncStr = config["sync"] as? String ?? "gset"
-            let sync: SyncStrategy
-            switch syncStr {
-            case "gset": sync = .gset
-            case "lww": sync = .lwwMap
-            default: throw ObscuraError.invalidSchema("Unknown sync strategy '\(syncStr)' for model '\(name)' (expected 'gset' or 'lww')")
-            }
-
-            // `audience` declares delivery scope (mirrors the shared schema.ts / Kotlin Audience,
-            // obscura-proto SPEC §1):
-            //   self                    → own devices only (.ownDevices)
-            //   recipient/conversation  → 1:1, fail-loud, never broadcast (.direct)
-            //   friends/absent          → all accepted friends (.friends)
-            var scope: SyncScope = .friends
-            var isPrivate = false
-            if let audienceObj = config["audience"] as? [String: Any] {
-                let kind = audienceObj["kind"] as? String ?? "friends"
-                switch kind {
-                case "friends":
-                    scope = .friends
-                case "self":
-                    scope = .ownDevices
-                    isPrivate = true
-                case "recipient", "conversation":
-                    guard let field = audienceObj["field"] as? String, !field.isEmpty else {
-                        throw ObscuraError.invalidSchema("audience '\(kind)' requires a non-empty 'field' for model '\(name)'")
-                    }
-                    // NOTE (transitional): SyncManager.resolveTargets still resolves the 1:1
-                    // recipient by field-sniffing recipientUsername / conversationId rather than
-                    // reading this declared `field` name. Honoring `field` is the remaining step to
-                    // full config-driven parity with Kotlin. The scope below already guarantees
-                    // fail-loud (never-broadcast) routing regardless.
-                    _ = field
-                    scope = .direct
-                default:
-                    throw ObscuraError.invalidSchema("Unknown audience kind '\(kind)' for model '\(name)'")
-                }
-            }
-
-            var ttl: TTL? = nil
-            if let ttlStr = config["ttl"] as? String {
-                ttl = parseTTLString(ttlStr)
-            }
-
-            var fields: [String: FieldType] = [:]
-            if let fieldMap = config["fields"] as? [String: String] {
-                for (fieldName, fieldType) in fieldMap {
-                    switch fieldType {
-                    case "string": fields[fieldName] = .string
-                    case "number": fields[fieldName] = .number
-                    case "boolean": fields[fieldName] = .boolean
-                    case "string?": fields[fieldName] = .optionalString
-                    case "number?": fields[fieldName] = .optionalNumber
-                    case "boolean?": fields[fieldName] = .optionalBoolean
-                    default: throw ObscuraError.invalidSchema("Field '\(fieldName)' has unknown type '\(fieldType)' in model '\(name)'")
-                    }
-                }
-            }
-
-            definitions.append(ModelDefinition(name: name, sync: sync, syncScope: scope, ttl: ttl, fields: fields, isPrivate: isPrivate))
-        }
-
-        self.schema(definitions)
-
-        // Cache for cold start
-        sessionStorage?.save(["cachedSchema": jsonString])
-        logger.log("models defined from JSON (\(definitions.count) models)")
-    }
-
-    private func parseTTLString(_ str: String) -> TTL? {
-        guard str.count >= 2, let value = Int(str.dropLast()) else { return nil }
-        switch str.last {
-        case "s": return .seconds(value)
-        case "m": return .minutes(value)
-        case "h": return .hours(value)
-        case "d": return .days(value)
-        default: return nil
-        }
-    }
-
     /// Decode a friend code and send a friend request.
     public func addFriendByCode(_ code: String) async throws {
         let cleaned = code.replacingOccurrences(of: "\u{00AD}", with: "")
@@ -1729,9 +1547,6 @@ public class ObscuraClient {
         _messenger = nil
         _connectionState = .disconnected
         _authState = .loggedOut
-        _ormModels.removeAll()
-        _ormSyncManager = nil
-        _ormTTLManager = nil
         messageQueue.removeAll()
 
         // Clear persisted session
@@ -1751,14 +1566,14 @@ public class ObscuraClient {
             "username": username ?? "",
             "registrationId": registrationId ?? 0,
         ]
-        // Include cached schema if available
-        if let existing = sessionStorage?.load(), let cached = existing["cachedSchema"] as? String {
-            data["cachedSchema"] = cached
-        }
         sessionStorage?.save(data)
     }
 
-    /// Restore session from storage, define cached models, connect.
+    /// Restore session from storage and connect.
+    ///
+    /// It used to also re-define models from a `cachedSchema` slot, which is gone with the schema
+    /// parser — the kit no longer knows what an application model *is* (SPEC §0.4), so there is
+    /// nothing to cache and nothing to restore. The app owns its own schema across a cold start.
     public func restorePersistedSession() async throws {
         guard let storage = sessionStorage, let saved = storage.load(),
               let token = saved["token"] as? String, !token.isEmpty,
@@ -1775,11 +1590,6 @@ public class ObscuraClient {
             username: saved["username"] as? String,
             registrationId: regId
         )
-
-        // Define models from cached schema
-        if let cachedSchema = saved["cachedSchema"] as? String {
-            try? defineModelsFromJson(cachedSchema)
-        }
 
         // Refresh token and connect
         let fresh = await ensureFreshToken()
@@ -2123,15 +1933,11 @@ public class ObscuraClient {
         case .inboxed:
             try await inboxMessage(msg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
                                    envelopeId: envelopeId)
-            // MODEL_SYNC continues to the ORM as well — see `inboxMessage`. Everything else that is
-            // inboxed (an unknown arm, an attachment reference) has no further handling by design.
-            //
-            // The ORM continuation below MUST NOT be able to block the ack. It is non-throwing today
-            // (the knowingly-accepted MODEL_SYNC swallow in CLAUDE.md), so this is currently a
-            // statement of intent rather than a guard — but Kotlin's equivalent DID gate the ack and
-            // became a remote wedge, so the boundary is written down on both sides. `inbox.put`
-            // returning is what §3.3 rule 1 gates the ack on; a temporary parallel write into an
-            // engine being deleted is not.
+            // The inbox row IS the delivery, and it has committed — §3.3 rule 1 gates the ack on
+            // exactly that and on nothing else. MODEL_SYNC used to continue into the ORM from here;
+            // that parallel write is gone with the engine, and the one thing below it that was never
+            // the ORM's — clearing typing indicators, because a real message just arrived — is all
+            // that falls through now.
             if case .modelSync? = msg.payload {} else { return }
 
         case .unimplemented:
@@ -2230,22 +2036,10 @@ public class ObscuraClient {
             }
 
         case .modelSync?:
-            // Clear all typing indicators — a real message arrived
+            // Clear all typing indicators — a real message arrived. The entry itself is already in
+            // the inbox (see `.inboxed` above); this case exists only for the signal side effect.
             await SignalStoreRegistry.shared.store.clearAll()
             SignalStoreRegistry.shared.notifyObservers()
-
-            if let syncManager = _ormSyncManager {
-                let syncMsg = ModelSyncMessage(
-                    model: msg.modelSync.model,
-                    id: msg.modelSync.id,
-                    op: WireCodec.decodeOp(msg.modelSync.op),
-                    timestamp: msg.modelSync.timestamp,
-                    data: msg.modelSync.data,
-                    signature: Data(),
-                    authorDeviceId: msg.modelSync.authorDeviceID
-                )
-                _ = await syncManager.handleIncoming(syncMsg, sourceUserId: sourceUserId)
-            }
 
         case .modelSignal?:
             // Ephemeral signal — typed payload; identity comes from the authenticated
@@ -2341,9 +2135,9 @@ public class ObscuraClient {
     /// and the message stays on the server — which is the whole point of persist-then-ack and the
     /// reason this is not an event stream.
     ///
-    /// For MODEL_SYNC the caller then continues into the ORM path as well. **Both, during §10 steps
-    /// 2–3**: the ORM still owns what obscura-pix reads, so skipping it would break the app long
-    /// before it has anywhere else to read from.
+    /// This is now the *only* durable write on the receive path for an application entry. Through
+    /// §10 steps 2–3 the caller also continued into the ORM, because the ORM still owned what
+    /// obscura-pix read; step 4 removed the second write and the engine under it.
     private func inboxMessage(
         _ msg: Obscura_Client_V1_ClientMessage,
         sourceUserId: String,
@@ -2374,8 +2168,8 @@ public class ObscuraClient {
                 modelKey: isModelSync ? sync.model : nil,
                 entryId: isModelSync ? sync.id : nil,
                 // `WireCodec.decodeOp`, not the raw enum: the inbox is read by the app across a
-                // bridge, so this must be the app-facing CREATE/UPDATE/DELETE that §3.1 specifies
-                // and that the ORM path already emits. Interpolating the generated enum would give
+                // bridge, so this must be the app-facing CREATE/UPDATE/DELETE that §3.1 specifies.
+                // Interpolating the generated enum would give
                 // Swift's `opCreate` against Kotlin's `OP_CREATE` — one wire, two spellings.
                 op: isModelSync ? WireCodec.decodeOp(sync.op) : nil,
                 sentAt: isModelSync ? clampFutureTimestamp(sync.timestamp) : nil,
@@ -2620,6 +2414,16 @@ public class ObscuraClient {
         case timeout
         case notFriends(String)
         case deviceLinkFailed(String)
+        /// Dead since §10 step 4 — nothing in this kit throws either one.
+        ///
+        /// `invalidSchema` belonged to `defineModelsFromJson`, and `directRoutingUnresolved` to the
+        /// routing engine; both are deleted. `DIRECT_ROUTING_UNRESOLVED` is now raised **app-side**
+        /// by `obscura-pix/src/domain/audience.ts`, which is exactly where §0.4 puts it.
+        ///
+        /// They stay for now because `ObscuraKit-Kotlin`'s `ObscuraError` carries the same two codes
+        /// and the bridge contract is shared: removing them from one kit only would make the two
+        /// diverge on a JS-visible surface. Delete them together, with the rest of the Kotlin
+        /// storage residue.
         case invalidSchema(String)
         case directRoutingUnresolved(String)
         /// A `send` reached none of its named recipients. Distinct from a PARTIAL failure, which is

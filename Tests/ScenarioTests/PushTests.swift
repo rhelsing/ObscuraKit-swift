@@ -42,47 +42,35 @@ final class PushTests: XCTestCase {
     func testProcessPendingMessagesCategorizes() async throws {
         let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
-        // Both must define the same ORM schema so sync decoding works
-        let pixDef = ModelDefinition(
-            name: "pix",
-            sync: .lwwMap,
-            syncScope: .friends,
-            fields: ["recipientUsername": .string, "senderUsername": .string, "mediaRef": .string]
-        )
-        let dmDef = ModelDefinition(
-            name: "directMessage",
-            sync: .gset,
-            syncScope: .friends,
-            fields: ["conversationId": .string, "content": .string, "senderUsername": .string]
-        )
-        alice.client.schema([pixDef, dmDef])
-        bob.client.schema([pixDef, dmDef])
+        // No schema is defined, and none is needed: `classifyForPushCounts` reads
+        // `ModelSync.model` straight off the proto, so the push path never depended on the engine
+        // that was deleted. This test used to call `client.schema(...)` on both sides first.
 
         // Bob goes offline — simulates app in background/killed
         bob.disconnectWebSocket()
         try await Task.sleep(nanoseconds: 500_000_000)
 
-        // Alice sends 2 pix + 1 directMessage while Bob is offline
-        let alicePix = alice.client.model("pix")!
-        let aliceDM = alice.client.model("directMessage")!
-
-        _ = try await alicePix.create([
-            "recipientUsername": bob.username,
-            "senderUsername": alice.username,
-            "mediaRef": "fake-attachment-1"
-        ])
-        await rateLimitDelay()
-        _ = try await alicePix.create([
-            "recipientUsername": bob.username,
-            "senderUsername": alice.username,
-            "mediaRef": "fake-attachment-2"
-        ])
-        await rateLimitDelay()
-        _ = try await aliceDM.create([
-            "conversationId": [alice.userId!, bob.userId!].sorted().joined(separator: ":"),
-            "content": "hello",
-            "senderUsername": alice.username
-        ])
+        // Alice sends 2 pix + 1 directMessage while Bob is offline. The APP names the recipients
+        // now (SPEC §0.4) — `send` resolves no audience of its own.
+        let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
+        for i in 1...2 {
+            try await alice.client.send(
+                to: [bob.userId!], modelKey: "pix", entryId: "pix_\(i)",
+                payload: try JSONSerialization.data(withJSONObject: [
+                    "conversationId": convId,
+                    "recipientUsername": bob.username,
+                    "senderUsername": alice.username,
+                    "mediaRef": "fake-attachment-\(i)",
+                ]))
+            await rateLimitDelay()
+        }
+        try await alice.client.send(
+            to: [bob.userId!], modelKey: "directMessage", entryId: "dm_1",
+            payload: try JSONSerialization.data(withJSONObject: [
+                "conversationId": convId,
+                "content": "hello",
+                "senderUsername": alice.username,
+            ]))
         await rateLimitDelay()
 
         // Server queues envelopes. Bob calls processPendingMessages — simulates silent push wake.
@@ -90,7 +78,7 @@ final class PushTests: XCTestCase {
 
         XCTAssertEqual(counts.pixCount, 2, "Should have drained 2 pix envelopes")
         XCTAssertEqual(counts.messageCount, 1, "Should have drained 1 directMessage envelope")
-        XCTAssertEqual(counts.otherCount, 0, "No non-ORM envelopes expected in this scenario")
+        XCTAssertEqual(counts.otherCount, 0, "No other envelopes expected in this scenario")
 
         // Kit must NOT have disconnected — OS will freeze the app when done
         XCTAssertEqual(bob.client.connectionState, ConnectionState.connected)

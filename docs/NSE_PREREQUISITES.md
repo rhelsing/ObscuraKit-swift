@@ -61,7 +61,7 @@ declaring it done would be exactly the failure mode this project has been unpick
 
 - **`DatabaseQueue` → `DatabaseWriter`/`DatabasePool` + WAL.** Two processes on one SQLite file need
   WAL and pool semantics. Deferred because `DatabaseQueue` appears in the type signature of every
-  store (`DeviceStore`, `SignalStore`, `MessageStore`, `FriendStore`, `ModelStore`), so it is a
+  store (`DeviceActor`, `FriendActor`, `MessageActor`, `PersistentSignalStore`, `InboxStore`, `EntryStore`), so it is a
   cross-cutting type change whose only verification from Linux is a ~20-minute CI round trip, and
   whose value does not materialise until a second process actually exists. Do it with the NSE, on a
   machine that can run it.
