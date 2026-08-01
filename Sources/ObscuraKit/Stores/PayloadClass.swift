@@ -27,9 +27,10 @@ enum PayloadClass: Equatable {
     /// handler. If unimplemented kit work landed in the inbox, the inbox would become the place it
     /// goes to be forgotten, and §4's classification would stop meaning anything.
     ///
-    /// Each has a recorded resolution in §4.2: four are Phase 3 deletions, and
-    /// `DEVICE_RECOVERY_ANNOUNCE` is a deliberate deferral — it cannot fire, because
-    /// `enableRecoveryPhrase` defaults to false and obscura-pix ships no recovery UI.
+    /// Each has a recorded resolution in §4.2. Note that "unimplemented" is about the RECEIVE side
+    /// only — `DEVICE_RECOVERY_ANNOUNCE` has a live public sender in this kit
+    /// (`ObscuraClient.announceRecovery`) and no handler at all, which is a real gap and not merely
+    /// an unused arm.
     case unimplemented
 }
 
@@ -57,7 +58,7 @@ func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> Payl
         return .inboxed
 
     // Kit-owned state, all with live handlers in `ObscuraClient.routeMessage`.
-    case .friendRequest?, .friendResponse?, .friendSync?,
+    case .friendRequest?, .friendResponse?,
          .deviceAnnounce?, .sessionReset?, .syncBlob?, .sentSync?:
         return .kitInternal
 
@@ -99,10 +100,30 @@ func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> Payl
     case .contentReference?, .chunkedContentReference?:
         return .inboxed
 
-    // Classified, unimplemented — see the enum case. Not inbox fodder. None has a live sender:
-    // `deviceRecoveryAnnounce` is gated behind a default-off flag and the rest have no sender
-    // anywhere (§4.3).
-    case .deviceRecoveryAnnounce?, .historyChunk?, .syncRequest?,
+    // Classified, unimplemented on RECEIVE — see the enum case. Not inbox fodder.
+    //
+    // This comment used to claim none of these has a live sender and that `deviceRecoveryAnnounce`
+    // is "gated behind a default-off flag". Both were false of THIS kit. There is no
+    // `enableRecoveryPhrase` anywhere in the Swift source — that config flag exists only in
+    // ObscuraKit-Kotlin — and `ObscuraClient.announceRecovery(_:)` is a live public sender with no
+    // gate in front of it. `SYNC_REQUEST` no longer has one: `requestSync()` is deleted, because it
+    // sent a message both kits classify unimplemented and drop.
+    //
+    // `FRIEND_SYNC` joins them, and it is a DELETION rather than an omission. Both halves of the arm
+    // are gone from this kit. `FriendSync` carries no `user_id`, so `routeMessage` keyed the friend
+    // it created on `sourceUserId` — which the self-guard directly above it had just proven is OUR
+    // OWN userId. It put the user in their own friends list, hence into `getAccepted()`, hence into
+    // the fan-out of `announceDevices()` and `announceRecovery()`; `remove` removed self. The
+    // sender's `sendFriendSync(userId:)` parameter was bound and never referenced, which is the same
+    // fact seen from the other end. obscura-pix never references FRIEND_SYNC.
+    //
+    // It lands here rather than in `.kitInternal` for the same reason `.deviceLinkApproval` does: a
+    // `.kitInternal` arm with no handler THROWS, and an inbound FRIEND_SYNC from a peer kit that
+    // still sends one would then never ack, redeliver forever, and push the recipient's real mail
+    // off the back of a server queue that caps at 1000 and evicts oldest-first. Dropped and acked,
+    // loudly, is the safe shape for an arm somebody else may still send.
+    case .friendSync?,
+         .deviceRecoveryAnnounce?, .historyChunk?, .syncRequest?,
          .settingsSync?, .readSync?:
         return .unimplemented
 

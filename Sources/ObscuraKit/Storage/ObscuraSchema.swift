@@ -276,7 +276,7 @@ public enum ObscuraSchema {
 
         // ── v2: the ORM comes out ────────────────────────────────────────────────────────
         //
-        // `obscura-proto/RESET.md` §10 step 4, Swift half. The engine (`ORM/`) is deleted in the
+        // `obscura-proto/KIT_API.md` §10 step 4, Swift half. The engine (`ORM/`) is deleted in the
         // same change; this is the storage it leaves behind.
         //
         // **`model_entries` is NOT dropped, and that distinction is the whole migration.** It is

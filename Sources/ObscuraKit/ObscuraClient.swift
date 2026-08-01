@@ -257,9 +257,6 @@ public class ObscuraClient {
     // Token refresh buffer — refresh if expiring within this many seconds
     private static let tokenExpiryBufferSeconds: Double = 60
 
-    // XEdDSA empty signature placeholder size (bytes)
-    private static let emptySignatureSize = 64
-
     // MARK: - Init
 
     /// The shared database — nil for in-memory (tests), file-backed for production.
@@ -338,6 +335,7 @@ public class ObscuraClient {
     deinit {
         envelopeTask?.cancel()
         tokenRefreshTask?.cancel()
+        removeForegroundObserver()
         gateway.disconnectSync()
     }
 
@@ -748,11 +746,25 @@ public class ObscuraClient {
         startForegroundObserver()
     }
 
+    #if os(iOS)
+    /// The one foreground observer's removal token. Held so teardown can remove it.
+    private var foregroundObserver: NSObjectProtocol?
+    #endif
+
     /// Re-check connection when app returns to foreground.
     /// Matches JS client's visibilitychange handler.
+    ///
+    /// **Registered exactly once, and removed on teardown.** It used to be re-registered by every
+    /// `connect()` with the token discarded, so nothing could ever remove it — not `deinit`, not
+    /// `disconnect()`, not `fullLogout()`. After N reconnects a single foreground event fired N
+    /// concurrent `connect()` calls, each of which leaked another socket and added another observer.
+    /// One registration is all there ever was to want: the observer is about the app's lifecycle, not
+    /// about any one connection, and it already re-checks `shouldReconnect` and the connection state
+    /// before doing anything.
     private func startForegroundObserver() {
         #if os(iOS)
-        NotificationCenter.default.addObserver(
+        guard foregroundObserver == nil else { return }
+        foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
@@ -768,9 +780,20 @@ public class ObscuraClient {
         #endif
     }
 
+    /// Balance ``startForegroundObserver()``. Idempotent.
+    private func removeForegroundObserver() {
+        #if os(iOS)
+        if let token = foregroundObserver {
+            NotificationCenter.default.removeObserver(token)
+            foregroundObserver = nil
+        }
+        #endif
+    }
+
     /// Intentional disconnect — stops reconnection.
     public func disconnect() {
         shouldReconnect = false
+        removeForegroundObserver()
         envelopeTask?.cancel()
         envelopeTask = nil
         tokenRefreshTask?.cancel()
@@ -917,6 +940,12 @@ public class ObscuraClient {
     }
 
     /// Send a friend request. Stores the target with their username so the UI can display it.
+    ///
+    /// - Note: **This no longer FRIEND_SYNCs the change to the user's own other devices**, because
+    ///   the FRIEND_SYNC arm is gone from both halves of this kit (see `routeMessage`). The
+    ///   functional consequence, recorded rather than discovered later: a second device does not
+    ///   learn about friends added *after* it was linked. It still gets the whole friend graph at
+    ///   link time, in `DEVICE_LINK_APPROVAL`'s `friends_export`.
     public func befriend(_ targetUserId: String, username targetUsername: String) async throws {
         _ = try requireMessenger()
 
@@ -926,11 +955,11 @@ public class ObscuraClient {
 
         try await sendToAllDevices(targetUserId, msg)
         try await friends.add(targetUserId, targetUsername, status: .pendingSent)
-
-        try await sendFriendSync(username: targetUsername, action: "add", status: "pending_sent", userId: targetUserId)
     }
 
     /// Accept a friend request. Updates status to accepted.
+    ///
+    /// - Note: no FRIEND_SYNC to own devices — see ``befriend(_:username:)``.
     public func acceptFriend(_ targetUserId: String, username targetUsername: String) async throws {
         _ = try requireMessenger()
 
@@ -941,8 +970,6 @@ public class ObscuraClient {
 
         try await sendToAllDevices(targetUserId, msg)
         await friends.updateStatus(targetUserId, .accepted)
-
-        try await sendFriendSync(username: targetUsername, action: "add", status: "accepted", userId: targetUserId)
     }
 
     /// Send a MODEL_SYNC message to a friend (pass pre-serialized ClientMessage data)
@@ -964,8 +991,15 @@ public class ObscuraClient {
         _ = try await messenger.flushMessages()
     }
 
-    /// Announce device list to all friends
-    public func announceDevices(isRevocation: Bool = false, signature: Data = Data()) async throws {
+    /// Announce device list to all friends.
+    ///
+    /// - Note: it had `isRevocation:` and `signature:` parameters, and `revokeDevice` was their only
+    ///   caller. That method signed `remainingIds` plus its own timestamp and then handed the
+    ///   signature to this one, which rebuilds the payload from the UNFILTERED `getOwnDevices()` and
+    ///   stamps its own timestamp — so both signed inputs differed from what was sent and the
+    ///   signature could never verify. It had zero callers and zero tests; it and the two parameters
+    ///   are deleted rather than repaired (see `git log` for the reasoning).
+    public func announceDevices() async throws {
         let ownDevices = await devices.getOwnDevices()
         var announce = Obscura_Client_V1_DeviceAnnounce()
         announce.devices = ownDevices.map { dev in
@@ -975,8 +1009,6 @@ public class ObscuraClient {
             return info
         }
         announce.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        announce.isRevocation = isRevocation
-        announce.signature = signature
 
         var msg = Obscura_Client_V1_ClientMessage()
         msg.deviceAnnounce = announce
@@ -1024,30 +1056,13 @@ public class ObscuraClient {
 
     // MARK: - Device Sync
 
-    /// Ask own devices for state (SYNC_REQUEST).
-    public func requestSync() async throws {
-        let messenger = try requireMessenger()
-        guard let uid = userId else { throw ObscuraError.notAuthenticated }
-        let ownDevices = await devices.getOwnDevices()
-
-        var msg = Obscura_Client_V1_ClientMessage()
-        msg.syncRequest = Obscura_Client_V1_SyncRequest()
-        msg.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        let msgData = try msg.serializedData()
-
-        for device in ownDevices where device.deviceId != self.deviceId {
-            try await messenger.queueMessage(targetDeviceId: device.deviceId, clientMessageData: msgData, targetUserId: uid)
-        }
-        _ = try await messenger.flushMessages()
-    }
-
     /// Send history (friends + messages) as SYNC_BLOB to a specific device.
     public func pushHistoryToDevice(_ targetDeviceId: String) async throws {
         let messenger = try requireMessenger()
         guard let uid = userId else { throw ObscuraError.notAuthenticated }
 
         let friendsData = await friends.getAll()
-        let compressed = SyncBlobExporter.export(friends: friendsData, messages: [])
+        let compressed = SyncBlobExporter.export(friends: friendsData)
 
         var msg = Obscura_Client_V1_ClientMessage()
         msg.syncBlob.compressedData = compressed
@@ -1077,7 +1092,7 @@ public class ObscuraClient {
         let identity = await devices.getIdentity()
         let ownDevices = await devices.getOwnDevices()
         let friendsData = await friends.getAll()
-        let friendsExportData = SyncBlobExporter.export(friends: friendsData, messages: [])
+        let friendsExportData = SyncBlobExporter.export(friends: friendsData)
 
         var approval = Obscura_Client_V1_DeviceLinkApproval()
         if let pk = identity?.p2pPublicKey { approval.p2PPublicKey = pk }
@@ -1155,24 +1170,6 @@ public class ObscuraClient {
         case .invalid(let reason):
             throw ObscuraError.deviceLinkFailed(reason)
         }
-    }
-
-    /// Announce device revocation to a specific friend with remaining device IDs.
-    public func announceDeviceRevocation(to friendUserId: String, remainingDeviceIds: [String]) async throws {
-        var announce = Obscura_Client_V1_DeviceAnnounce()
-        announce.devices = remainingDeviceIds.map { id in
-            var info = Obscura_Client_V1_DeviceInfo()
-            info.deviceID = id
-            info.deviceName = "Device"
-            return info
-        }
-        announce.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        announce.isRevocation = true
-        announce.signature = Data(repeating: 0, count: Self.emptySignatureSize)
-
-        var msg = Obscura_Client_V1_ClientMessage()
-        msg.deviceAnnounce = announce
-        try await sendToAllDevices(friendUserId, msg)
     }
 
     /// Re-provision this device with a new identity key (device takeover).
@@ -1533,6 +1530,7 @@ public class ObscuraClient {
         reconnectTask?.cancel()
         reconnectTask = nil
         shouldReconnect = false
+        removeForegroundObserver()
 
         // Disconnect
         gateway.disconnectSync()
@@ -1605,20 +1603,26 @@ public class ObscuraClient {
 
     // MARK: - Recovery (Optional)
     //
-    // BIP39 recovery is opt-in. If you never call generateRecoveryPhrase(), everything
-    // works without it — device linking, messaging, sync. The only features that require
-    // a recovery phrase are:
-    //   - revokeDevice() — remote device revocation with signed proof
-    //   - announceRecovery() — signed device announcements
-    // Without a recovery phrase, device revocation requires physical access to a linked device.
+    // BIP39 recovery is opt-in. If you never call generateRecoveryPhrase(), everything works
+    // without it — device linking, messaging, sync. The one feature that uses a recovery phrase is
+    // `announceRecovery()`, which signs a DEVICE_RECOVERY_ANNOUNCE with it.
     //
-    // Device announce signature verification is automatic: if the sender has a recovery
-    // public key stored, announcements are verified. If not, they're accepted on trust.
+    // **There is no remote device revocation.** `revokeDevice(_:targetDeviceId:)` used to live here
+    // and was deleted: it signed the FILTERED remaining device list plus its own timestamp, then
+    // called `announceDevices()`, which rebuilds the payload from the UNFILTERED `getOwnDevices()`
+    // (nothing ever called `devices.removeOwnDevice`) and stamps a fresh timestamp — so both signed
+    // inputs differed from what actually went on the wire and no recipient could ever verify it. It
+    // had zero callers, zero tests, and was the only reason `announceDevices` took `isRevocation:`
+    // and `signature:` at all. Revoking a device today means deleting it server-side
+    // (`api.deleteDevice`) from a device you still hold.
+    //
+    // Device announce signature verification is trust-on-first-use: the peer's recovery public key
+    // is pinned from the first DEVICE_ANNOUNCE that carries one and verified against the stored copy
+    // thereafter (see `routeMessage`'s `.deviceAnnounce` arm).
 
     /// Generate a 12-word recovery phrase. Store it securely.
     /// Access via getRecoveryPhrase() which clears the in-memory copy after read.
     private var _recoveryPhrase: String?
-    public var recoveryPublicKey: Data?
 
     /// Read the recovery phrase exactly once, then wipe it from memory.
     public func getRecoveryPhrase() -> String? {
@@ -1627,34 +1631,15 @@ public class ObscuraClient {
         return phrase
     }
 
+    /// Generate a recovery phrase and hold it for exactly one ``getRecoveryPhrase()`` read.
+    ///
+    /// The derived public key is deliberately NOT cached on the client: it is a pure function of the
+    /// phrase (`RecoveryKeys.getPublicKey(from:)`), and the property that used to hold it was written
+    /// here, cleared in `logout()`, and read by nothing.
     public func generateRecoveryPhrase() -> String {
         let phrase = RecoveryKeys.generatePhrase()
         self._recoveryPhrase = phrase
-        self.recoveryPublicKey = RecoveryKeys.getPublicKey(from: phrase)
         return phrase
-    }
-
-    /// Revoke a device — delete from server, purge messages, broadcast signed DeviceAnnounce.
-    public func revokeDevice(_ recoveryPhrase: String, targetDeviceId: String) async throws {
-        try await api.deleteDevice(targetDeviceId)
-        await rateLimitDelay()
-
-        _ = await messages.deleteByAuthorDevice(targetDeviceId)
-
-        // Clean up Signal sessions for revoked device
-        try? persistentSignalStore?.deleteAllSessions(for: targetDeviceId)
-
-        let timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        let remainingDevices = await devices.getOwnDevices().filter { $0.deviceId != targetDeviceId }
-        let remainingIds = remainingDevices.map(\.deviceId)
-
-        let announceData = RecoveryKeys.serializeAnnounceForSigning(
-            deviceIds: remainingIds, timestamp: timestamp, isRevocation: true
-        )
-        let signature = RecoveryKeys.sign(phrase: recoveryPhrase, data: announceData)
-        let recoveryPubKey = RecoveryKeys.getPublicKey(from: recoveryPhrase)
-
-        try await announceDevices(isRevocation: true, signature: signature)
     }
 
     /// Announce recovery to all friends (new device replacing old ones).
@@ -1691,7 +1676,7 @@ public class ObscuraClient {
     /// Upload encrypted backup to server.
     public func uploadBackup() async throws -> String? {
         let friendsData = await friends.getAll()
-        let exportData = SyncBlobExporter.export(friends: friendsData, messages: [])
+        let exportData = SyncBlobExporter.export(friends: friendsData)
         let etag = try await api.uploadBackup(exportData, etag: backupEtag)
         backupEtag = etag
         return etag
@@ -1736,7 +1721,6 @@ public class ObscuraClient {
         username = nil
         deviceId = nil
         _recoveryPhrase = nil
-        recoveryPublicKey = nil
         _messenger = nil
         _authState = .loggedOut
         await api.clearToken()
@@ -1778,8 +1762,7 @@ public class ObscuraClient {
             let targetDeviceId = bundle.deviceId
             try await messenger.queueMessage(targetDeviceId: targetDeviceId, clientMessageData: msgData, targetUserId: targetUserId)
         }
-        let result = try await messenger.flushMessages()
-        _ = result
+        _ = try await messenger.flushMessages()
     }
 
     // MARK: - Internal: Envelope Loop
@@ -1842,10 +1825,24 @@ public class ObscuraClient {
 
             let encMsg = try Obscura_Client_V1_EncryptedMessage(serializedData: raw.message)
             let messageType = encMsg.type == .prekeyMessage ? 1 : 2
-            let plaintext = try await messenger.decrypt(
-                senderUserId: sourceUserId, senderDeviceUuid: senderDeviceId,
-                content: encMsg.content, messageType: messageType
-            )
+
+            // The rate limiter counts DECRYPT failures and nothing else. It used to be incremented
+            // by the outer catch, which covers `routeMessage` — so ten failed durable WRITES from
+            // one sender inside 60s (disk full, a migration not yet applied, a locked database)
+            // tripped the limiter, and every later envelope from that user was dropped at the top of
+            // this function before decrypt, before persist and before ack. A transient local fault
+            // became a per-sender blackout that outlived it.
+            let plaintext: [UInt8]
+            do {
+                plaintext = try await messenger.decrypt(
+                    senderUserId: sourceUserId, senderDeviceUuid: senderDeviceId,
+                    content: encMsg.content, messageType: messageType
+                )
+            } catch {
+                let entry = decryptFailures[sourceUserId] ?? (count: 0, windowStart: Date())
+                decryptFailures[sourceUserId] = (count: entry.count + 1, windowStart: entry.windowStart)
+                throw error
+            }
             let clientMsg = try Obscura_Client_V1_ClientMessage(serializedData: Data(plaintext))
 
             // Route by message type. SPEC §0.9 rule 3+4: decrypt → persist → (notify) → ack.
@@ -1906,8 +1903,8 @@ public class ObscuraClient {
                 logger.ackFailed(envelopeId: raw.id.map { String(format: "%02x", $0) }.joined(), error: "\(error)")
             }
         } catch {
-            let entry = decryptFailures[sourceUserId] ?? (count: 0, windowStart: Date())
-            decryptFailures[sourceUserId] = (count: entry.count + 1, windowStart: entry.windowStart)
+            // No ack — the message stays on the server (SPEC §0.9 rule 3). The rate-limit counter is
+            // NOT touched here; see the inner catch around `decrypt`.
             logger.decryptFailed(sourceUserId: sourceUserId, error: "\(error)")
         }
     }
@@ -1945,8 +1942,9 @@ public class ObscuraClient {
             // preserved deliberately — §4.2 keys the inbox fallback on absence from the
             // classification TABLE, not absence from the handler, or the inbox becomes where
             // unimplemented kit work goes to be forgotten. What changes is that it is no longer
-            // silent. Four of these are Phase 3 deletions; DEVICE_RECOVERY_ANNOUNCE is a deliberate
-            // deferral and cannot currently fire at all.
+            // silent. Two of these CAN fire against this kit today: DEVICE_RECOVERY_ANNOUNCE, whose
+            // sender (`announceRecovery`) is live and ungated here, and FRIEND_SYNC, which this kit
+            // no longer sends but a peer kit may.
             logger.log("RECV UNIMPLEMENTED arm=\(WireCodec.decodeMessageType(msg.payload)) "
                 + "from=\(sourceUserId.prefix(8)) (dropped and acked — see KIT_API.md §4.2)")
             return
@@ -2001,7 +1999,12 @@ public class ObscuraClient {
             let messageData = Message(
                 messageId: "msg_\(UUID().uuidString)",
                 conversationId: sourceUserId,
-                timestamp: msg.timestamp,
+                // CLAMPED, and the clamp is a crash fix before it is an ordering fix. `msg.timestamp`
+                // is peer-supplied proto3 `uint64` and `messages.add` binds it to an INTEGER column;
+                // GRDB binds `UInt64` through the NON-FAILABLE `Int64(self)`, which TRAPS above
+                // `Int64.max`. A trap is not catchable, so `processEnvelope`'s do/catch cannot
+                // contain it — the app dies. Any authenticated user can send a TEXT.
+                timestamp: clampFutureTimestamp(msg.timestamp),
                 content: msg.text.text,
                 isSent: false,
                 // Honest attribution (F4): the sending device's UUID, proven by the session MAC.
@@ -2016,30 +2019,59 @@ public class ObscuraClient {
             }
             let deviceIds = announce.devices.map(\.deviceID)
 
-            // Verify signature against sender's stored recovery public key
-            if let friend = await friends.getFriend(sourceUserId),
-               let recoveryPubKey = friend.recoveryPublicKey, !recoveryPubKey.isEmpty {
-                let payload = RecoveryKeys.serializeAnnounceForSigning(
+            // ── Trust on first use ───────────────────────────────────────────────────────────
+            //
+            // This check was DEAD BY CONSTRUCTION. `friends.recovery_public_key` was read here and
+            // written in exactly no place — neither `FriendActor.add` nor `updateDevices` touched
+            // the column and there was no setter — so the `if let` never fired and every
+            // DEVICE_ANNOUNCE from every sender was accepted unverified. That is what made the
+            // timestamp trap below remotely reachable by anyone who can deliver a message, which is
+            // anyone authenticated: friendship is not required to send.
+            //
+            // The key is now PINNED from the first announce that carries one, and verified against
+            // the STORED copy forever after. Verifying against `announce.recoveryPublicKey` —
+            // the key riding inside the very message being authenticated — would authenticate
+            // nothing at all, since the sender picks both halves; that is the defect the Kotlin kit
+            // has and is fixing separately. `client.proto` describes the field as "for friend to
+            // verify FUTURE revocation signatures": pinned, then used.
+            //
+            // A peer that has never sent a key is still accepted unverified. That is TOFU's
+            // premise, not an oversight — there is nothing to check against until a first key
+            // arrives, and refusing every announce until then would break device fan-out outright.
+            let pinnedKey = await friends.getFriend(sourceUserId)?.recoveryPublicKey
+            if let pinnedKey, !pinnedKey.isEmpty {
+                // Signed over the RAW wire timestamp, not the clamped one — the signature covers
+                // what the sender actually sent.
+                let signedPayload = RecoveryKeys.serializeAnnounceForSigning(
                     deviceIds: deviceIds, timestamp: announce.timestamp, isRevocation: announce.isRevocation
                 )
-                guard RecoveryKeys.verify(publicKey: recoveryPubKey, data: payload, signature: announce.signature) else {
-                    break // Reject unverified announcement
+                guard RecoveryKeys.verify(publicKey: pinnedKey, data: signedPayload,
+                                          signature: announce.signature) else {
+                    logger.log("DEVICE_ANNOUNCE from \(sourceUserId.prefix(8)) does not verify "
+                        + "against the pinned recovery key — rejected")
+                    break
                 }
+            } else if !announce.recoveryPublicKey.isEmpty {
+                try await friends.pinRecoveryPublicKey(sourceUserId, announce.recoveryPublicKey)
+                logger.log("pinned recovery public key for \(sourceUserId.prefix(8)) "
+                    + "from its first DEVICE_ANNOUNCE (trust on first use)")
             }
 
-            try await friends.updateDevices(sourceUserId, devices: deviceInfos, timestamp: announce.timestamp)
-
-            if announce.isRevocation {
-                // Purge messages from revoked devices
-                let currentDeviceIds = Set(deviceInfos.compactMap { $0["deviceId"] })
-                // Would need to know which device was removed to purge its messages
-            }
+            // CLAMPED. Two bugs at one site, both from binding a peer's `uint64` straight into
+            // SQLite. (1) `updateDevices` binds it THREE times and GRDB's `UInt64` binding is the
+            // non-failable `Int64(self)`, so anything above `Int64.max` TRAPS — uncatchable, so the
+            // do/catch in `processEnvelope` cannot save the process. (2) Even below that, a merely
+            // huge value is stored in `devices_updated_at`, and the LWW guard
+            // `WHERE devices_updated_at < ?` is then false forever: that peer's device list can
+            // never be updated again, so one friend with a broken clock permanently freezes their
+            // own fan-out. Clamping to now+60s fixes both.
+            try await friends.updateDevices(sourceUserId, devices: deviceInfos,
+                                            timestamp: clampFutureTimestamp(announce.timestamp))
 
         case .modelSync?:
             // Clear all typing indicators — a real message arrived. The entry itself is already in
             // the inbox (see `.inboxed` above); this case exists only for the signal side effect.
             await SignalStoreRegistry.shared.store.clearAll()
-            SignalStoreRegistry.shared.notifyObservers()
 
         case .modelSignal?:
             // Ephemeral signal — typed payload; identity comes from the authenticated
@@ -2064,7 +2096,6 @@ public class ObscuraClient {
                 } else {
                     await SignalStoreRegistry.shared.store.receive(payload)
                 }
-                SignalStoreRegistry.shared.notifyObservers()
             }
 
         case .syncBlob?:
@@ -2086,28 +2117,26 @@ public class ObscuraClient {
             }
 
         case .sentSync?:
-            // Only accept sent sync from own devices
+            // Only accept sent sync from own devices. Swift has this self-guard and Kotlin does
+            // not — without it any authenticated stranger writes rows into any conversation of
+            // ours, marked `isSent: true`, i.e. attributed to us.
             guard sourceUserId == self.userId else { break }
             let ss = msg.sentSync
             let messageData = Message(
                 messageId: ss.messageID,
                 conversationId: ss.recipientUsername,
-                timestamp: ss.timestamp,
+                // Clamped for the same reason as the TEXT arm: it is bound into an INTEGER column
+                // and GRDB's UInt64 binding traps above Int64.max. "Own device" is not "trusted
+                // clock" — a linked Android device stamps System.currentTimeMillis().
+                timestamp: clampFutureTimestamp(ss.timestamp),
                 content: String(data: ss.content, encoding: .utf8) ?? "",
                 isSent: true
             )
             try await messages.add(ss.recipientUsername, messageData)
 
-        case .friendSync?:
-            // Only accept friend sync from own devices
-            guard sourceUserId == self.userId else { break }
-            let fs = msg.friendSync
-            if fs.action == "add" {
-                let status = FriendStatus(rawValue: fs.status) ?? .pendingSent
-                try await friends.add(sourceUserId, fs.username, status: status)
-            } else if fs.action == "remove" {
-                try await friends.remove(sourceUserId)
-            }
+        // FRIEND_SYNC has no arm here, and deliberately: see `PayloadClass.classify`. It is
+        // classified `.unimplemented`, so it is dropped and acked loudly above and never reaches
+        // this switch.
 
         case .sessionReset?:
             // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we hold with
@@ -2118,11 +2147,17 @@ public class ObscuraClient {
             // A kit-internal arm with no handler must NOT be acked — the ack would destroy the only
             // copy of a message this kit is supposed to own. Kotlin throws here for the same reason.
             //
-            // This is reachable TODAY: `.deviceLinkApproval` is classified kit-internal and this kit
-            // cannot receive one (the divergence recorded in CLAUDE.md). It carries the p2p private
-            // key, the recovery public key, the friends export and the approver's device list — so
-            // logging and returning meant a newly-linked device dropped all of that and acked it
-            // away permanently. Throwing leaves it on the server until the handler exists.
+            // **This is UNREACHABLE today, and the guard is kept anyway.** Every `.kitInternal` and
+            // `.droppable` arm above has an explicit case, and everything else returned before this
+            // switch: `.inboxed` in the first switch, `.unimplemented` likewise. In particular
+            // `.deviceLinkApproval` is classified `.unimplemented`, NOT `.kitInternal`
+            // (`PayloadClass.swift`), so it never arrives here — the comment that used to sit here
+            // said the opposite and named it as the live case.
+            //
+            // What makes the guard worth keeping is what happens when someone adds an arm to
+            // `classify` as `.kitInternal` and forgets the case below: without this, the arm would
+            // fall out of the switch, get acked, and be destroyed silently. Throwing leaves it on
+            // the server until the handler exists.
             throw ObscuraError.provisionFailed(
                 "\(WireCodec.decodeMessageType(msg.payload)) is classified kit-internal but this kit "
                 + "has no handler; refusing to ack it away")
@@ -2189,8 +2224,22 @@ public class ObscuraClient {
 
     /// SPEC §2.4: a peer-supplied timestamp is clamped before it is stored, not after.
     ///
-    /// Without this a peer can set `sentAt` far in the future and win every REPLACE conflict forever
-    /// — the tie-break can only order writes it can compare honestly.
+    /// Two distinct failures, one clamp. Apply it at **every** site that takes a `uint64` off the
+    /// wire and puts it in the database:
+    ///
+    /// 1. **It is a crash fix.** GRDB binds `UInt64` through the NON-FAILABLE `Int64(self)` (see
+    ///    `GRDB/Core/Support/StandardLibrary/StandardLibrary.swift`), so any value above
+    ///    `Int64.max` TRAPS. A Swift trap is not catchable, so `processEnvelope`'s do/catch cannot
+    ///    contain it: the process dies. Any authenticated user can deliver a message — friendship
+    ///    is not required — so this is a remote kill with no privileges. The same bug class was
+    ///    fixed once in `Wire/ModelSignal.swift`; the sweep stopped at that one call site.
+    /// 2. **It is an ordering fix.** Without it a peer sets a timestamp far in the future and wins
+    ///    every LWW/REPLACE conflict forever — a tie-break can only order writes it can compare
+    ///    honestly. On `friends.devices_updated_at` this is permanent: the guard
+    ///    `WHERE devices_updated_at < ?` never passes again.
+    ///
+    /// Clamping toward now rather than rejecting matches what `ModelSignal.receive` does with the
+    /// same untrusted value, and keeps a peer whose clock is a few seconds fast working normally.
     private func clampFutureTimestamp(_ sentAt: UInt64) -> UInt64 {
         min(sentAt, UInt64(Date().timeIntervalSince1970 * 1000) + 60_000)
     }
@@ -2212,7 +2261,6 @@ public class ObscuraClient {
 
     private func sendSentSync(conversationId: String, messageId: String, timestamp: UInt64, content: String) async throws {
         let ownDevices = await devices.getOwnDevices()
-        guard !ownDevices.isEmpty else { return }
 
         var syncMsg = Obscura_Client_V1_ClientMessage()
         var payload = Obscura_Client_V1_SentSync()
@@ -2222,33 +2270,13 @@ public class ObscuraClient {
         payload.content = Data(content.utf8)
         syncMsg.sentSync = payload
 
+        // The only guard that matters: is there another device to sync TO. The `!ownDevices.isEmpty`
+        // check that used to sit above was implied by this one and is gone.
         guard ownDevices.contains(where: { $0.deviceId != self.deviceId }) else { return }
         do {
             try await sendToAllDevices(self.userId!, syncMsg, excludingDeviceId: self.deviceId)
         } catch {
             logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "sentSync: \(error)")
-        }
-    }
-
-    // MARK: - Internal: FRIEND_SYNC
-
-    private func sendFriendSync(username: String, action: String, status: String, userId targetUserId: String) async throws {
-        let ownDevices = await devices.getOwnDevices()
-        guard !ownDevices.isEmpty else { return }
-
-        var syncMsg = Obscura_Client_V1_ClientMessage()
-        var payload = Obscura_Client_V1_FriendSync()
-        payload.username = username
-        payload.action = action
-        payload.status = status
-        payload.timestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        syncMsg.friendSync = payload
-
-        guard ownDevices.contains(where: { $0.deviceId != self.deviceId }) else { return }
-        do {
-            try await sendToAllDevices(self.userId!, syncMsg, excludingDeviceId: self.deviceId)
-        } catch {
-            logger.sessionEstablishFailed(userId: self.userId ?? "unknown", error: "friendSync: \(error)")
         }
     }
 
@@ -2405,27 +2433,21 @@ public class ObscuraClient {
         return "\(hex[i..<hex.index(i, offsetBy: 8)])-\(hex[hex.index(i, offsetBy: 8)..<hex.index(i, offsetBy: 12)])-\(hex[hex.index(i, offsetBy: 12)..<hex.index(i, offsetBy: 16)])-\(hex[hex.index(i, offsetBy: 16)..<hex.index(i, offsetBy: 20)])-\(hex[hex.index(i, offsetBy: 20)..<hex.index(i, offsetBy: 32)])"
     }
 
+    /// Errors this kit actually throws. Four cases were deleted because nothing threw them:
+    /// `missingToken`, `noMessage`, and — since §10 step 4 removed the schema parser and the routing
+    /// engine — `invalidSchema` and `directRoutingUnresolved`.
+    ///
+    /// The last two were **also** dead in `ObscuraKit-Kotlin` and are exposed to JS through the
+    /// bridge's error union, so they must be deleted there and in
+    /// `obscura-pix/src/native/ObscuraModule.ts` too. `DIRECT_ROUTING_UNRESOLVED` is raised app-side
+    /// now, by `obscura-pix/src/domain/audience.ts`, which is exactly where SPEC §0.4 puts it.
     public enum ObscuraError: Error, LocalizedError {
-        case missingToken
         case notAuthenticated
         case provisionFailed(String)
         case noMessenger
-        case noMessage
         case timeout
         case notFriends(String)
         case deviceLinkFailed(String)
-        /// Dead since §10 step 4 — nothing in this kit throws either one.
-        ///
-        /// `invalidSchema` belonged to `defineModelsFromJson`, and `directRoutingUnresolved` to the
-        /// routing engine; both are deleted. `DIRECT_ROUTING_UNRESOLVED` is now raised **app-side**
-        /// by `obscura-pix/src/domain/audience.ts`, which is exactly where §0.4 puts it.
-        ///
-        /// They stay for now because `ObscuraKit-Kotlin`'s `ObscuraError` carries the same two codes
-        /// and the bridge contract is shared: removing them from one kit only would make the two
-        /// diverge on a JS-visible surface. Delete them together, with the rest of the Kotlin
-        /// storage residue.
-        case invalidSchema(String)
-        case directRoutingUnresolved(String)
         /// A `send` reached none of its named recipients. Distinct from a PARTIAL failure, which is
         /// logged and survivable — this one means the app believes it sent something that got
         /// nowhere. Matches Kotlin's `ObscuraError.SendFailed` and the bridge's `SEND_FAILED`.
@@ -2436,32 +2458,24 @@ public class ObscuraClient {
         /// can branch on *what* failed rather than parse the message.
         public var code: String {
             switch self {
-            case .missingToken: return "MISSING_TOKEN"
             case .notAuthenticated: return "NOT_AUTHENTICATED"
             case .provisionFailed: return "NOT_PROVISIONED"
             case .noMessenger: return "NO_MESSENGER"
-            case .noMessage: return "NO_MESSAGE"
             case .timeout: return "TIMEOUT"
             case .notFriends: return "NOT_FRIENDS"
             case .deviceLinkFailed: return "DEVICE_LINK_FAILED"
-            case .invalidSchema: return "INVALID_SCHEMA"
-            case .directRoutingUnresolved: return "DIRECT_ROUTING_UNRESOLVED"
             case .sendFailed: return "SEND_FAILED"
             }
         }
 
         public var errorDescription: String? {
             switch self {
-            case .missingToken: return "No token in server response"
             case .notAuthenticated: return "Not authenticated"
             case .provisionFailed(let msg): return "Device provisioning failed: \(msg)"
             case .noMessenger: return "Messenger not initialized (call register first)"
-            case .noMessage: return "No message received"
             case .timeout: return "Operation timed out"
             case .notFriends(let userId): return "Not friends with \(userId)"
             case .deviceLinkFailed(let reason): return "Device link failed: \(reason)"
-            case .invalidSchema(let msg): return "Invalid schema: \(msg)"
-            case .directRoutingUnresolved(let msg): return msg
             case .sendFailed(let msg): return "Send failed: \(msg)"
             }
         }

@@ -3,6 +3,12 @@ import XCTest
 
 /// SYNC_BLOB transfer — existing device sends state to new device
 /// Tests export/import of friends and messages, and delivery via encrypted message.
+///
+/// `SyncBlobExporter.export` used to take a `messages:` parameter that all three production callers
+/// passed `[]` for, so the message-serialization branch was reachable only from these tests. The
+/// parameter is gone; the IMPORT side still handles messages, because a peer kit may put them in a
+/// blob, so `testSyncBlobImportIntoFreshStores` now builds a peer-shaped blob by hand rather than
+/// round-tripping through an exporter that can no longer produce one.
 final class SyncBlobTests: XCTestCase {
 
     // MARK: - Export and import round-trip
@@ -10,50 +16,45 @@ final class SyncBlobTests: XCTestCase {
     func testSyncBlobExportImport() async throws {
         // Set up state on device 1
         let friendActor = try FriendActor()
-        let messageActor = try MessageActor()
 
         try await friendActor.add("alice-id", "alice", status: .accepted)
         try await friendActor.add("carol-id", "carol", status: .pendingReceived)
 
-        try await messageActor.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello alice", isSent: true))
-        try await messageActor.add("alice", Message(messageId: "m2", conversationId: "alice", content: "hi back", isSent: false))
-
         // Export
         let friends = await friendActor.getAll()
-        let aliceMessages = await messageActor.getMessages("alice")
-        let exportData = SyncBlobExporter.export(
-            friends: friends,
-            messages: [("alice", aliceMessages)]
-        )
+        let exportData = SyncBlobExporter.export(friends: friends)
         XCTAssertFalse(exportData.isEmpty)
 
         // Parse on receiving side
         let parsed = SyncBlobExporter.parseExport(exportData)
         XCTAssertNotNil(parsed)
         XCTAssertEqual(parsed!.friends.count, 2)
-        XCTAssertEqual(parsed!.messages.count, 2)
+        XCTAssertTrue(parsed!.messages.isEmpty,
+                      "this kit's export carries the friend graph only; the key is still present so "
+                      + "a peer kit's blob parses the same way")
 
         // Verify friend data
         let friendNames = parsed!.friends.compactMap { $0["username"] as? String }.sorted()
         XCTAssertEqual(friendNames, ["alice", "carol"])
-
-        // Verify message data
-        let messageContents = parsed!.messages.compactMap { $0["content"] as? String }.sorted()
-        XCTAssertEqual(messageContents, ["hello alice", "hi back"])
     }
 
     // MARK: - Import into fresh stores
 
+    /// The import half, against a blob shaped the way a PEER kit writes one — friends and messages.
+    /// Built by hand because this kit's exporter no longer emits messages, and asserting the import
+    /// path against an exporter that cannot produce the input would prove nothing about what arrives
+    /// off the wire.
     func testSyncBlobImportIntoFreshStores() async throws {
-        // Export from device 1
-        let exportData = SyncBlobExporter.export(
-            friends: [
-                Friend(userId: "bob-id", username: "bob", status: .accepted),
-            ],
-            messages: [
-                ("bob", [Message(messageId: "m1", conversationId: "bob", content: "synced msg", isSent: true)])
-            ]
-        )
+        // Explicitly typed: a `[String: Any]` literal with mixed value types cannot be inferred.
+        let peerFriend: [String: Any] = [
+            "userId": "bob-id", "username": "bob", "status": FriendStatus.accepted.rawValue,
+        ]
+        let peerMessage: [String: Any] = [
+            "messageId": "m1", "conversationId": "bob", "content": "synced msg",
+            "timestamp": 1_700_000_000_000, "isSent": true,
+        ]
+        let blob: [String: Any] = ["friends": [peerFriend], "messages": [peerMessage]]
+        let exportData = try JSONSerialization.data(withJSONObject: blob)
 
         // Import into device 2 (fresh stores)
         let device2Friends = try FriendActor()
@@ -106,8 +107,7 @@ final class SyncBlobTests: XCTestCase {
 
         // Export state
         let friends = await alice.friends.getAll()
-        let msgs = await alice.messages.getMessages(bob.username)
-        let exportData = SyncBlobExporter.export(friends: friends, messages: [(bob.username, msgs)])
+        let exportData = SyncBlobExporter.export(friends: friends)
 
         // Bob connects to receive
         try await bob.connectWebSocket()

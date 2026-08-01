@@ -125,20 +125,54 @@ final class EntrySendTests: XCTestCase {
     /// An empty recipient list is "my own devices only", not an error. A self-scoped model wants
     /// exactly this, and the kit is not guessing an audience — the caller named one, and it was
     /// empty. Failing loud is reserved for an audience the kit was asked to invent (SPEC §1.2).
-    func testAnEmptyRecipientListIsASelfSyncNotAFailure() async throws {
-        let alice = try await ObscuraTestClient.register()
+    ///
+    /// **This needs TWO devices, and it used to have one.** The old version registered a single
+    /// client, sent with `to: []`, and asserted its own inbox stayed empty — which it would if
+    /// `send` were an empty function. It observed no self-sync because there was nowhere to sync
+    /// TO. The fixture below is the one `TwoDeviceSendTests` already builds: link a second device
+    /// through a real `validateAndApproveLink`, so the approver's registry genuinely holds two
+    /// devices and the self-sync has a destination.
+    func testAnEmptyRecipientListSelfSyncsToTheUsersOtherDevices() async throws {
+        let alice1 = try await ObscuraTestClient.register()
         await rateLimitDelay()
-        try await alice.connectWebSocket()
+        let alice2 = try await ObscuraTestClient.loginAndProvision(alice1.username, deviceName: "Alice Laptop")
         await rateLimitDelay()
 
-        try await alice.client.send(
+        try await alice1.connectWebSocket()
+        try await alice2.connectWebSocket()
+        await rateLimitDelay()
+
+        // Real link approval: this is what puts BOTH devices in alice1's own-device registry and
+        // builds alice1's Signal session to alice2. Without it `send` has nothing to fan out to and
+        // the test is vacuous again.
+        let code = try XCTUnwrap(alice2.client.generateLinkCode())
+        try await alice1.client.validateAndApproveLink(code)
+        await rateLimitDelay()
+
+        let ownDevices = await alice1.devices.getOwnDevices()
+        XCTAssertEqual(ownDevices.count, 2, "the fixture itself must be real, or nothing below means anything")
+
+        // Drain what linking put on alice2's wire (SYNC_BLOB, and the approval this kit cannot
+        // handle) so the assertion below is about the entry and not about link traffic.
+        while (try? await alice2.waitForMessage(timeout: 3)) != nil {}
+        let depthAfterLinking = try await alice2.client.inbox.depth()
+
+        try await alice1.client.send(
             to: [], modelKey: "profile", entryId: "profile_1",
             payload: Data(#"{"displayName":"alice"}"#.utf8)
         )
+        _ = try await alice2.waitForMessage(timeout: 15)
 
-        let depth = try await alice.client.inbox.depth()
-        XCTAssertEqual(depth, 0, "single device, so there is nowhere to self-sync to")
+        let alice1Depth = try await alice1.client.inbox.depth()
+        let alice2Depth = try await alice2.client.inbox.depth()
+        XCTAssertEqual(alice1Depth, 0, "the sending device is excluded from its own fan-out — §5 property 1")
+        XCTAssertEqual(alice2Depth, depthAfterLinking + 1,
+                       "an empty recipient list means 'my own OTHER devices', and one of them exists")
 
-        alice.disconnectWebSocket()
+        let rows = try await alice2.client.inbox.peek()
+        XCTAssertTrue(rows.contains { $0.modelKey == "profile" && $0.entryId == "profile_1" },
+                      "the self-synced entry must arrive intact on the other device")
+
+        alice1.disconnectWebSocket(); alice2.disconnectWebSocket()
     }
 }

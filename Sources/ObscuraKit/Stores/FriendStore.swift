@@ -63,26 +63,6 @@ public actor FriendActor {
         return AsyncValueObservation(observation: observation, in: db)
     }
 
-    /// Stream of pending friend requests received (incoming).
-    public nonisolated func observePending() -> AsyncValueObservation<[Friend]> {
-        let observation = ValueObservation.tracking { db -> [Friend] in
-            let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends WHERE status = ?",
-                                        arguments: [FriendStatus.pendingReceived.rawValue])
-            return rows.compactMap { Self.rowToFriend($0) }
-        }
-        return AsyncValueObservation(observation: observation, in: db)
-    }
-
-    /// Stream of pending friend requests sent (outgoing).
-    public nonisolated func observePendingSent() -> AsyncValueObservation<[Friend]> {
-        let observation = ValueObservation.tracking { db -> [Friend] in
-            let rows = try Row.fetchAll(db, sql: "SELECT * FROM friends WHERE status = ?",
-                                        arguments: [FriendStatus.pendingSent.rawValue])
-            return rows.compactMap { Self.rowToFriend($0) }
-        }
-        return AsyncValueObservation(observation: observation, in: db)
-    }
-
     /// Stream of all friends.
     public nonisolated func observeAll() -> AsyncValueObservation<[Friend]> {
         let observation = ValueObservation.tracking { db -> [Friend] in
@@ -100,10 +80,33 @@ public actor FriendActor {
         let devicesJson = (try? JSONSerialization.data(withJSONObject: devices)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
 
         try await db.write { db in
+            // `recovery_public_key` is carried across explicitly. INSERT OR REPLACE deletes the old
+            // row, so omitting the column would silently reset a PINNED key to NULL — and a
+            // downgrade to "unpinned" is a downgrade to "unverified" for every subsequent
+            // DEVICE_ANNOUNCE (see `ObscuraClient.routeMessage`). The subselect is NULL for a new
+            // friend, which is the right starting state.
             try db.execute(sql: """
-                INSERT OR REPLACE INTO friends (user_id, username, status, devices, devices_updated_at, is_verified, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 0, 0, ?, ?)
-            """, arguments: [userId, username, status.rawValue, devicesJson, now, now])
+                INSERT OR REPLACE INTO friends (user_id, username, status, devices, recovery_public_key,
+                                                devices_updated_at, is_verified, created_at, updated_at)
+                VALUES (?, ?, ?, ?, (SELECT recovery_public_key FROM friends WHERE user_id = ?), 0, 0, ?, ?)
+            """, arguments: [userId, username, status.rawValue, devicesJson, userId, now, now])
+        }
+    }
+
+    /// Pin a peer's recovery public key, trust-on-first-use.
+    ///
+    /// This is the write that was missing: the column was READ by `routeMessage`'s DEVICE_ANNOUNCE
+    /// arm and written by nothing, so signature verification there was dead by construction and
+    /// every announce from every sender was accepted unverified.
+    ///
+    /// Deliberately an `UPDATE`, not an upsert: a key is only meaningful attached to a peer we
+    /// already know, and inserting a row here would let an announce from a stranger create a friend
+    /// record. It throws for the same reason the rest of the receive path does — a failed durable
+    /// write must reach the envelope loop so the ack is skipped (SPEC §0.9 rule 3).
+    public func pinRecoveryPublicKey(_ userId: String, _ key: Data) async throws {
+        try await db.write { db in
+            try db.execute(sql: "UPDATE friends SET recovery_public_key = ? WHERE user_id = ?",
+                           arguments: [key, userId])
         }
     }
 

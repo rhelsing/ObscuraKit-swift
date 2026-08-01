@@ -44,7 +44,7 @@ final class DeviceLinkFlowTests: XCTestCase {
 
         // Include exported state
         let friends = await existingDevice.friends.getAll()
-        let exportData = SyncBlobExporter.export(friends: friends, messages: [])
+        let exportData = SyncBlobExporter.export(friends: friends)
         approval.friendsExport = exportData
 
         var msg = Obscura_Client_V1_ClientMessage()
@@ -79,8 +79,7 @@ final class DeviceLinkFlowTests: XCTestCase {
 
         // Device1 sends SYNC_BLOB to device2
         let friends = await device1.friends.getAll()
-        let msgs = await device1.messages.getMessages("carol")
-        let exportData = SyncBlobExporter.export(friends: friends, messages: [("carol", msgs)])
+        let exportData = SyncBlobExporter.export(friends: friends)
 
         var msg = Obscura_Client_V1_ClientMessage()
         var blob = Obscura_Client_V1_SyncBlob()
@@ -94,20 +93,16 @@ final class DeviceLinkFlowTests: XCTestCase {
         let received = try await device2.waitForMessage(timeout: 10)
         XCTAssertEqual(received.type, "SYNC_BLOB", "Should be SYNC_BLOB")
 
-        // Device2 imports the state from raw bytes
-        let parsed = SyncBlobExporter.parseExport(received.rawBytes)
-
-        // Actually we need the syncBlob compressed data, not the outer clientMessage bytes
-        // The rawBytes is the decrypted ClientMessage — need to re-parse
+        // `rawBytes` is the decrypted ClientMessage, not the blob — the blob is one field inside it.
         let clientMsg = try Obscura_Client_V1_ClientMessage(serializedData: received.rawBytes)
-        let syncData = clientMsg.syncBlob.compressedData
-        let importedState = SyncBlobExporter.parseExport(syncData)
+        let importedState = SyncBlobExporter.parseExport(clientMsg.syncBlob.compressedData)
 
         XCTAssertNotNil(importedState)
         XCTAssertEqual(importedState!.friends.count, 1)
         XCTAssertEqual(importedState!.friends.first?["username"] as? String, "carol")
-        XCTAssertEqual(importedState!.messages.count, 1)
-        XCTAssertEqual(importedState!.messages.first?["content"] as? String, "synced")
+        XCTAssertTrue(importedState!.messages.isEmpty,
+                      "this kit's SYNC_BLOB carries the friend graph only — the message branch of "
+                      + "the exporter was unreachable from production and is deleted")
 
         device2.disconnectWebSocket()
     }

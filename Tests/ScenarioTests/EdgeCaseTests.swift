@@ -30,12 +30,13 @@ final class EdgeCaseTests: XCTestCase {
 
     func testVerifyCodeIsStableForSameRecoveryPhrase() async throws {
         let alice = try await ObscuraTestClient.register()
-        _ = alice.client.generateRecoveryPhrase()
+        let phrase = alice.client.generateRecoveryPhrase()
 
-        guard let pubKey = alice.client.recoveryPublicKey else {
-            XCTFail("Should have recovery public key")
-            return
-        }
+        // Derived from the phrase, not read off the client. The client no longer caches the derived
+        // public key — the property that used to hold it was written on generate, cleared on
+        // logout, and read by nothing but these tests.
+        let pubKey = RecoveryKeys.getPublicKey(from: phrase)
+        XCTAssertFalse(pubKey.isEmpty, "Should derive a recovery public key")
 
         let code1 = generateVerifyCode(from: pubKey)
         let code2 = generateVerifyCode(from: pubKey)

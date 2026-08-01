@@ -10,7 +10,7 @@ framework; one consumer, no API-stability obligation.
 > contract in [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md).
 >
 > **The ORM, CRDT engine, query DSL, audience-routing system and schema parser are gone**
-> (§10 step 4). They existed here *and* in ObscuraKit-Kotlin, duplicated, to serve five flat models
+> (`obscura-proto/KIT_API.md` §10 step 4). They existed here *and* in ObscuraKit-Kotlin, duplicated, to serve five flat models
 > in one app that used almost none of them; merge and audience now live in obscura-pix, once. Three
 > defects went with them: hard-coded application field names, a `.friends` broadcast narrowed by a
 > stray `conversationId`, and — by construction — acking a `MODEL_SYNC` before durably persisting
@@ -97,7 +97,7 @@ try await existingClient.validateAndApproveLink(code)
 
 ## What works
 
-8 unit tests (`Tests/UnitTests`, offline — the wire conformance vectors) and 198 scenario tests
+8 unit tests (`Tests/UnitTests`, offline — the wire conformance vectors) and 209 scenario tests
 (`Tests/ScenarioTests`, most against a live server; CI runs a native one). Both jobs must pass on
 macOS: Linux cannot build this package at all, because GRDB's bundled SQLCipher needs
 `CommonCrypto` (see `docs/PITFALLS.md`).
@@ -121,6 +121,9 @@ macOS: Linux cannot build this package at all, because GRDB's bundled SQLCipher 
 - Group-targeted sync has no server test
 - Entries never expire on either platform — TTL went with the engine and has not been rebuilt
 - The old `MessageActor` still exists, with `getMessages` reachable only from tests
+- No remote device revocation — the broken `revokeDevice` was deleted rather than repaired; use
+  `api.deleteDevice` from a device you still hold
+- No FRIEND_SYNC — a second device learns about friends at link time only, not afterwards
 - The demo apps under `App/` still call the deleted ORM API and no longer compile
 - ~~Session desync happens occasionally under load~~ — **diagnosed and FIXED** (Phase 2, PR #6,
   merged 2026-07-25). `MessengerActor.decrypt` defaulted `senderRegId: 1` while outbound sessions

@@ -164,6 +164,50 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertEqual(remaining.map(\.envelopeId), ["env_1", "env_2"])
     }
 
+    /// **The 500-id chunking, which the source calls out as load-bearing and nothing tested.**
+    /// Each id binds one SQL variable and SQLite caps that at 999 on older builds, so an unchunked
+    /// `consume` of a large `peek` throws "too many SQL variables" — precisely when a backlog exists,
+    /// which is the one situation in which the drain must not stall (§3.5). The app chooses the batch
+    /// size, so this is reachable by an app that simply drains efficiently.
+    ///
+    /// 1200 crosses the 999 cap and spans three chunks, so it also proves the loop does not stop
+    /// after the first.
+    func testConsumeChunksPastTheSQLiteVariableLimit() async throws {
+        let inbox = try makeInbox()
+        for i in 0..<1200 { try await inbox.put(record("env_\(i)")) }
+
+        let rows = try await inbox.peek(limit: 1200)
+        XCTAssertEqual(rows.count, 1200)
+
+        try await inbox.consume(rows.map(\.id))
+
+        let depth = try await inbox.depth()
+        XCTAssertEqual(depth, 0, "every chunk must be deleted, not just the first 500")
+    }
+
+    /// A negative `sent_at` must saturate to 0, not trap. `UInt64(_:)` on a negative `Int64` is a
+    /// hard crash, and `peek` is on the drain path, so it would take the app down every time it
+    /// tried to read its own inbox — unrecoverable without deleting the database.
+    ///
+    /// It is reachable because `ModelSync.timestamp` is proto3 `uint64` and Kotlin's protobuf
+    /// surfaces that as a signed `Long`: a peer kit writes a negative and this kit reads it.
+    func testANegativeSentAtSaturatesRatherThanTrappingTheDrain() async throws {
+        let db = try DatabaseQueue()
+        let inbox = try InboxStore(db: db)
+        try await inbox.put(record("env_1"))
+        // Written under the store's back, because `put` can no longer produce one — which is the
+        // point: the row arrives from a peer kit, not from this kit's writer.
+        try await db.write { db in
+            try db.execute(sql: "UPDATE inbox_rows SET sent_at = ? WHERE envelope_id = ?",
+                           arguments: [Int64(-1_700_000_000_000), "env_1"])
+        }
+
+        let rows = try await inbox.peek()
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].sentAt, 0, "a negative sent_at must clamp to 0, never trap")
+    }
+
     func testConsumeOfAnEmptyListIsANoOp() async throws {
         let inbox = try makeInbox()
         try await inbox.put(record("env_1"))

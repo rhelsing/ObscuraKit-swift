@@ -1,14 +1,18 @@
 import Foundation
 
-/// Export local state as a compressed SyncBlob for device linking.
-/// Matches the web client's SyncBlob format: gzipped JSON of { friends, messages }.
+/// Export local state as a SyncBlob for device linking.
+/// The wire shape is JSON of `{ friends, messages }` — the name says "compressed" and nothing ever
+/// compressed it.
 public struct SyncBlobExporter {
 
-    /// Export friends and messages as compressed JSON data
-    public static func export(friends: [Friend], messages: [(conversationId: String, messages: [Message])]) -> Data {
-        var dict: [String: Any] = [:]
-
-        // Friends
+    /// Export the friend graph as JSON.
+    ///
+    /// - Note: this took a `messages:` parameter and every one of the three callers
+    ///   (`pushHistoryToDevice`, `approveLink`, `uploadBackup`) passed `[]`, so the whole
+    ///   message-serialization branch was unreachable. The key is still emitted, empty, because
+    ///   ``parseExport(_:)`` and the receiving `.syncBlob` arm read it — an inbound blob from a peer
+    ///   kit may carry messages even though this one never writes any.
+    public static func export(friends: [Friend]) -> Data {
         let friendsList = friends.map { friend -> [String: Any] in
             [
                 "userId": friend.userId,
@@ -16,29 +20,11 @@ public struct SyncBlobExporter {
                 "status": friend.status.rawValue,
             ]
         }
-        dict["friends"] = friendsList
-
-        // Messages
-        var allMessages: [[String: Any]] = []
-        for (convId, msgs) in messages {
-            for msg in msgs {
-                allMessages.append([
-                    "messageId": msg.messageId,
-                    "conversationId": convId,
-                    "content": msg.content,
-                    "timestamp": msg.timestamp,
-                    "isSent": msg.isSent,
-                ])
-            }
-        }
-        dict["messages"] = allMessages
-
-        let jsonData = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data()
-        // In production this would be gzipped. For now, raw JSON.
-        return jsonData
+        let dict: [String: Any] = ["friends": friendsList, "messages": [[String: Any]]()]
+        return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data()
     }
 
-    /// Import compressed data into local stores
+    /// Import blob data. `messages` is populated by peer kits, never by ``export(friends:)``.
     public static func parseExport(_ data: Data) -> (friends: [[String: Any]], messages: [[String: Any]])? {
         guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let friends = dict["friends"] as? [[String: Any]] ?? []
