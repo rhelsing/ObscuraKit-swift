@@ -21,10 +21,13 @@ public actor GatewayConnection {
 
     private var onPreKeyStatus: (@Sendable (Int32, Int32) -> Void)?
 
-    /// DEBUG (flap diagnosis): each connect() gets a generation number so logs
-    /// can attribute receive errors / ping failures to the socket that produced
-    /// them — a mismatch (gen != current) proves a stale loop from an old socket
-    /// is mutating live connection state.
+    /// Each `connect()` gets a generation number, and every loop it starts carries that number.
+    ///
+    /// This began as a debug aid for flap diagnosis and is now load-bearing: `handleReceiveError`
+    /// and `handlePingFailure` both refuse to touch connection state unless their generation is
+    /// still the current one. Without that guard a loop belonging to a socket that has already been
+    /// replaced sets `isConnected = false` and flushes the NEW connection's waiters, tearing down a
+    /// live connection and provoking a reconnect that opens yet another socket.
     private var socketGeneration = 0
 
     public func setOnPreKeyStatus(_ handler: (@Sendable (Int32, Int32) -> Void)?) {
@@ -39,11 +42,27 @@ public actor GatewayConnection {
     public func connect() async throws {
         socketGeneration += 1
         let gen = socketGeneration
-        // DEBUG (flap diagnosis): prevSocket/prevPing=ALIVE on a reconnect means the
-        // old socket/ping loop was never torn down and is still running alongside.
         logger.log("[gw] connect gen=\(gen) prevSocket=\(wsTask != nil ? "ALIVE" : "nil") prevPing=\(pingTask != nil ? "ALIVE" : "nil") wasConnected=\(isConnected)")
+
+        // TEAR THE OLD SOCKET DOWN FIRST. This used to cancel only `receiveTask` and then overwrite
+        // `wsTask`/`wsSession`, dropping the previous socket and URLSession on the floor —
+        // `ObscuraClient.connect()` never calls `disconnect()` first and runs this on every
+        // reconnect, on foreground, and from `processPendingMessages`. Cancelling the receive task
+        // does not reach it either: it is parked in `await ws.receive()`, which is not a
+        // cancellation point, so the loop only wakes when the socket eventually errors — by which
+        // time it belongs to a generation that is no longer current, and it would tear down the LIVE
+        // connection (the generation guards below are the second half of this fix).
+        //
+        // `cancel(with:)` closes the socket and `invalidateAndCancel()` releases the URLSession,
+        // which otherwise retains its delegate and its connection for the life of the process.
         receiveTask?.cancel()
         receiveTask = nil
+        pingTask?.cancel()
+        pingTask = nil
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+        wsSession?.invalidateAndCancel()
+        wsSession = nil
         flushWaiters()
         envelopeQueue.removeAll()
 
@@ -156,7 +175,7 @@ public actor GatewayConnection {
                 ws.sendPing { [weak self] error in
                     if let error = error {
                         NSLog("[ObscuraKit] [gw] ping FAILED gen=%d: %@", gen, "\(error)")
-                        Task { await self?.handlePingFailure() }
+                        Task { await self?.handlePingFailure(gen: gen) }
                     }
                 }
             }
@@ -164,7 +183,14 @@ public actor GatewayConnection {
     }
 
     /// Ping failed — connection is dead. Disconnect so the envelope loop detects it.
-    private func handlePingFailure() {
+    private func handlePingFailure(gen: Int) {
+        // A ping loop belonging to a replaced socket must not touch live state. This one was worse
+        // than `handleReceiveError`: it also cancelled the CURRENT `receiveTask` and `wsTask`, so a
+        // stale ping failure killed a healthy connection outright.
+        guard gen == socketGeneration else {
+            logger.log("[gw] ignoring ping failure from stale gen=\(gen) (current=\(socketGeneration))")
+            return
+        }
         guard isConnected else { return }
         isConnected = false
         receiveTask?.cancel()
@@ -203,12 +229,17 @@ public actor GatewayConnection {
     }
 
     private func handleReceiveError(_ error: Error, gen: Int, cancelled: Bool, ws: URLSessionWebSocketTask) {
-        // DEBUG (flap diagnosis): gen != current means a receive loop from an OLD
-        // socket is running this — it will still set isConnected=false below and
-        // kill the live connection. closeCode/reason say why the socket dropped
-        // (1000=normal, 1001=goingAway, 1006=abnormal, -1=still open per URLSession).
+        // closeCode/reason say why the socket dropped (1000=normal, 1001=goingAway, 1006=abnormal,
+        // -1=still open per URLSession).
         let reason = ws.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         logger.log("[gw] receive error gen=\(gen) current=\(socketGeneration) cancelled=\(cancelled) closeCode=\(ws.closeCode.rawValue) reason=\(reason) err=\(error)")
+
+        // `gen != socketGeneration` means this is the death rattle of a socket `connect()` already
+        // replaced. The receive loop cannot be cancelled out of `await ws.receive()`, so it always
+        // arrives here eventually — and without this guard it sets `isConnected = false` and
+        // flushes the waiters of the LIVE connection, which the envelope loop reads as a drop. That
+        // schedules a reconnect, which opens another socket, which orphans another loop.
+        guard gen == socketGeneration else { return }
         isConnected = false
         flushWaiters()
     }

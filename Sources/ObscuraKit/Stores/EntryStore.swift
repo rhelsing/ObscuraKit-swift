@@ -67,12 +67,18 @@ public actor EntryStore {
     /// JSON, because validating a shape it may not read is a boundary violation dressed as
     /// defensiveness (SPEC §0.4).
     public func put(model: String, entry: StoredEntry) async throws {
+        // Saturating, not `Int64(_:)`: that TRAPS above `Int64.max`, and a trap is not catchable.
+        // `sentAt` reaches here from a peer's `ModelSync.timestamp` by way of the inbox and the
+        // app's merge, so it is untrusted `uint64` that crossed a bridge. `InboxStore.peek`
+        // documents the mirror image of this at the READ end (a negative `sent_at` from Kotlin's
+        // signed Long); the write end was left un-hardened.
+        let sentAt = Int64(clamping: entry.sentAt)
         try await db.write { db in
             try db.execute(sql: """
                 INSERT OR REPLACE INTO model_entries
                     (model_name, id, data, timestamp, author_device_id)
                 VALUES (?, ?, ?, ?, ?)
-            """, arguments: [model, entry.id, entry.data, Int64(entry.sentAt), entry.authorDeviceId])
+            """, arguments: [model, entry.id, entry.data, sentAt, entry.authorDeviceId])
         }
     }
 
@@ -85,7 +91,10 @@ public actor EntryStore {
                 StoredEntry(
                     id: row["id"],
                     data: row["data"],
-                    sentAt: UInt64(row["timestamp"] as Int64),
+                    // `max(0, …)` before the conversion, for the same reason `InboxStore.peek`
+                    // saturates: `UInt64(_:)` TRAPS on a negative, and a row written by a peer kit
+                    // (Kotlin surfaces proto3 `uint64` as a signed Long) must never crash a read.
+                    sentAt: UInt64(max(0, row["timestamp"] as Int64)),
                     authorDeviceId: row["author_device_id"]
                 )
             }

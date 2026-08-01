@@ -17,12 +17,18 @@ import XCTest
 /// deliberate: `obscura-proto/PLAN.md`'s F-findings are largely about green ticks over behaviour
 /// nobody implemented, and this was one of them.
 ///
-/// The gap is a **deliberate deferral, not a bug** (`obscura-proto/KIT_API.md` §4.2): the sender is
-/// gated behind `enableRecoveryPhrase`, which defaults to `false` and which obscura-pix never sets,
-/// so nothing in the running app can emit this message. When the handler is built, extend the first
-/// test to assert the recipient's device list actually changed — and verify the signature against
-/// the **stored** recovery key, never the `recovery_public_key` carried inside the message it
-/// authenticates.
+/// The gap is a recorded deferral (`obscura-proto/KIT_API.md` §4.2), but **it is not unreachable in
+/// this kit, and this note used to claim it was.** It said the sender is "gated behind
+/// `enableRecoveryPhrase`, which defaults to `false`". There is no `enableRecoveryPhrase` anywhere in
+/// the Swift source — that config flag exists only in ObscuraKit-Kotlin.
+/// `ObscuraClient.announceRecovery(_:)` is a live, ungated public sender here, which is why these
+/// tests can call it at all. What is true is that obscura-pix ships no recovery UI, so nothing in
+/// the running *app* calls it today.
+///
+/// When the handler is built, extend the first test to assert the recipient's device list actually
+/// changed — and verify the signature against the **stored** recovery key, never the
+/// `recovery_public_key` carried inside the message it authenticates. `routeMessage`'s
+/// `.deviceAnnounce` arm now does exactly that (trust on first use); this arm should follow it.
 final class RecoveryMessagingTests: XCTestCase {
 
     /// DELIVERY ONLY — see the type doc. Asserts the announcement reaches Bob's device, not that Bob

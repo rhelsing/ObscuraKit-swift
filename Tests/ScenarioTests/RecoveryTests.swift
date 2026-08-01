@@ -87,8 +87,9 @@ final class RecoveryTests: XCTestCase {
         // One-time read: first call returns phrase, second returns nil
         XCTAssertNotNil(client.getRecoveryPhrase())
         XCTAssertNil(client.getRecoveryPhrase(), "Recovery phrase should be wiped after first read")
-        XCTAssertNotNil(client.recoveryPublicKey)
-        XCTAssertEqual(client.recoveryPublicKey?.count, 33)
+        // The public key is derived from the phrase on demand — the client caches nothing. 33 bytes
+        // is a serialized Curve25519 public key (0x05 prefix + 32).
+        XCTAssertEqual(RecoveryKeys.getPublicKey(from: phrase).count, 33)
     }
 
     // MARK: - Backup upload/download

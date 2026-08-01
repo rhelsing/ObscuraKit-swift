@@ -66,7 +66,7 @@ Use `await rateLimitDelay()` (100ms) between general calls and `await authRateLi
 
 ## Protobuf
 
-**Generated proto types are `internal`, not `public`.** SwiftProtobuf's `protoc-gen-swift` defaults to internal visibility. This means `Obscura_V2_ClientMessage` can't appear in public method signatures. Use `Data` (serialized bytes) in public API, deserialize internally.
+**Generated proto types are `internal`, not `public`.** SwiftProtobuf's `protoc-gen-swift` defaults to internal visibility. This means `Obscura_Client_V1_ClientMessage` can't appear in public method signatures. Use `Data` (serialized bytes) in public API, deserialize internally. (This line named `Obscura_V2_ClientMessage`; there is no `Obscura_V2_` prefix anywhere — the generated types are `Obscura_V1_*` for the server proto and `Obscura_Client_V1_*` for the client proto.)
 
 ## Testing
 

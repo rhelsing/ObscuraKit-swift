@@ -66,6 +66,7 @@ final class PayloadClassTests: XCTestCase {
     /// the inbox it would become the place unimplemented kit work goes to be forgotten.
     func testClassifiedButUnimplementedArmsAreNotSweptIntoTheInbox() {
         let unimplemented: [Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
+            .friendSync(.init()),
             .deviceRecoveryAnnounce(.init()), .historyChunk(.init()), .syncRequest(.init()),
             .settingsSync(.init()), .readSync(.init()),
         ]
@@ -80,10 +81,11 @@ final class PayloadClassTests: XCTestCase {
     /// Kit-owned state stays kit-owned; none of it may reach an app-readable inbox.
     func testFriendAndDeviceArmsAreKitInternal() {
         let kitInternal: [Obscura_Client_V1_ClientMessage.OneOf_Payload] = [
-            .friendRequest(.init()), .friendResponse(.init()), .friendSync(.init()),
+            .friendRequest(.init()), .friendResponse(.init()),
             .deviceAnnounce(.init()),
             .sessionReset(.init()), .syncBlob(.init()), .sentSync(.init()),
-            // `.deviceLinkApproval` is deliberately absent — see `divergesFromKotlin`.
+            // `.deviceLinkApproval` and `.friendSync` are deliberately absent — see
+            // `divergesFromKotlin`.
         ]
 
         for arm in kitInternal {
@@ -104,12 +106,19 @@ final class PayloadClassTests: XCTestCase {
             + "(CLAUDE.md). Kit-internal-with-no-handler now throws, which would never ack a LIVE "
             + "flow and wedge the server queue — so it is bucketed unimplemented (drop + ack, "
             + "loudly) until the handler exists. Delete this entry when it does.",
+        "FRIEND_SYNC":
+            "This kit has DELETED both halves of the arm. FriendSync carries no user_id, so the "
+            + "receiver keyed the friend it created on sourceUserId — which the self-guard above it "
+            + "had just proven is our OWN userId, putting the user in their own friends list and "
+            + "therefore into every fan-out. The sender's `userId targetUserId:` parameter was "
+            + "bound and never referenced. Unimplemented rather than kit-internal so an inbound one "
+            + "from Kotlin is dropped and ACKED instead of throwing forever and wedging the queue.",
     ]
 
     func testEveryArmHasTheSameClassAsTheKotlinKit() {
         let expected: [String: PayloadClass] = [
             "MODEL_SYNC": .inboxed,
-            "FRIEND_REQUEST": .kitInternal, "FRIEND_RESPONSE": .kitInternal, "FRIEND_SYNC": .kitInternal,
+            "FRIEND_REQUEST": .kitInternal, "FRIEND_RESPONSE": .kitInternal,
             "DEVICE_ANNOUNCE": .kitInternal,
             "SESSION_RESET": .kitInternal, "SYNC_BLOB": .kitInternal, "SENT_SYNC": .kitInternal,
             "TEXT": .kitInternal,
@@ -119,6 +128,7 @@ final class PayloadClassTests: XCTestCase {
             "READ_SYNC": .unimplemented,
             // See `divergesFromKotlin` below.
             "DEVICE_LINK_APPROVAL": .unimplemented,
+            "FRIEND_SYNC": .unimplemented,
             // §4's normative table, not §4.3's deletion plan — the deletion has not happened and a
             // public sender still exists, so dropping these would have the receiver ack away an AES
             // key that was just shipped over Signal.

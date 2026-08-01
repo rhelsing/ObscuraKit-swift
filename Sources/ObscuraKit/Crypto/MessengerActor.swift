@@ -16,8 +16,17 @@ public actor MessengerActor {
     // Device map: deviceId → (userId, registrationId)
     private var deviceMap: [String: (userId: String, registrationId: UInt32)] = [:]
 
-    // Message queue for batch sending
-    private var queue: [(submissionId: Data, deviceId: Data, message: Data)] = []
+    // Message queue for batch sending. `attempts` is what stops a permanently-failing submission
+    // from poisoning the queue forever — see `flushMessages`.
+    private var queue: [(submissionId: Data, deviceId: Data, message: Data, attempts: Int)] = []
+
+    /// How many times a queued submission may be re-flushed before it is dropped.
+    ///
+    /// A batch that fails is restored to the HEAD of the queue, so without a cap ONE permanently
+    /// failing submission — a zeroed `deviceId` from `uuidToBytes` silently zeroing a malformed
+    /// UUID, say — is carried by every subsequent flush from every caller and fails all of them.
+    /// `send`, `befriend`, `acceptFriend` and self-sync then break for the rest of the session.
+    private static let maxFlushAttempts = 3
 
     public init(api: APIClient, store: PersistentSignalStore, ownUserId: String) {
         self.api = api
@@ -224,10 +233,24 @@ public actor MessengerActor {
         let submissionId = uuidToBytes(UUID().uuidString)
         let deviceIdBytes = uuidToBytes(targetDeviceId)
 
-        queue.append((submissionId: submissionId, deviceId: deviceIdBytes, message: encMsgBytes))
+        queue.append((submissionId: submissionId, deviceId: deviceIdBytes,
+                      message: encMsgBytes, attempts: 0))
     }
 
-    /// Send all queued messages in a single batch
+    /// Send all queued messages in a single batch.
+    ///
+    /// On failure the batch is restored to the head of the queue so the next flush retries it —
+    /// but only up to ``maxFlushAttempts``. **A permanently-failing submission used to be restored
+    /// unconditionally**, so it rode along with every later flush from every caller and failed each
+    /// one; a single malformed target device id broke sending for the whole session.
+    ///
+    /// - Warning: a restored batch re-flushed alongside new submissions is **not** deduplicated
+    ///   server-side. `APIClient.sendMessage` derives its `Idempotency-Key` from a hash of the whole
+    ///   batch body, so changing the batch changes the key, and anything in the failed batch that
+    ///   DID reach the server is delivered a second time. The receiver absorbs that
+    ///   (`envelope_id UNIQUE` + `INSERT OR IGNORE`), which is why this is a warning and not a
+    ///   blocker — but a per-submission idempotency key is the real fix and it is a server contract
+    ///   change.
     public func flushMessages() async throws -> (sent: Int, failed: Int) {
         guard !queue.isEmpty else { return (0, 0) }
 
@@ -248,8 +271,16 @@ public actor MessengerActor {
         do {
             try await api.sendMessage(data)
         } catch {
-            // Restore batch to queue so retry is possible
-            queue.insert(contentsOf: batch, at: 0)
+            let retryable = batch
+                .map { (submissionId: $0.submissionId, deviceId: $0.deviceId,
+                        message: $0.message, attempts: $0.attempts + 1) }
+                .filter { $0.attempts < Self.maxFlushAttempts }
+            let dropped = batch.count - retryable.count
+            if dropped > 0 {
+                NSLog("[ObscuraKit] flush dropped %d submission(s) after %d failed attempts: %@",
+                      dropped, Self.maxFlushAttempts, "\(error)")
+            }
+            queue.insert(contentsOf: retryable, at: 0)
             throw error
         }
 
@@ -272,7 +303,5 @@ public actor MessengerActor {
 
     public enum MessengerError: Error {
         case invalidBundle(String)
-        case noSession(String)
-        case encryptionFailed(String)
     }
 }

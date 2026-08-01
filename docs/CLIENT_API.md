@@ -1,6 +1,6 @@
 # Client API — Auth, Connection, Friends, Devices
 
-Auth, social graph, device management. This is the whole client API now — the ORM that used to sit on top of it was deleted (`obscura-proto/RESET.md` §10 step 4). Entries reach the app through `client.inbox`, are stored via `client.entries`, and are sent with `client.send(to:modelKey:entryId:op:sentAt:payload:)`.
+Auth, social graph, device management. This is the whole client API now — the ORM that used to sit on top of it was deleted (`obscura-proto/KIT_API.md` §10 step 4). Entries reach the app through `client.inbox`, are stored via `client.entries`, and are sent with `client.send(to:modelKey:entryId:op:sentAt:payload:)`.
 
 ## Client Initialization
 
@@ -89,8 +89,8 @@ let isFriend = await client.friends.isFriend(userId)
 
 // Observe (reactive — SwiftUI-ready)
 for await friends in client.friends.observeAccepted().values { ... }
-for await pending in client.friends.observePending().values { ... }
-for await sent in client.friends.observePendingSent().values { ... }
+// Pending requests: read with `getPending()`, or filter `observeAll()` by status.
+// The status-specific observers were deleted — only `observeAccepted()` and `observeAll()` remain.
 for await all in client.friends.observeAll().values { ... }
 ```
 
@@ -99,7 +99,9 @@ for await all in client.friends.observeAll().values { ... }
 Devices define where your data lives. Each device has its own Signal identity.
 
 ```swift
-// Announce device list to all friends (signed if recovery key exists)
+// Announce device list to all friends. Unsigned: this kit never populates
+// DeviceAnnounce.recovery_public_key or .signature on send. On RECEIVE it pins a peer's
+// recovery key trust-on-first-use and verifies later announces against the stored copy.
 try await client.announceDevices()
 
 // Query own devices
@@ -109,7 +111,6 @@ let hasIdentity = await client.devices.hasIdentity()
 
 // Observe
 for await devices in client.devices.observeOwnDevices().values { ... }
-for await hasId in client.devices.observeHasIdentity().values { ... }
 ```
 
 ## Device Linking
@@ -138,11 +139,13 @@ For the full device linking ceremony:
 
 ## Device Revocation
 
-```swift
-// With recovery phrase (remote revocation)
-try await client.revokeDevice(recoveryPhrase, targetDeviceId: deviceId)
+**There is no remote, recovery-key-signed revocation.** `revokeDevice(_:targetDeviceId:)` was
+deleted: it signed a filtered device list plus its own timestamp and then called `announceDevices()`,
+which rebuilds the payload from the *unfiltered* own-device registry and stamps a fresh timestamp, so
+neither signed input matched what went on the wire and no recipient could ever verify it. It had zero
+callers and zero tests. Revoking requires access to a device you still hold:
 
-// Without recovery phrase — requires physical access to a linked device
+```swift
 try await client.api.deleteDevice(deviceId)
 try await client.announceDevices()
 ```

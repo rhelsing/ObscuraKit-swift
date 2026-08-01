@@ -63,16 +63,6 @@ public actor DeviceActor {
         return AsyncValueObservation(observation: observation, in: db)
     }
 
-    /// Stream of identity state (exists or not).
-    public nonisolated func observeHasIdentity() -> AsyncValueObservation<Bool> {
-        let observation = ValueObservation.tracking { db -> Bool in
-            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM device_identity WHERE id = 1") ?? 0
-            return count > 0
-        }
-        return AsyncValueObservation(observation: observation, in: db)
-    }
-
-
     public func storeIdentity(_ identity: DeviceIdentity) async {
         try? await db.write { db in
             try db.execute(sql: """
@@ -104,12 +94,6 @@ public actor DeviceActor {
         await getIdentity() != nil
     }
 
-    public func deleteIdentity() async {
-        try? await db.write { db in
-            try db.execute(sql: "DELETE FROM device_identity WHERE id = 1")
-        }
-    }
-
     public func addOwnDevice(_ device: OwnDevice) async {
         try? await db.write { db in
             try db.execute(sql: """
@@ -131,25 +115,10 @@ public actor DeviceActor {
         }) ?? []
     }
 
-    public func getOwnDevice(_ deviceUUID: String) async -> OwnDevice? {
-        try? await db.read { db -> OwnDevice? in
-            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM own_devices WHERE device_uuid = ?", arguments: [deviceUUID]) else { return nil }
-            var d = OwnDevice(deviceUUID: row["device_uuid"], deviceId: row["device_id"], deviceName: row["device_name"])
-            d.signalIdentityKey = row["signal_identity_key"]
-            d.registrationId = (row["registration_id"] as Int64?).map { UInt32($0) }
-            return d
-        }
-    }
-
-    public func removeOwnDevice(_ deviceUUID: String) async {
-        try? await db.write { db in
-            try db.execute(sql: "DELETE FROM own_devices WHERE device_uuid = ?", arguments: [deviceUUID])
-        }
-    }
-
-    public func getSelfSyncTargets() async -> [OwnDevice] {
-        await getOwnDevices()
-    }
+    // `removeOwnDevice` lived here and had exactly one would-be caller: the `revokeDevice` that
+    // never called it, which is precisely why revocation announced an unfiltered device list. Both
+    // are deleted; a device is removed from the account server-side (`api.deleteDevice`) and this
+    // registry is rebuilt from the account's device list on the next link approval.
 
     public func clearAll() async {
         try? await db.write { db in

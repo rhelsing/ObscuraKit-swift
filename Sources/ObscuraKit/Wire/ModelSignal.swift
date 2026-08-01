@@ -180,31 +180,14 @@ public class SignalThrottle {
 }
 
 /// Singleton signal store — shared across all models.
+///
+/// - Note: it carried a push-notification layer (`observe()` / `observers` / `notifyObservers()`)
+///   whose only subscriber was the ORM's observation machinery, deleted in Phase 3. The two
+///   surviving `notifyObservers()` calls in `routeMessage` iterated a permanently empty dictionary.
+///   `SignalObservation.values` polls `SignalStore.getActive` directly and never used it.
 public class SignalStoreRegistry {
     public static let shared = SignalStoreRegistry()
     public let store = SignalStore()
 
-    /// Continuations waiting for signal changes
-    private var observers: [UUID: AsyncStream<Void>.Continuation] = [:]
-
     private init() {}
-
-    /// Notify all observers that signals changed.
-    public func notifyObservers() {
-        for (_, cont) in observers {
-            cont.yield()
-        }
-    }
-
-    /// Subscribe to signal changes.
-    func observe() -> (id: UUID, stream: AsyncStream<Void>) {
-        let id = UUID()
-        let stream = AsyncStream<Void> { continuation in
-            self.observers[id] = continuation
-            continuation.onTermination = { [weak self] _ in
-                self?.observers.removeValue(forKey: id)
-            }
-        }
-        return (id, stream)
-    }
 }

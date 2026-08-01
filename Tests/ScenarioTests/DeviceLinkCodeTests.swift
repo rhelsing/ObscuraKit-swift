@@ -113,12 +113,15 @@ final class DeviceLinkCodeTests: XCTestCase {
 
         let code = device.generateLinkCode()!
 
-        // Validate with 0ms max age — immediately expired
+        // `maxAge: 0` alone is sub-millisecond flaky — `now - timestamp > 0` is FALSE when the
+        // generate and the validate land in the same millisecond, which they usually do. The sleep
+        // is what makes the assertion deterministic; it is not padding.
+        try await Task.sleep(nanoseconds: 5_000_000)
         let result = DeviceLink.validateLinkCode(code, maxAge: 0)
         if case .expired = result {
             // Expected
         } else {
-            XCTFail("Should be expired with maxAge=0")
+            XCTFail("Should be expired with maxAge=0 once at least 1ms has elapsed")
         }
 
         device.disconnect()

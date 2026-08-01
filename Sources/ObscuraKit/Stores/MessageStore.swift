@@ -78,13 +78,6 @@ public actor MessageActor {
         }
     }
 
-    public func getMessage(_ messageId: String) async -> Message? {
-        try? await db.read { db -> Message? in
-            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE message_id = ?", arguments: [messageId]) else { return nil }
-            return Self.rowToMessage(row)
-        }
-    }
-
     public func getMessages(_ conversationId: String, limit: Int = 100, offset: Int = 0) async -> [Message] {
         (try? await db.read { db -> [Message] in
             try Row.fetchAll(db, sql: """
@@ -101,26 +94,11 @@ public actor MessageActor {
         }) ?? []
     }
 
-    public func migrateMessages(from: String, to: String) async -> Int {
-        guard from != to else { return 0 }
-        return (try? await db.write { db -> Int in
-            try db.execute(sql: "UPDATE messages SET conversation_id = ? WHERE conversation_id = ?",
-                           arguments: [to, from])
-            return db.changesCount
-        }) ?? 0
-    }
-
     public func deleteByAuthorDevice(_ deviceId: String) async -> Int {
         (try? await db.write { db -> Int in
             try db.execute(sql: "DELETE FROM messages WHERE author_device_id = ?", arguments: [deviceId])
             return db.changesCount
         }) ?? 0
-    }
-
-    public func clearConversation(_ conversationId: String) async {
-        try? await db.write { db in
-            try db.execute(sql: "DELETE FROM messages WHERE conversation_id = ?", arguments: [conversationId])
-        }
     }
 
     public func clearAll() async {

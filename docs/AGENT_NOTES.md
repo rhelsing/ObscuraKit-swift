@@ -10,7 +10,7 @@ Things that aren't obvious from reading the code. Saves hours.
 swift test --filter CoreFlowTests
 ```
 
-**500ms rate limit between server calls is load-bearing.** Without `rateLimitDelay()`, tests flake with HTTP 429. Every helper method includes it. If you add new server-calling methods, include the delay.
+**The 100ms rate limit between server calls is load-bearing.** Without `rateLimitDelay()`, tests flake with HTTP 429. Every helper method includes it. If you add new server-calling methods, include the delay. The default is `SERVER_REQUEST_DELAY_MS = 100` in `Network/Constants.swift` (auth calls use `authRateLimitDelay()`, 1000ms); this note said 500ms, which matched nothing — `CLAUDE.md` and `docs/PITFALLS.md` both say 100.
 
 **Tests create real users on the live server.** Each test registers unique usernames (`test_RANDOM`). Don't worry about cleanup — the server handles it.
 
@@ -26,9 +26,16 @@ When `ObscuraClient.connect()` starts the envelope loop, incoming messages get p
 
 ## Biggest Tech Debt
 
-**`[String: Any]` in APIClient (41 occurrences).** The entire API layer returns untyped dictionaries. The Codable refactor in `docs/plans/production-cleanup.md` Phase A2 is the most impactful single change. Do it before adding any new endpoints.
+**`[String: Any]` in APIClient — 2 occurrences, both in `decodeJWT`.** This note claimed 41 and that
+"the entire API layer returns untyped dictionaries". It does not: `APIClient` returns typed
+`Codable` models (`APIModels.swift`), and the only untyped dictionary left is the decoded JWT
+payload, which is genuinely schemaless. The Codable refactor it pointed at has effectively happened.
 
-**Generated protobuf types are `internal` visibility.** This is why `ReceivedMessage` uses `Int` for type and `sendRawMessage` takes `Data`. Regenerating with `--swift_opt=Visibility=Public` fixes this but leaks ugly `Obscura_V2_` naming. Better to wrap in domain types (Phase B3).
+**Generated protobuf types are `internal` visibility.** This is why `sendRawMessage` takes `Data`.
+Regenerating with `--swift_opt=Visibility=Public` would fix that but exposes the generated
+`Obscura_V1_*` / `Obscura_Client_V1_*` names on the public surface. Better to wrap in domain types.
+(This note used to say `ReceivedMessage` "uses `Int` for type" — it is a `String` — and warned about
+leaking an `Obscura_V2_` prefix, which has never existed in this repo.)
 
 ## Reference Codebase
 

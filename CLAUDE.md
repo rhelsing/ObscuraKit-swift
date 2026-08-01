@@ -10,7 +10,8 @@ Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md
 
 **Where this kit is (2026-07-31): Phase 3 — the reset — has landed. Phase 2 before it.**
 The ORM, CRDT engine, query DSL, audience-routing engine, schema parser and TTL manager are
-deleted (`RESET.md` §10 step 4). What replaced them: `client.send(to:modelKey:entryId:op:sentAt:payload:)`
+deleted (`KIT_API.md` §10 step 4 — §10 is in `KIT_API.md`; `RESET.md` has no numbered sections).
+What replaced them: `client.send(to:modelKey:entryId:op:sentAt:payload:)`
 for the outbox, `client.inbox` (peek/consume/discard/depth) for the receive path, and
 `client.entries` for storage. Merge and audience resolution live in obscura-pix now, once.
 `ObscuraSchema` grew a real `v2` migration and the erase-on-schema-change tripwire is OFF —
@@ -41,17 +42,40 @@ rebuilt under a new name.
 Known live defects in this kit, documented so nobody rediscovers them as "improvements":
 
 - **This kit sends `DEVICE_LINK_APPROVAL` but cannot receive one.** `routeMessage` has no
-  `case .deviceLinkApproval` — an inbound approval falls through `default: break`. So a
-  newly-linked device silently discards everything the approval carries: the p2p keypair, the
-  recovery public key, the friends export, and the approver's own-device list. Its registry ends up
-  containing only itself, which means `announceDevices()` from that device can only ever tell a
-  friend about one device. ObscuraKit-Kotlin routes this to `handleLinkApproval`
-  (`setOwnDevices(approvedDevices)` + stores identity keys), so the two kits genuinely diverge on
-  device linking. Found 2026-07-24 while gathering Phase 2 acceptance evidence: CI showed
-  `getOwnDevices()=1` where Kotlin's equivalent fixture shows 2. The *approver* half works and is
-  pinned by `TwoDeviceSendTests.testLinkApprovalPopulatesTheApproverRegistry`; the approvee half is
+  `case .deviceLinkApproval`, so a newly-linked device silently discards everything the approval
+  carries: the p2p keypair, the recovery public key, the friends export, and the approver's
+  own-device list. Its registry ends up containing only itself, which means `announceDevices()` from
+  that device can only ever tell a friend about one device.
+  **How it is discarded has changed, and the difference matters when debugging:** it no longer
+  "falls through `default: break`". It is classified `.unimplemented` in `Stores/PayloadClass.swift`,
+  so it is **logged loudly, dropped, and acked** (`RECV UNIMPLEMENTED arm=DEVICE_LINK_APPROVAL`) —
+  it never reaches `routeMessage`'s `default:`, which now throws. Dropping-and-acking is deliberate:
+  throwing on a LIVE flow would leave an envelope that is never acked, redelivering on every
+  reconnect into a server queue that caps at 1000 per device and evicts oldest-first.
+  ObscuraKit-Kotlin routes this to `handleLinkApproval` (`setOwnDevices(approvedDevices)` + stores
+  identity keys), so the two kits genuinely diverge on device linking. Found 2026-07-24 while
+  gathering Phase 2 acceptance evidence: CI showed `getOwnDevices()=1` where Kotlin's equivalent
+  fixture shows 2. The *approver* half works and is pinned by
+  `TwoDeviceSendTests.testLinkApprovalPopulatesTheApproverRegistry`; the approvee half is
   deliberately not asserted, because asserting broken behaviour locks it in.
-- **No device-announce replay protection.**
+- **No device-announce replay protection.** A DEVICE_ANNOUNCE is now verified against the peer's
+  recovery public key, pinned trust-on-first-use — but a *replay* of a previously valid, correctly
+  signed announce still verifies, because nothing tracks which timestamps have been seen. The LWW
+  guard (`devices_updated_at < ?`) rejects a stale replay by accident, not by design.
+- **`FRIEND_SYNC` is deleted from this kit, both halves.** A second device therefore no longer
+  learns about friends added *after* it was linked; it still receives the whole graph at link time
+  in `DEVICE_LINK_APPROVAL`'s `friends_export`. The arm is classified `.unimplemented` rather than
+  removed from the classification table, so an inbound one from Kotlin is dropped and acked instead
+  of wedging the queue. It went because `FriendSync` carries no `user_id`, so the receiver keyed the
+  friend it created on `sourceUserId` — which its own self-guard had just proven is *our* userId,
+  adding the user to their own friends list and hence to every fan-out.
+- **There is no remote device revocation.** `revokeDevice` was deleted: it signed a filtered device
+  list and its own timestamp, then called `announceDevices()`, which rebuilt the payload from the
+  unfiltered registry and stamped a fresh timestamp, so no recipient could ever verify it. Zero
+  callers, zero tests. Revoking means `api.deleteDevice` from a device you still hold.
+- **`ObscuraError.invalidSchema` / `.directRoutingUnresolved` are deleted here and must be deleted
+  in ObscuraKit-Kotlin and `obscura-pix/src/native/ObscuraModule.ts` too** — they are dead in both
+  kits and exposed to JS through the shared bridge error union.
 - `ProcessedCounts` still hard-codes `"pix"` and `"directMessage"` in kit source
   (`classifyForPushCounts`), which §0.4 forbids. ObscuraKit-Kotlin has the identical defect. The fix
   changes a bridge-facing type on both platforms and is deliberately a separate change.

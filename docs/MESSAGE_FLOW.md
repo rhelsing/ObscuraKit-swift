@@ -13,13 +13,15 @@ ObscuraClient.send(to:_:)
     ├─ sendToAllDevices(bobId, msg)
     │   │
     │   ├─ messenger.fetchPreKeyBundles(bobId)  ──── GET /v1/users/{bobId}
-    │   │   └─ auto-populates deviceMap: deviceId → (userId, registrationId)
+    │   │   └─ auto-populates deviceMap: deviceUuid → (userId, registrationId)
+    │   │       (the registrationId slot is DIAGNOSTIC ONLY — see below)
     │   │
     │   ├─ for each device:
-    │   │   ├─ messenger.processServerBundle()  ──── X3DH if no session
+    │   │   ├─ messenger.processServerBundle()  ──── X3DH if no session, at (deviceUuid, 1)
     │   │   ├─ messenger.queueMessage()
-    │   │   │   ├─ encrypt(userId, plaintext, registrationId)
-    │   │   │   │   └─ SessionCipher.encrypt() → PreKey or Whisper ciphertext
+    │   │   │   ├─ encrypt(deviceUuid:_:)
+    │   │   │   │   └─ signalEncrypt() at ProtocolAddress(deviceUuid, 1)
+    │   │   │   │      → PreKey or Whisper ciphertext
     │   │   │   ├─ wrap in EncryptedMessage protobuf
     │   │   │   └─ add to submission queue
     │   │
@@ -51,20 +53,27 @@ ObscuraClient.startEnvelopeLoop()
     ├─ processEnvelope(raw)
     │   │
     │   ├─ decode EncryptedMessage from envelope.message
-    │   ├─ messenger.decrypt(sourceUserId, content, messageType)
-    │   │   └─ SessionCipher.decryptPreKeyWhisperMessage() or .decryptWhisperMessage()
+    │   ├─ messenger.decrypt(senderUserId:senderDeviceUuid:content:messageType:)
+    │   │   └─ signalDecryptPreKey()/signalDecrypt() at ProtocolAddress(senderDeviceUuid, 1)
+    │   │      senderDeviceUuid comes from Envelope.sender_device_id (stamped server-side
+    │   │      from the device-scoped JWT — unforgeable by the sender)
     │   ├─ decode ClientMessage from plaintext
     │   │
-    │   ├─ routeMessage(clientMsg, sourceUserId)
+    │   ├─ routeMessage(clientMsg, sourceUserId, senderDeviceId, envelopeId)
+    │   │   ├─ classify(payload) first — §4 decides what each arm may do
+    │   │   │
     │   │   ├─ TEXT        → messages.add() ─── GRDB write ─── ValueObservation fires
     │   │   ├─ FRIEND_REQ  → friends.add()  ─── GRDB write ─── ValueObservation fires
-    │   │   ├─ FRIEND_RESP → friends.updateStatus()
-    │   │   ├─ DEVICE_ANN  → friends.updateDevices() (verify signature first)
+    │   │   ├─ FRIEND_RESP → friends.updateStatus() (only if we sent the request)
+    │   │   ├─ DEVICE_ANN  → verify against the PINNED recovery key (TOFU), then
+    │   │   │                friends.updateDevices() with a CLAMPED timestamp
     │   │   ├─ MODEL_SYNC  → inbox.put() ── durable row ── app drains it
     │   │   ├─ SYNC_BLOB   → import friends + messages (own userId only)
     │   │   ├─ SENT_SYNC   → messages.add() (own userId only)
-    │   │   ├─ FRIEND_SYNC → friends.add/remove() (own userId only)
-    │   │   └─ SESS_RESET  → deleteAllSessions()
+    │   │   ├─ SESS_RESET  → deleteAllSessions()
+    │   │   └─ .unimplemented arms (FRIEND_SYNC, DEVICE_LINK_APPROVAL,
+    │   │      DEVICE_RECOVERY_ANNOUNCE, SYNC_REQUEST, SETTINGS_SYNC, READ_SYNC,
+    │   │      HISTORY_CHUNK) → logged, dropped, acked
     │   │
     │   ├─ emit(ReceivedMessage)  ──── to events stream + waiters
     │   └─ gateway.acknowledge([envelope.id])  ──── ACK so server deletes
@@ -75,6 +84,14 @@ ObscuraClient.startEnvelopeLoop()
 SwiftUI View: .task { for await msgs in client.messages.observeMessages(id).values { ... } }
               ──── GRDB ValueObservation fires automatically, view re-renders
 ```
+
+> **Sessions key on the DEVICE UUID, never on `registrationId`.** Both diagrams above used to show
+> `encrypt(userId, plaintext, registrationId)` and a `registrationId`-keyed session map. That was the
+> F1 defect Phase 2 fixed (`obscura-proto/SPEC.md` §0.10): the real signatures are
+> `encrypt(deviceUuid:_:)` and `decrypt(senderUserId:senderDeviceUuid:content:messageType:)`, and
+> `MessengerActor`'s `deviceMap` keeps a `registrationId` slot that is **diagnostic only**.
+> `docs/PITFALLS.md` and `README.md` both warn against reintroducing it; this file was still
+> describing it.
 
 ## Key Invariant — for kit-owned state
 

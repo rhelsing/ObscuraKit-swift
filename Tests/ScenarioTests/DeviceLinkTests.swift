@@ -135,19 +135,55 @@ final class DeviceLinkTests: XCTestCase {
         }
     }
 
+    /// A code stamped ten minutes ago is expired under the real five-minute `defaultMaxAge`.
+    ///
+    /// This used to generate a code and validate it with `maxAge: 0`, which is sub-millisecond
+    /// flaky: `now - timestamp > 0` is FALSE when both land in the same millisecond, and they
+    /// usually do. Building the code with an explicit past timestamp removes the race and tests the
+    /// real threshold instead of a degenerate one.
     func testValidate_expiredCodeRejected() {
-        // Validate with maxAge of 0 — any code is expired
         let keyPair = IdentityKeyPair.generate()
-        let code = DeviceLink.generateLinkCode(
+        let tenMinutesAgo = UInt64(Date().timeIntervalSince1970 * 1000) - 10 * 60 * 1000
+        let code = Self.encodeLinkCode(DeviceLink.LinkCode(
             deviceId: "d1", deviceUUID: "u1",
-            signalIdentityKey: Data(keyPair.publicKey.serialize())
-        )
+            signalIdentityKey: Data(keyPair.publicKey.serialize()).base64EncodedString(),
+            challenge: Data(repeating: 0xAB, count: 16).base64EncodedString(),
+            timestamp: tenMinutesAgo
+        ))
 
-        if case .expired = DeviceLink.validateLinkCode(code, maxAge: 0) {
+        if case .expired = DeviceLink.validateLinkCode(code) {
             // Expected
         } else {
-            XCTFail("Should be expired with maxAge=0")
+            XCTFail("A code stamped 10 minutes ago must be expired under the 5-minute default")
         }
+    }
+
+    /// **A future-dated code must not crash the scanner.** `validateLinkCode` computed
+    /// `now - code.timestamp`, and `code.timestamp` comes straight out of a scanned QR payload with
+    /// nothing authenticated yet — so a code stamped in the future made that `UInt64` subtraction
+    /// go negative and **trap**. A trap is not catchable: scanning a hostile QR code killed the app.
+    /// Reaching the assertion at all is the test.
+    func testValidate_futureDatedCodeIsTreatedAsFreshRatherThanTrapping() {
+        let keyPair = IdentityKeyPair.generate()
+        let code = Self.encodeLinkCode(DeviceLink.LinkCode(
+            deviceId: "d1", deviceUUID: "u1",
+            signalIdentityKey: Data(keyPair.publicKey.serialize()).base64EncodedString(),
+            challenge: Data(repeating: 0xAB, count: 16).base64EncodedString(),
+            timestamp: UInt64.max
+        ))
+
+        if case .valid = DeviceLink.validateLinkCode(code) {
+            // Expected: clamp toward now rather than reject, as SPEC §2.4 does elsewhere.
+        } else {
+            XCTFail("A future-dated code must validate, not trap and not be rejected")
+        }
+    }
+
+    /// Encode a `LinkCode` the same way `generateLinkCode` does, but with a caller-chosen timestamp.
+    /// The generator always stamps `now`, which makes expiry untestable without sleeping.
+    private static func encodeLinkCode(_ code: DeviceLink.LinkCode) -> String {
+        guard let json = try? JSONEncoder().encode(code) else { return "" }
+        return Base58.encodeString(json)
     }
 
     func testValidate_garbageInputRejected() {

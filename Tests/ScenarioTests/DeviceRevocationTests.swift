@@ -1,7 +1,14 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Scenario 7: Device Revocation — against actual server
+/// Scenario 7: Device Revocation — against actual server.
+///
+/// Two tests were deleted from here as duplicates of the vacuous pair in
+/// `DeviceRevocationFlowTests`: `testScenario7_4_MessagePurgeByDevice` re-implemented the revocation
+/// itself and then asserted `deleteByAuthorDevice` had deleted, and `testScenario7_5_DeviceWipe`
+/// called `clearAll()` and asserted it had cleared. Neither exercised any kit behaviour — see that
+/// file's type doc for why this matters. There is no remote device revocation in this kit; the
+/// broken `revokeDevice` that these tests never touched has been deleted.
 final class DeviceRevocationTests: XCTestCase {
 
     // MARK: - 7.1: Three-way message exchange
@@ -26,46 +33,6 @@ final class DeviceRevocationTests: XCTestCase {
 
         alice.disconnectWebSocket()
         bob.disconnectWebSocket()
-    }
-
-    // MARK: - 7.4: Message purge by author device
-
-    func testScenario7_4_MessagePurgeByDevice() async throws {
-        let alice = try await ObscuraTestClient.register()
-
-        // Store messages from different devices
-        try await alice.messages.add("bob", Message(messageId: "m1", conversationId: "bob", content: "from dev1", authorDeviceId: "device-1"))
-        try await alice.messages.add("bob", Message(messageId: "m2", conversationId: "bob", content: "from dev2", authorDeviceId: "device-2"))
-        try await alice.messages.add("bob", Message(messageId: "m3", conversationId: "bob", content: "from dev1 again", authorDeviceId: "device-1"))
-
-        // Revoke device-2
-        let deleted = await alice.messages.deleteByAuthorDevice("device-2")
-        XCTAssertEqual(deleted, 1)
-
-        let remaining = await alice.messages.getMessages("bob")
-        XCTAssertEqual(remaining.count, 2)
-        XCTAssertTrue(remaining.allSatisfy { $0.authorDeviceId == "device-1" })
-    }
-
-    // MARK: - 7.5: Device wipe
-
-    func testScenario7_5_DeviceWipe() async throws {
-        let bob = try await ObscuraTestClient.register()
-
-        // Store some state
-        try await bob.friends.add("alice-id", "alice", status: .accepted)
-        try await bob.messages.add("alice", Message(messageId: "m1", conversationId: "alice", content: "hello"))
-        await bob.devices.storeIdentity(DeviceIdentity(coreUsername: bob.username, deviceId: "dev1", deviceUUID: "uuid1"))
-
-        // Wipe
-        await bob.devices.clearAll()
-        await bob.messages.clearAll()
-
-        let hasIdentity = await bob.devices.hasIdentity()
-        XCTAssertFalse(hasIdentity, "Identity should be wiped")
-
-        let msgs = await bob.messages.getMessages("alice")
-        XCTAssertEqual(msgs.count, 0, "Messages should be wiped")
     }
 
     // MARK: - 7.2: Delete device via server API

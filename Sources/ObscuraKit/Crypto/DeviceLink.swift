@@ -74,9 +74,20 @@ public struct DeviceLink {
             return .invalid("Missing required fields")
         }
 
-        // Check expiry
+        // Check expiry.
+        //
+        // ⚠️ The subtraction MUST be guarded, never written as `now - code.timestamp > maxAge`.
+        // `code.timestamp` comes out of a SCANNED QR payload — it is whatever the other device put
+        // there, and this function is reached before anything has been authenticated. A future-dated
+        // code makes that expression negative, and `UInt64` subtraction **traps**. A trap is not
+        // catchable, so nothing upstream can contain it: scanning a hostile QR code kills the app.
+        //
+        // This is the same bug class already fixed in `Wire/ModelSignal.swift`, in the same total
+        // comparison form: compare first, subtract only on the branch where the subtraction is
+        // defined. A future-dated code is treated as fresh, which matches how SPEC §2.4 handles a
+        // peer-supplied time it cannot trust — clamp toward now rather than reject.
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        if now - code.timestamp > maxAge {
+        if code.timestamp < now && now - code.timestamp > maxAge {
             return .expired
         }
 
