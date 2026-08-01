@@ -3,15 +3,14 @@
 #
 #   scripts/testpush.sh install   # build + install to a booted sim, launch
 #   scripts/testpush.sh logs      # stream the app's push logs from the sim
-#   scripts/testpush.sh fire      # simulate a silent push → drain + notify
+#   scripts/testpush.sh fire      # simulate a silent push → drain
 #   scripts/testpush.sh cold      # terminate app first, then fire — proves wake
 #
 # The fire/cold paths need NO Firebase and NO real APNs. The iOS Simulator does NOT
 # deliver background/silent (content-available) pushes, so `fire` relaunches the app
 # with OBSCURA_TEST_PUSH=1, which runs the IDENTICAL
-# AppDelegate -> PushCoordinator.handleSilentPush -> processPendingMessages -> PushNotifier
-# path that a real FCM silent push triggers on a device. (The same as Android's debug
-# TestPushReceiver.) For true end-to-end silent-push delivery you need a real device +
+# AppDelegate -> PushCoordinator.handleSilentPush -> processPendingMessages path that a real
+# FCM silent push triggers on a device. For true end-to-end silent-push delivery you need a real device +
 # the APNs key uploaded to Firebase (see App/README).
 #
 # `alert` fires a visible push via `simctl push` — useful to confirm APNs plumbing.

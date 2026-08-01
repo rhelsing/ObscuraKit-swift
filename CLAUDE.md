@@ -85,9 +85,9 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
 - **`ObscuraError.invalidSchema` / `.directRoutingUnresolved` are deleted here and must be deleted
   in ObscuraKit-Kotlin and `obscura-pix/src/native/ObscuraModule.ts` too** — they are dead in both
   kits and exposed to JS through the shared bridge error union.
-- `ProcessedCounts` still hard-codes `"pix"` and `"directMessage"` in kit source
-  (`classifyForPushCounts`), which §0.4 forbids. ObscuraKit-Kotlin has the identical defect. The fix
-  changes a bridge-facing type on both platforms and is deliberately a separate change.
+- ~~`ProcessedCounts` hard-codes application model names in kit source~~ — **FIXED.** Both kits now
+  return one opaque processed-envelope total, and the drain observes receive activity without
+  consuming the app/test event queue.
 - `sendModelSync(to:model:entryId:op:data:)` still gates on friendship and sends to exactly one
   friend. Prefer `send(to:...)`. Its Kotlin twin survives too; both are follow-ups.
 - **`send(to:_ text:)` — the legacy TEXT send — still exists here, and ObscuraKit-Kotlin deleted its

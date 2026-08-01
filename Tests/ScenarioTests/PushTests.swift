@@ -6,7 +6,7 @@ import XCTest
 /// These cover the kit's contract with the bridge layer: `registerPushToken(_:)` and
 /// `processPendingMessages(timeout:)`. No APNS/FCM involvement — we simulate the
 /// "silent push wakes the app" scenario by disconnecting Bob, sending from Alice,
-/// then having Bob call `processPendingMessages()` to drain and classify.
+/// then having Bob call `processPendingMessages()` to drain.
 final class PushTests: XCTestCase {
 
     // MARK: - Token Registration
@@ -36,49 +36,38 @@ final class PushTests: XCTestCase {
     // MARK: - processPendingMessages — the push wake drain
 
     /// Simulates the silent push wake flow. Bob disconnects (like an app going to
-    /// background). Alice sends 2 pix + 1 directMessage. Bob calls
-    /// `processPendingMessages()` which connects, drains the envelopes, and returns counts.
-    /// Bridge would use these to post "New pix" (pix wins on tie).
-    func testProcessPendingMessagesCategorizes() async throws {
+    /// background). Alice sends three opaque model entries. Bob calls
+    /// `processPendingMessages()` which connects, drains the envelopes, and returns one total.
+    func testProcessPendingMessagesDrainsOpaqueModels() async throws {
         let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
-
-        // No schema is defined, and none is needed: `classifyForPushCounts` reads
-        // `ModelSync.model` straight off the proto, so the push path never depended on the engine
-        // that was deleted. This test used to call `client.schema(...)` on both sides first.
 
         // Bob goes offline — simulates app in background/killed
         bob.disconnectWebSocket()
         try await Task.sleep(nanoseconds: 500_000_000)
 
-        // Alice sends 2 pix + 1 directMessage while Bob is offline. The APP names the recipients
-        // now (SPEC §0.4) — `send` resolves no audience of its own.
-        let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
+        // Model keys and payloads are opaque to the kit.
         for i in 1...2 {
             try await alice.client.send(
-                to: [bob.userId!], modelKey: "pix", entryId: "pix_\(i)",
-                payload: try JSONSerialization.data(withJSONObject: [
-                    "conversationId": convId,
-                    "recipientUsername": bob.username,
-                    "senderUsername": alice.username,
-                    "mediaRef": "fake-attachment-\(i)",
-                ]))
+                to: [bob.userId!], modelKey: "model-a", entryId: "entry-a-\(i)",
+                payload: Data("opaque-a-\(i)".utf8))
             await rateLimitDelay()
         }
         try await alice.client.send(
-            to: [bob.userId!], modelKey: "directMessage", entryId: "dm_1",
-            payload: try JSONSerialization.data(withJSONObject: [
-                "conversationId": convId,
-                "content": "hello",
-                "senderUsername": alice.username,
-            ]))
+            to: [bob.userId!], modelKey: "model-b", entryId: "entry-b-1",
+            payload: Data("opaque-b".utf8))
         await rateLimitDelay()
 
         // Server queues envelopes. Bob calls processPendingMessages — simulates silent push wake.
-        let counts = await bob.client.processPendingMessages(timeout: 15)
-
-        XCTAssertEqual(counts.pixCount, 2, "Should have drained 2 pix envelopes")
-        XCTAssertEqual(counts.messageCount, 1, "Should have drained 1 directMessage envelope")
-        XCTAssertEqual(counts.otherCount, 0, "No other envelopes expected in this scenario")
+        let processed = await bob.client.processPendingMessages(timeout: 15)
+        XCTAssertEqual(processed, 3, "Should have processed exactly 3 opaque envelopes")
+        var queuedModels: [String?] = []
+        for _ in 0..<3 {
+            queuedModels.append(try await bob.waitForMessage(timeout: 2).model)
+        }
+        XCTAssertEqual(
+            queuedModels,
+            ["model-a", "model-a", "model-b"],
+            "Push draining must not consume the test event queue")
 
         // Kit must NOT have disconnected — OS will freeze the app when done
         XCTAssertEqual(bob.client.connectionState, ConnectionState.connected)
@@ -87,19 +76,17 @@ final class PushTests: XCTestCase {
         bob.disconnectWebSocket()
     }
 
-    /// Edge case: no pending envelopes. Should return zero counts quickly (idle detection).
+    /// Edge case: no pending envelopes. Should return zero quickly (idle detection).
     func testProcessPendingMessagesEmpty() async throws {
         let alice = try await ObscuraTestClient.register()
         await rateLimitDelay()
         try await alice.connectWebSocket()
 
         let start = Date()
-        let counts = await alice.client.processPendingMessages(timeout: 10)
+        let processed = await alice.client.processPendingMessages(timeout: 10)
         let elapsed = Date().timeIntervalSince(start)
 
-        XCTAssertEqual(counts.pixCount, 0)
-        XCTAssertEqual(counts.messageCount, 0)
-        XCTAssertEqual(counts.otherCount, 0)
+        XCTAssertEqual(processed, 0)
         XCTAssertLessThan(elapsed, 2.0, "Should return within 500ms idle threshold + slack, not full 10s timeout")
 
         alice.disconnectWebSocket()
@@ -112,8 +99,8 @@ final class PushTests: XCTestCase {
 
         XCTAssertNotEqual(alice.client.connectionState, .connected, "Precondition: not connected")
 
-        let counts = await alice.client.processPendingMessages(timeout: 10)
-        XCTAssertEqual(counts.pixCount, 0)
+        let processed = await alice.client.processPendingMessages(timeout: 10)
+        XCTAssertEqual(processed, 0)
         XCTAssertEqual(alice.client.connectionState, ConnectionState.connected, "Should have connected during drain")
 
         alice.disconnectWebSocket()
