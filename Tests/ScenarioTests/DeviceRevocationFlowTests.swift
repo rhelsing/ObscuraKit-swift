@@ -4,30 +4,11 @@ import LibSignalClient
 
 /// DEVICE_ANNOUNCE receive behaviour: delivery, trust-on-first-use verification, and the timestamp
 /// clamp.
-///
-/// ## What this file used to be, and why none of it is left
-///
-/// It was the worst file in the suite, and its vacuity is the direct reason a broken `revokeDevice`
-/// survived unnoticed until it was deleted:
-///
-/// - `testFriendProcessesRevocation` performed the revocation ITSELF — it called
-///   `messages.deleteByAuthorDevice` and `friends.updateDevices` by hand and then asserted those two
-///   stores had done what they were just told. Deleting the entire `.deviceAnnounce` arm from
-///   `routeMessage` left it green.
-/// - `testRevokedDeviceSelfBricks` called `devices.clearAll()` / `messages.clearAll()` and asserted
-///   they had cleared. There is no self-brick behaviour anywhere in the kit; the test asserted that
-///   `DELETE` deletes.
-/// - `testRevocationAnnounceDelivery` set `signature = Data(repeating: 0xAA, count: 64)` with the
-///   comment "signed with recovery key". It was 64 bytes of 0xAA.
-///
-/// `DeviceRevocationTests` duplicated two of them verbatim. Everything here now goes through
-/// `routeMessage`, so deleting a handler fails a test.
 final class DeviceRevocationFlowTests: XCTestCase {
 
     // MARK: - DeviceAnnounce is delivered and APPLIED
 
-    /// The announce reaches Alice *and changes her friend record*. The old version stopped at the
-    /// first half, which any wire test would pass.
+    /// The announce reaches Alice and changes her friend record.
     func testDeviceAnnounceUpdatesTheSendersDeviceList() async throws {
         let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 
@@ -148,8 +129,7 @@ final class DeviceRevocationFlowTests: XCTestCase {
                        "a re-add must not reset a pinned key — that is a silent downgrade to unverified")
     }
 
-    /// A real signature over the real payload verifies; 64 bytes of 0xAA does not. The old
-    /// `testRevocationAnnounceDelivery` asserted neither and claimed both.
+    /// A signature verifies only against the key that created it.
     func testASignatureOnlyVerifiesAgainstTheKeyThatMadeIt() {
         let phrase = RecoveryKeys.generatePhrase()
         let pubKey = RecoveryKeys.getPublicKey(from: phrase)

@@ -1,7 +1,6 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Matches Kotlin's RecoveryMessagingTests.kt
 /// Recovery messaging: announce recovery to friends, resume messaging.
 ///
 /// ## What this file does NOT cover
@@ -11,24 +10,10 @@ import XCTest
 /// nothing at all on the recipient: not the friend graph, not the device list, not the stored
 /// recovery key.
 ///
-/// These tests assert only that the **wire message is delivered** — they would pass unchanged if the
-/// handler were deleted, which is to say they pass because it never existed. Do not read a green run
-/// here as "recovery works". Naming the first test for delivery rather than for the feature is
-/// deliberate: `obscura-proto/HISTORY.md`'s F-findings are largely about green ticks over behaviour
-/// nobody implemented, and this was one of them.
-///
-/// The gap is a recorded deferral (`obscura-proto/KIT_API.md` §4.2), but **it is not unreachable in
-/// this kit, and this note used to claim it was.** It said the sender is "gated behind
-/// `enableRecoveryPhrase`, which defaults to `false`". There is no `enableRecoveryPhrase` anywhere in
-/// the Swift source — that config flag exists only in ObscuraKit-Kotlin.
-/// `ObscuraClient.announceRecovery(_:)` is a live, ungated public sender here, which is why these
-/// tests can call it at all. What is true is that obscura-pix ships no recovery UI, so nothing in
-/// the running *app* calls it today.
-///
-/// When the handler is built, extend the first test to assert the recipient's device list actually
-/// changed — and verify the signature against the **stored** recovery key, never the
-/// `recovery_public_key` carried inside the message it authenticates. `routeMessage`'s
-/// `.deviceAnnounce` arm now does exactly that (trust on first use); this arm should follow it.
+/// These tests assert wire delivery only; they do not prove recovery works.
+/// `announceRecovery` is a live public sender, although obscura-pix exposes no
+/// recovery UI. Any receive handler must verify against the stored recovery
+/// key, never the key carried inside the signed message.
 final class RecoveryMessagingTests: XCTestCase {
 
     /// DELIVERY ONLY — see the type doc. Asserts the announcement reaches Bob's device, not that Bob

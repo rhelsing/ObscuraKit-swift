@@ -37,11 +37,10 @@ final class SessionRefreshTests: XCTestCase {
         let rt2 = try XCTUnwrap(client.refreshToken)
         XCTAssertNotEqual(rt2, rt1, "the single-use refresh token should be rotated by the server")
 
-        // Root-cause proof: the OLD refresh token is now invalid. Before the fix,
-        // a restored session used exactly this consumed token → 401 on every send.
+        // Refresh tokens are single-use; the consumed token must be invalid.
         do {
             _ = try await client.api.refreshSession(rt1)
-            XCTFail("the old (consumed) refresh token must be rejected after rotation")
+            XCTFail("the consumed refresh token must be rejected after rotation")
         } catch {
             // expected — server rejects the consumed refresh token
         }

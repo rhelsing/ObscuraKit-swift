@@ -4,11 +4,8 @@ import XCTest
 /// SYNC_BLOB transfer — existing device sends state to new device
 /// Tests export/import of friends and messages, and delivery via encrypted message.
 ///
-/// `SyncBlobExporter.export` used to take a `messages:` parameter that all three production callers
-/// passed `[]` for, so the message-serialization branch was reachable only from these tests. The
-/// parameter is gone; the IMPORT side still handles messages, because a peer kit may put them in a
-/// blob, so `testSyncBlobImportIntoFreshStores` now builds a peer-shaped blob by hand rather than
-/// round-tripping through an exporter that can no longer produce one.
+/// This kit exports the friend graph only. Import remains tolerant of messages
+/// in a peer kit's blob.
 final class SyncBlobTests: XCTestCase {
 
     // MARK: - Export and import round-trip
@@ -41,7 +38,7 @@ final class SyncBlobTests: XCTestCase {
     // MARK: - Import into fresh stores
 
     /// The import half, against a blob shaped the way a PEER kit writes one — friends and messages.
-    /// Built by hand because this kit's exporter no longer emits messages, and asserting the import
+    /// Built by hand because this kit's exporter does not emit messages, and asserting the import
     /// path against an exporter that cannot produce the input would prove nothing about what arrives
     /// off the wire.
     func testSyncBlobImportIntoFreshStores() async throws {

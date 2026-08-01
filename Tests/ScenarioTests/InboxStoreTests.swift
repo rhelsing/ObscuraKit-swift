@@ -4,9 +4,8 @@ import GRDB
 
 /// The durable inbox (`obscura-proto/KIT_API.md` §3).
 ///
-/// Mirrors `ObscuraKit-Kotlin`'s `InboxDomainTest`, deliberately assertion-for-assertion: §10 has
-/// Kotlin design the shape and Swift port the proven one, and the tests are part of what is being
-/// ported. Where the two kits' tests disagree, one of the kits is wrong.
+/// Mirrors `ObscuraKit-Kotlin`'s `InboxDomainTest` so both kits enforce the
+/// same durable-inbox contract.
 ///
 /// These check the properties the design is *for*, not the SQL. Each corresponds to a normative rule,
 /// and most exist because getting the rule wrong loses messages permanently — the row is the only
@@ -43,13 +42,8 @@ final class InboxStoreTests: XCTestCase {
     /// The rule the whole design leans on. Persist-then-ack **guarantees** redelivery: the ack is
     /// best-effort and its failure is swallowed, so the server's per-connection cursor re-sends on
     /// the next connection. That is correct behaviour — losing the message would be worse.
-    ///
-    /// The deleted engine absorbed redelivery **by accident**: `ModelStore.put` was
-    /// `INSERT OR REPLACE` keyed on `(model, id)`, so a re-delivered entry overwrote itself. The
-    /// inbox is keyed on a monotonic `id` instead, so nothing about its primary key would collide —
-    /// without `envelope_id UNIQUE` and `INSERT OR IGNORE` (§3.3 rule 8) the same redelivery would
-    /// insert a SECOND row, and the replacement would be strictly *less* idempotent than what it
-    /// replaced.
+    /// `envelope_id UNIQUE` with `INSERT OR IGNORE` is the inbox
+    /// deduplication boundary (§3.3 rule 8).
     func testRedeliveredEnvelopeDoesNotCreateASecondRow() async throws {
         let inbox = try makeInbox()
 
@@ -195,8 +189,7 @@ final class InboxStoreTests: XCTestCase {
         let db = try DatabaseQueue()
         let inbox = try InboxStore(db: db)
         try await inbox.put(record("env_1"))
-        // Written under the store's back, because `put` can no longer produce one — which is the
-        // point: the row arrives from a peer kit, not from this kit's writer.
+        // Injected directly because this value can arrive from a peer kit.
         try await db.write { db in
             try db.execute(sql: "UPDATE inbox_rows SET sent_at = ? WHERE envelope_id = ?",
                            arguments: [Int64(-1_700_000_000_000), "env_1"])

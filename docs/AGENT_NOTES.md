@@ -26,29 +26,20 @@ When `ObscuraClient.connect()` starts the envelope loop, incoming messages get p
 
 ## Biggest Tech Debt
 
-**`[String: Any]` in APIClient — 2 occurrences, both in `decodeJWT`.** This note claimed 41 and that
-"the entire API layer returns untyped dictionaries". It does not: `APIClient` returns typed
-`Codable` models (`APIModels.swift`), and the only untyped dictionary left is the decoded JWT
-payload, which is genuinely schemaless. The Codable refactor it pointed at has effectively happened.
+**`[String: Any]` in APIClient is limited to `decodeJWT`.** API responses use
+typed `Codable` models; only the JWT payload is schemaless.
 
 **Generated protobuf types are `internal` visibility.** This is why `sendRawMessage` takes `Data`.
 Regenerating with `--swift_opt=Visibility=Public` would fix that but exposes the generated
 `Obscura_V1_*` / `Obscura_Client_V1_*` names on the public surface. Better to wrap in domain types.
-(This note used to say `ReceivedMessage` "uses `Int` for type" — it is a `String` — and warned about
-leaking an `Obscura_V2_` prefix, which has never existed in this repo.)
 
 ## Reference Codebase
 
 **There is no "feature parity reference." Do not copy another kit's design.**
 
-This section used to say the Kotlin client was the parity reference and that we should mirror
-its features and tests. That instruction is why both kits carry the same ORM, CRDT engine, and
-query DSL — each one justified by the other's existence, neither justified by the app.
-
 The only thing this kit must match in ObscuraKit-Kotlin is the **wire**
 (`obscura-proto/conformance/wire.json`). Behavior is specified by
 [`obscura-proto/SPEC.md`](../../obscura-proto/SPEC.md) — the contract, not a sibling codebase.
-(The path in the old note, `../obscura-client-kotlin`, had not existed for months either.)
 
 ## The Public API Contract
 

@@ -57,7 +57,7 @@ public actor MessengerActor {
         return bundles
     }
 
-    // MARK: - Addressing (Phase 2)
+    // MARK: - Addressing
 
     /// The deviceId slot of every ProtocolAddress. Constant because the device UUID in the name
     /// slot already uniquely identifies the peer device; libsignal just needs SOME stable int here.
@@ -81,7 +81,7 @@ public actor MessengerActor {
 
     // MARK: - Encryption
 
-    /// Encrypt plaintext for a target peer DEVICE, addressed by its device UUID (Phase 2).
+    /// Encrypt plaintext for a target peer device, addressed by its UUID.
     public func encrypt(deviceUuid: String, _ plaintext: [UInt8]) throws -> (type: CiphertextMessage.MessageType, body: [UInt8]) {
         let address = try Self.addressFor(deviceUuid)
 
@@ -96,11 +96,8 @@ public actor MessengerActor {
         return (type: ciphertext.messageType, body: Array(ciphertext.serialize()))
     }
 
-    /// Establish an outbound session from a prekey bundle response.
-    /// Phase 2: the session is keyed on the peer's DEVICE UUID at address (deviceUuid, 1) — the
-    /// SAME address decrypt() uses inbound — killing the old send/receive address split (F1). The
-    /// peer's real registrationId is still carried INSIDE the PreKeyBundle (Signal metadata), but
-    /// the bundle's deviceId slot is pinned to the addressing constant to match the store address.
+    /// Establish an outbound session keyed on the peer device UUID at `(deviceUuid, 1)`, the same
+    /// address used for inbound decrypt. `registrationId` remains Signal protocol metadata.
     public func processServerBundle(_ bundleData: PreKeyBundleResponse, userId: String) throws {
         let regId = UInt32(bundleData.registrationId)
         let address = try Self.addressFor(bundleData.deviceId)
@@ -156,12 +153,9 @@ public actor MessengerActor {
 
     /// Decrypt an envelope's encrypted message.
     ///
-    /// Phase 2 receive-side addressing. The caller passes the SENDER'S DEVICE UUID (from
-    /// `Envelope.senderDeviceID`, stamped by the server from the device-scoped JWT — unforgeable
-    /// by the sender). Signal sessions are pairwise device-to-device and a SignalMessage carries
-    /// no sender identity, so this is how we select the inbound session. There is no
-    /// candidate-registrationId loop and no `senderRegId: 1` default anymore — the address is the
-    /// SAME (deviceUuid, 1) the send path builds, closing the F1 split.
+    /// The caller passes the server-stamped sender device UUID. Signal sessions are pairwise and a
+    /// SignalMessage carries no sender identity, so the UUID selects the inbound session at the
+    /// same `(deviceUuid, 1)` address used by send.
     ///
     /// A valid MAC proves possession of that session's chain key, which only the sender's device
     /// holds, so `senderDeviceUuid` is a cryptographically sound attribution once decrypt succeeds.
@@ -194,8 +188,8 @@ public actor MessengerActor {
             )
         }
 
-        // Learn the sender's device so later fan-out to this user includes it (F6). The regId slot
-        // is diagnostic only; addressing is by device UUID.
+        // Learn the sender's device for later fan-out. The registration-id
+        // slot is diagnostic only; addressing is by device UUID.
         if deviceMap[senderDeviceUuid] == nil {
             deviceMap[senderDeviceUuid] = (userId: senderUserId, registrationId: Self.addrDeviceId)
         }
@@ -219,7 +213,7 @@ public actor MessengerActor {
         // Use pre-serialized ClientMessage bytes
         let plaintext = Array(clientMessageData)
 
-        // Encrypt (addressed by device UUID, Phase 2)
+        // Encrypt at the canonical device-UUID address.
         let encrypted = try encrypt(deviceUuid: targetDeviceId, plaintext)
 
         // Wrap in EncryptedMessage protobuf
@@ -239,10 +233,9 @@ public actor MessengerActor {
 
     /// Send all queued messages in a single batch.
     ///
-    /// On failure the batch is restored to the head of the queue so the next flush retries it —
-    /// but only up to ``maxFlushAttempts``. **A permanently-failing submission used to be restored
-    /// unconditionally**, so it rode along with every later flush from every caller and failed each
-    /// one; a single malformed target device id broke sending for the whole session.
+    /// On failure the batch is restored to the head of the queue for at most
+    /// ``maxFlushAttempts``. The cap prevents one permanently invalid submission from blocking
+    /// every later flush.
     ///
     /// - Warning: a restored batch re-flushed alongside new submissions is **not** deduplicated
     ///   server-side. `APIClient.sendMessage` derives its `Idempotency-Key` from a hash of the whole

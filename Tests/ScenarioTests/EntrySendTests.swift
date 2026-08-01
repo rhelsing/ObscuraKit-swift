@@ -3,15 +3,12 @@ import XCTest
 
 /// `send` — the outbox half of the thin kit (`obscura-proto/KIT_API.md` §5).
 ///
-/// Mirrors `ObscuraKit-Kotlin`'s `EntrySendTests`. §5 names two properties and says to **prove them
-/// with a test before building on this**, which is why they come first:
+/// §5 requires two properties:
 ///
 /// 1. the sending device must be excluded from its own fan-out;
 /// 2. the sender gets no inbox row, so the app must write its own outgoing entry.
 ///
-/// Both are load-bearing for obscura-pix's switch (§10 step 3): (1) decides whether the app has to
-/// dedupe its own writes, and (2) decides whether "I sent it" and "it arrived" are one code path or
-/// two.
+/// These determine whether local outgoing writes and incoming delivery share one code path.
 final class EntrySendTests: XCTestCase {
 
     func testASentEntryArrivesInTheRecipientsInboxWithThePayloadUntouched() async throws {
@@ -126,12 +123,8 @@ final class EntrySendTests: XCTestCase {
     /// exactly this, and the kit is not guessing an audience — the caller named one, and it was
     /// empty. Failing loud is reserved for an audience the kit was asked to invent (SPEC §1.2).
     ///
-    /// **This needs TWO devices, and it used to have one.** The old version registered a single
-    /// client, sent with `to: []`, and asserted its own inbox stayed empty — which it would if
-    /// `send` were an empty function. It observed no self-sync because there was nowhere to sync
-    /// TO. The fixture below is the one `TwoDeviceSendTests` already builds: link a second device
-    /// through a real `validateAndApproveLink`, so the approver's registry genuinely holds two
-    /// devices and the self-sync has a destination.
+    /// The fixture links a second device through `validateAndApproveLink` so
+    /// self-sync has an observable destination.
     func testAnEmptyRecipientListSelfSyncsToTheUsersOtherDevices() async throws {
         let alice1 = try await ObscuraTestClient.register()
         await rateLimitDelay()
@@ -144,7 +137,7 @@ final class EntrySendTests: XCTestCase {
 
         // Real link approval: this is what puts BOTH devices in alice1's own-device registry and
         // builds alice1's Signal session to alice2. Without it `send` has nothing to fan out to and
-        // the test is vacuous again.
+        // the test would be vacuous.
         let code = try XCTUnwrap(alice2.client.generateLinkCode())
         try await alice1.client.validateAndApproveLink(code)
         await rateLimitDelay()

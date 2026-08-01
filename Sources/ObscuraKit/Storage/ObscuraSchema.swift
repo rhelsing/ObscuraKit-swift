@@ -3,32 +3,8 @@ import GRDB
 
 /// The one place this kit's database schema is defined.
 ///
-/// Before this existed there was no migration mechanism at all — no `ALTER TABLE`, no
-/// `PRAGMA user_version`, no `grdb_migrations`, no table or column probing. Nineteen
-/// `CREATE TABLE IF NOT EXISTS` statements lived in six private `createTables` functions,
-/// each fired from its own store's `init`, in whatever order `ObscuraClient` happened to
-/// construct them.
-///
-/// That arrangement can only ever *add whole tables*, and it fails silently at everything else:
-///
-/// ```
-/// -- ship a new column by editing the CREATE TABLE IF NOT EXISTS:
-/// sqlite> CREATE TABLE IF NOT EXISTS friends (user_id TEXT PRIMARY KEY, username TEXT NOT NULL,
-///                                             blocked INTEGER NOT NULL DEFAULT 0);
-/// exit=0                              -- no error, no warning, no change
-/// sqlite> SELECT user_id, blocked FROM friends;
-/// Error: in prepare, no such column: blocked
-/// ```
-///
-/// Silent when the schema changes, throwing later at query time, with no way to repair. This is
-/// the Swift half of `obscura-proto/KIT_API.md` P1; the Kotlin half is SQLDelight `.sqm` files.
-///
-/// **`obscura-proto/HISTORY.md` Phase 3 needed the part that never worked.** Adding the inbox table
-/// worked by accident, because the erase-on-schema-change tripwire noticed and rebuilt — *not*
-/// because `IF NOT EXISTS` re-runs, which under `DatabaseMigrator` it does not: an applied
-/// migration never runs again. Removing `associations` and
-/// `ttl` — and dropping `model_entries.signature`, a `NOT NULL` column holding a keyless hash
-/// nothing verifies — is what `v2` does, and is impossible without this file.
+/// Every schema change must be an additive `DatabaseMigrator` step. Editing a `CREATE TABLE IF NOT
+/// EXISTS` statement does not alter an existing table, and an applied migration never runs again.
 ///
 /// ## The one rule
 ///
@@ -41,49 +17,14 @@ public enum ObscuraSchema {
     public static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
 
-        // ─────────────────────────────────────────────────────────────────────────────────
-        // ⚠️ The tripwire (`eraseDatabaseOnSchemaChange`) used to be ON here, and `v2` is why
-        // it is now off.
-        //
-        // What it did: on every launch, migrate a temporary database up to the last-applied
-        // identifier and compare schemas; if they differ, `db.erase()`. That makes "edit the
-        // CREATE TABLE in `v1`" a working way to change the schema — GRDB notices and rebuilds
-        // — which is genuinely convenient while a schema is still being designed, and which is
-        // exactly the habit that must not survive contact with a database holding real state.
-        //
-        // Two things changed under it:
-        //
-        //   1. `inbox_rows` arrived. An ack is a DELETE (`obscura-proto/SPEC.md` §0.9): once the
-        //      kit acks, the inbox row is the ONLY copy of that message anywhere. An erase is no
-        //      longer "lose a dev database and re-provision" — it destroys messages that exist
-        //      nowhere else, silently, at launch, with no failed operation to notice.
-        //   2. This file acquired a real migration to write. The tripwire's whole justification
-        //      was that migrations were not yet worth authoring; `v2` is the counter-example,
-        //      and it preserves data precisely because it is a migration rather than a rebuild.
-        //
-        // The erase also destroyed the Signal identity (`signal_local_identity`,
-        // `signal_identities`, `signal_sessions`, `signal_sender_keys`), forcing a re-provision
-        // that mints a NEW server-side device row — and backups are keyed on device id, so the
-        // previous backup became reachable only by re-claiming the old id (`KIT_API.md` §8.4).
-        // That was always the cost; it was accepted while the only casualty was the dev's own
-        // convenience.
-        //
-        // The failure mode this trades INTO: edit `v1` now and nothing happens at all — the
-        // migration is already applied, so the edit is silently ignored and the code runs against a
-        // schema it does not describe. Nothing can catch that at RUNTIME; the only defence is a test
-        // that notices the source changed. `SchemaTests` has two, and neither is total:
-        // `expectedTables` catches a table added or removed, and `frozenColumns` catches a column
-        // added, removed or retyped in the two tables whose loss is unrecoverable. An index, a
-        // trigger or a default slips past both. That is the residual risk, stated rather than
-        // papered over.
-        // ─────────────────────────────────────────────────────────────────────────────────
+        // Do not enable eraseDatabaseOnSchemaChange. The inbox may hold the only acknowledged copy
+        // of a message, and this database also holds the Signal identity and sessions.
+        // SchemaTests guard table and critical-column shape, but only a new migration reliably
+        // updates existing devices.
         migrator.eraseDatabaseOnSchemaChange = false
 
-        // ⚠️ APPLIED. Do not edit — see the rule in the type doc. The ORM tables below are
-        // deliberately still created here and then dropped by `v2`; that is what "v1 is history"
-        // means. A fresh database creates three tables it immediately discards, which costs
-        // microseconds once and buys the guarantee that every database, new or old, reaches the
-        // same place by the same route.
+        // APPLIED. Do not edit. A fresh database runs this migration and every later migration so
+        // new and existing databases reach the same schema through the same steps.
         migrator.registerMigration("v1") { db in
             // `IF NOT EXISTS` is load-bearing exactly once: on a database created before this
             // file existed. Such a database has the tables but no `grdb_migrations` row, so
@@ -200,16 +141,8 @@ public enum ObscuraSchema {
             """)
 
             // ── Inbox ────────────────────────────────────────────────────────────────────
-            // The durable inbox (`obscura-proto/KIT_API.md` §3). Ported from the Kotlin shape
-            // (ObscuraKit-Kotlin PR #49) rather than co-designed — §10 has Kotlin design first
-            // precisely so the two kits stop diverging on behaviour.
-            //
-            // This landed in `v1` rather than a `v2` because the tripwire was on at the time: GRDB
-            // saw `sqlite_master` change and rebuilt, so adding a table was an edit here. **That is
-            // history, not a pattern to copy.** The tripwire is off and `v1` is applied, so an
-            // edit to this statement now reaches no existing database at all — silently. The next
-            // table goes in a new `registerMigration`, and `inbox_rows` correctly did NOT move here
-            // when `v2` was written: moving it would have been the same mistake in reverse.
+            // The durable inbox (`obscura-proto/KIT_API.md` §3). Do not edit this applied v1
+            // statement; change the table in a new migration.
             //
             // `AUTOINCREMENT` is not decoration: a plain `INTEGER PRIMARY KEY` aliases rowid, and
             // SQLite REUSES rowids after deletion — so a drained-then-refilled inbox would hand out
@@ -239,11 +172,8 @@ public enum ObscuraSchema {
                 CREATE INDEX IF NOT EXISTS idx_inbox_id ON inbox_rows(id)
             """)
 
-            // ── ORM ──────────────────────────────────────────────────────────────────────
-            // `associations` and `ttl` are dropped by `v2`, and `model_entries.signature` with
-            // them. `model_entries` itself SURVIVES — it is the app's entry store
-            // (`Stores/EntryStore.swift`), and `HISTORY.md` is explicit that the engine dies and
-            // the table does not.
+            // v1 application tables. Migration v2 retains `model_entries`
+            // storage and removes the unused policy tables and signature column.
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS model_entries (
                     model_name TEXT NOT NULL,
@@ -274,21 +204,14 @@ public enum ObscuraSchema {
             """)
         }
 
-        // ── v2: the ORM comes out ────────────────────────────────────────────────────────
+        // v2 retains app entry storage and removes unused schema:
         //
-        // `obscura-proto/KIT_API.md` §10 step 4, Swift half. The engine (`ORM/`) is deleted in the
-        // same change; this is the storage it leaves behind.
-        //
-        // **`model_entries` is NOT dropped, and that distinction is the whole migration.** It is
-        // the table `Stores/EntryStore.swift` reads and writes — the app's entries, the thing pix
-        // is now the owner of. What goes is the machinery layered over it:
-        //
-        //   - `associations` — relationships, never bridged, zero rows in practice.
-        //   - `ttl` — expiry, which `TTLManager` drove and which had to be called by hand anyway.
+        //   - `associations` — relationship policy does not belong in the kit.
+        //   - `ttl` — expiry is application policy and is not implemented.
         //   - `model_entries.signature` — a keyless SHA-256 of
         //     `"\(name):\(id):\(timestamp):\(deviceId)"`. Unkeyed, so anyone can compute it; it
         //     does not cover `data`, so it cannot detect tampering with the entry; and nothing
-        //     ever verified it. `SPEC §3.3` removed the same construct from the wire.
+        //     verifies it.
         //
         // The column goes by table rebuild rather than `ALTER TABLE ... DROP COLUMN`. DROP COLUMN
         // needs SQLite 3.35+, and the SQLite under this kit is whatever GRDB's SQLCipher fork
@@ -323,10 +246,8 @@ public enum ObscuraSchema {
 
     /// Bring `writer` up to the current schema.
     ///
-    /// Idempotent — `DatabaseMigrator` records what it has applied, so every store may call this
-    /// from its own `init` without coordination. That is deliberate: it is what let this file
-    /// replace six private `createTables` functions without touching the 73 in-memory store
-    /// constructions in the test suite.
+    /// Idempotent: `DatabaseMigrator` records applied steps, so every store may call this from its
+    /// own initializer without coordination.
     public static func migrate(_ writer: DatabaseQueue) throws {
         try migrator.migrate(writer)
     }
@@ -339,7 +260,7 @@ public enum ObscuraSchema {
     /// an edit to an already-applied migration is silently ignored at runtime, and this set is what
     /// turns that silence into a failing test.
     ///
-    /// **13 tables.** `v1` creates 15; `v2` drops `associations` and `ttl` with the ORM.
+    /// Keep this set synchronized with the fully migrated schema.
     ///
     /// Before this file existed, 19 tables were created by six private `createTables` functions:
     /// `v1`'s 15 minus `inbox_rows` (which did not exist yet), plus five belonging to

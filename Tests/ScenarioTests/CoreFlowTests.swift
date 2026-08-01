@@ -29,7 +29,7 @@ final class CoreFlowTests: XCTestCase {
         let bobUsername = "test_\(Int.random(in: 100000...999999))"
 
         // ============================================================
-        // PHASE 1: Register Alice (file-backed)
+        // STEP 1: Register Alice (file-backed)
         // ============================================================
 
         let alice = try ObscuraClient(apiURL: apiURL, dataDirectory: aliceDir)
@@ -54,7 +54,7 @@ final class CoreFlowTests: XCTestCase {
         let aliceRefreshToken = alice.refreshToken
 
         // ============================================================
-        // PHASE 2: Register Bob (file-backed)
+        // STEP 2: Register Bob (file-backed)
         // ============================================================
 
         let bob = try ObscuraClient(apiURL: apiURL, dataDirectory: bobDir)
@@ -71,7 +71,7 @@ final class CoreFlowTests: XCTestCase {
         let bobRefreshToken = bob.refreshToken
 
         // ============================================================
-        // PHASE 3: Friend Request — full state machine
+        // STEP 3: Friend request — full state machine
         // ============================================================
 
         try await alice.connect()
@@ -124,7 +124,7 @@ final class CoreFlowTests: XCTestCase {
         XCTAssertEqual(bobAccepted.count, 1)
 
         // ============================================================
-        // PHASE 4: Text Messaging — full state machine
+        // STEP 4: Text messaging — full state machine
         // ============================================================
 
         // Alice sends to Bob
@@ -179,7 +179,7 @@ final class CoreFlowTests: XCTestCase {
         XCTAssertEqual(bobConvos.count, 1)
 
         // ============================================================
-        // PHASE 5: Persistence through "restart" (file-backed)
+        // STEP 5: Persistence through restart (file-backed)
         // ============================================================
 
         alice.disconnect()
@@ -208,7 +208,7 @@ final class CoreFlowTests: XCTestCase {
         XCTAssertEqual(bob2Msgs.count, 2, "Bob should still have 2 messages after restart")
 
         // ============================================================
-        // PHASE 6: Queued delivery after restart
+        // STEP 6: Queued delivery after restart
         // ============================================================
 
         // Restore Alice's session and connect

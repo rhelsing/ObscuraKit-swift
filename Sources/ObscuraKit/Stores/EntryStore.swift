@@ -22,31 +22,9 @@ public struct StoredEntry: Sendable, Equatable {
 
 /// Raw storage for application entries (`obscura-proto/KIT_API.md` §8.1).
 ///
-/// Ported from `ObscuraKit-Kotlin`'s `EntryStore.kt`. `InboxStore` is how messages arrive; this is
-/// where the app keeps what it made of them. Together they are the whole data path.
-///
-/// ## Why it exists separately from the deleted `ModelStore`
-///
-/// **The table was kept; the engine above it was deleted.** `ORM/ModelStore` read and wrote these
-/// same `model_entries` rows, but it was the bottom of a stack — CRDT merge, TTL, query DSL, schema
-/// parser — that `HISTORY.md` removes entire. So the store the app keeps could not be that one; it had
-/// to be a type that survives the deletion, over the same rows. Hence a separate file with no ORM
-/// imports, rather than making `ModelStore` public.
-///
-/// The table is now two columns lighter (`ObscuraSchema` `v2`): `signature` held a keyless hash
-/// nothing verified, and the separate `ttl` table went with `TTLManager`.
-///
-/// ## Three methods, and there is no fourth
-///
-/// `put` / `all` / `delete`. §9 is explicit that a query API is not part of this design, and names
-/// the failure mode in advance: a table grows a filter, then an index abstraction, then observation,
-/// and the deleted engine has been reimplemented in TypeScript and called a reset.
-///
-/// ## No merge, no CRDT, no TTL
-///
-/// `put` is a blind upsert. **The app decides who wins** — merge moved to obscura-pix's
-/// `src/domain/merge.ts`. By the time a write reaches here the decision is made, so re-deciding it
-/// would be a second implementation of the thing being deleted.
+/// `InboxStore` is how messages arrive; this is where the app keeps what it made of them. The API is
+/// `put` / `all` / `delete`. `put` is a blind upsert; the app resolves merge before writing. This
+/// store has no schema parser, query layer, merge engine, or expiry policy.
 public actor EntryStore {
     private let db: DatabaseQueue
 
@@ -103,8 +81,7 @@ public actor EntryStore {
 
     /// Remove an entry outright.
     ///
-    /// A hard delete, not a tombstone. `HISTORY.md` establishes that the app never deletes an entry
-    /// today and that the whole tombstone-ordering design was dead on arrival.
+    /// A local hard delete, not a synchronized tombstone.
     ///
     /// - Note: Kotlin's `EntryStore.delete` soft-deletes, because that table carries a `deleted`
     ///   column and its `selectByModel` filters on it, while `model_entries` here has no such column.

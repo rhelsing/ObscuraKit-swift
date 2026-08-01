@@ -137,10 +137,7 @@ final class DeviceLinkTests: XCTestCase {
 
     /// A code stamped ten minutes ago is expired under the real five-minute `defaultMaxAge`.
     ///
-    /// This used to generate a code and validate it with `maxAge: 0`, which is sub-millisecond
-    /// flaky: `now - timestamp > 0` is FALSE when both land in the same millisecond, and they
-    /// usually do. Building the code with an explicit past timestamp removes the race and tests the
-    /// real threshold instead of a degenerate one.
+    /// An explicit past timestamp avoids timing races and tests the real threshold.
     func testValidate_expiredCodeRejected() {
         let keyPair = IdentityKeyPair.generate()
         let tenMinutesAgo = UInt64(Date().timeIntervalSince1970 * 1000) - 10 * 60 * 1000

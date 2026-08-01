@@ -3,14 +3,13 @@ import XCTest
 
 /// `SignalStore.receive` must survive a peer-supplied timestamp from the future.
 ///
-/// The staleness check used to be `now - payload.timestamp > 5_000`. `payload.timestamp` is
-/// `ClientMessage.timestamp` straight off the wire — peer-supplied and unclamped — so a peer whose
-/// clock was a millisecond ahead made that subtraction negative, and **`UInt64` subtraction traps**.
+/// `payload.timestamp` is peer-supplied and unclamped. Staleness checks must
+/// avoid subtracting a future `UInt64`, because underflow traps.
 ///
 /// A trap is not an error: `processEnvelope`'s `do/catch` cannot contain it, so the app dies. And any
 /// authenticated user can deliver a MODEL_SIGNAL — friendship is not required to send (`KIT_API.md`
 /// §4.1) — while Kotlin's sender stamps `System.currentTimeMillis()`. An Android peer with a slightly
-/// fast clock was a remote crash with no privileges needed.
+/// fast clock would otherwise cause a remote crash.
 ///
 /// These tests exist because a trap cannot be caught: there is no way to assert "it does not crash"
 /// except by running the call and reaching the next line.

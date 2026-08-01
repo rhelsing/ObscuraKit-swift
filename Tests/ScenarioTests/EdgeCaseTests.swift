@@ -32,9 +32,7 @@ final class EdgeCaseTests: XCTestCase {
         let alice = try await ObscuraTestClient.register()
         let phrase = alice.client.generateRecoveryPhrase()
 
-        // Derived from the phrase, not read off the client. The client no longer caches the derived
-        // public key — the property that used to hold it was written on generate, cleared on
-        // logout, and read by nothing but these tests.
+        // The verification key is derived directly from the phrase.
         let pubKey = RecoveryKeys.getPublicKey(from: phrase)
         XCTAssertFalse(pubKey.isEmpty, "Should derive a recovery public key")
 

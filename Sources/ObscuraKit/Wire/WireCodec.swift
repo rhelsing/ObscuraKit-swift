@@ -21,7 +21,7 @@ enum WireCodec {
         case "UPDATE": return .update
         case "DELETE": return .delete
         case "CREATE": return .create
-        // Legacy/unknown local writes are treated as CREATE (the historical default).
+        // Compatibility and unknown local writes default to CREATE.
         default: return .create
         }
     }

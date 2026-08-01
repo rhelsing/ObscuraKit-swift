@@ -17,9 +17,8 @@ final class SignalTests: XCTestCase {
         await rateLimitDelay()
         try await ObscuraTestClient.becomeFriends(alice, bob)
 
-        // No schema, no registered model. Signals never needed one — `modelKey` is an opaque
-        // conversation namespace, and the audience comes from `conversationId`. This used to go
-        // through `client.schema(...)` plus `client.register(DirectMessageTest.self).typing(...)`.
+        // No schema or registered model: `modelKey` is an opaque conversation
+        // namespace and `conversationId` supplies the audience.
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
 
         // Alice sends typing signal

@@ -8,13 +8,8 @@ import Foundation
 /// await client.sendTyping(modelKey: "directMessage", conversationId: convId)
 /// for await who in client.observeTyping(modelKey: "directMessage", conversationId: convId).values {}
 /// ```
-///
-/// **This file lived in `ORM/` and is keep-forever code** (`obscura-proto/HISTORY.md`). It moved here
-/// rather than being deleted with the engine, minus two extensions — `extension TypedModel` and
-/// `extension Model` — which were the ORM's entrance to signals and referenced ORM types. Their
-/// replacement is `ObscuraClient.sendTyping` / `stopTyping` / `observeTyping`, which take the
-/// `modelKey` as an opaque string exactly as the inbox and the entry store do. That is what makes
-/// this a relocation rather than a surviving fragment of the engine.
+/// `ObscuraClient.sendTyping`, `stopTyping`, and `observeTyping` take an opaque model key; signals
+/// do not inspect application schemas.
 
 // MARK: - Signal Types
 
@@ -142,15 +137,8 @@ public struct SignalObservation {
     /// name `authorDeviceId` on the payload suggests. `SignalStore.getActive` returns
     /// `senderUsername`. Polls every 300ms.
     ///
-    /// Both defects this warning used to describe are fixed, and the fixes are what make the
-    /// display name safe to emit:
-    ///
-    /// - The name no longer comes from the payload. `routeMessage`'s `.modelSignal` case looks
-    ///   `sourceUserId` up in the local friend graph, so a peer can no longer choose how they are
-    ///   labelled on screen (`obscura-proto/SPEC.md` §0.5).
-    /// - `authorDeviceId` is no longer `sourceUserId`. It is the device UUID of the session that
-    ///   decrypted, proven by the MAC (SPEC §0.10 rule 4, Phase 2) — which is what makes the
-    ///   per-author dedupe in `SignalStore.receive` and `remove` correct rather than accidental.
+    /// The display name comes from the local friend graph (`SPEC.md` §0.5).
+    /// `authorDeviceId` is the authenticated device UUID and keys per-author deduplication.
     public var values: AsyncStream<[String]> {
         AsyncStream { continuation in
             let task = Task {
@@ -180,10 +168,6 @@ public class SignalThrottle {
 }
 
 /// Singleton signal store — shared across all models.
-///
-/// - Note: it carried a push-notification layer (`observe()` / `observers` / `notifyObservers()`)
-///   whose only subscriber was the ORM's observation machinery, deleted in Phase 3. The two
-///   surviving `notifyObservers()` calls in `routeMessage` iterated a permanently empty dictionary.
 ///   `SignalObservation.values` polls `SignalStore.getActive` directly and never used it.
 public class SignalStoreRegistry {
     public static let shared = SignalStoreRegistry()
