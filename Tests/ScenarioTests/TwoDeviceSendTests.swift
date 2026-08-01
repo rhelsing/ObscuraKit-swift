@@ -1,14 +1,14 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Swift counterpart to Kotlin's `TwoDeviceSendTests.kt` — `obscura-proto/PLAN.md` Phase 0, task 0.1.
+/// Swift counterpart to Kotlin's `TwoDeviceSendTests.kt` — `obscura-proto/HISTORY.md` Phase 0, task 0.1.
 ///
 /// **Why this file exists.** Phase 2 moved Signal session addressing from `registrationId` to the
 /// **device UUID** in both kits (`SPEC.md` §0.10). Kotlin proved that with a two-device integration
 /// test; Swift had no equivalent, so its half of Phase 2 rested on code inspection and a standalone
 /// libsignal probe. This closes that gap: the same invariant, pinned by a test, on both kits.
 ///
-/// **The trap this test is built to avoid** (PLAN.md 0.1, verbatim in spirit): a two-device test that
+/// **The trap this test is built to avoid** (the Phase 2 acceptance criterion, `git show bb9259c:PLAN.md` §0.1): a two-device test that
 /// does **not** reconnect the sender after the multi-device friend lands in its store passes
 /// vacuously. `MultiDeviceFanOutTests` is exactly that shape — it sends while the device map is
 /// fresh from the prekey fetch, so a broken addressing scheme still delivers. The F1 failure only
@@ -67,7 +67,7 @@ final class TwoDeviceSendTests: XCTestCase {
     /// `routeMessage` has **no `case .deviceLinkApproval`** — it falls through `default: break`, so a
     /// newly-linked Swift device silently discards the approval: no p2p keypair, no recovery key, no
     /// friends export, and an own-device registry containing only itself. Swift *sends* approvals it
-    /// cannot *receive*. Recorded in `obscura-proto/PLAN.md` and this repo's `CLAUDE.md`; asserting
+    /// cannot *receive*. Recorded in `obscura-proto/HISTORY.md` and this repo's `CLAUDE.md`; asserting
     /// the broken behaviour here would only lock it in.
     func testLinkApprovalPopulatesTheApproverRegistry() async throws {
         let alice1 = try await ObscuraTestClient.register()
@@ -96,7 +96,7 @@ final class TwoDeviceSendTests: XCTestCase {
         alice2.disconnectWebSocket()
     }
 
-    /// **PLAN.md 0.1's actual acceptance criterion.** Alice has two devices; Bob befriends her,
+    /// **The Phase 2 acceptance criterion** (`git show bb9259c:PLAN.md` §0.1). Alice has two devices; Bob befriends her,
     /// **reconnects**, then sends. Both of Alice's devices must receive AND decrypt.
     ///
     /// The reconnect is what makes this test worth having: it forces the sender to rebuild its device

@@ -4,13 +4,22 @@
 
 **The reset has landed. Do not re-add what it removed.**
 
-Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
-[`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
-[`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+Read these first — they are the brief:
+
+- [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) — normative, and the
+  section that decides every "should the kit do this?" argument.
+- [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md) — the app-facing surface this kit
+  implements: the inbox (§3), payload classification (§4), `send` (§5), the entry store (§8.1), and
+  §9's rule that the entry store does not grow a query API.
+- [`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) — why the code looks like this. The
+  F-findings that source comments cite by number, and what the reset deleted.
+
+`PLAN.md` and `RESET.md` were retired on 2026-08-01; `HISTORY.md` keeps the parts still cited.
+Note that `KIT_API.md` is where §10 lives — `HISTORY.md` has no numbered sections.
 
 **Where this kit is (2026-07-31): Phase 3 — the reset — has landed. Phase 2 before it.**
 The ORM, CRDT engine, query DSL, audience-routing engine, schema parser and TTL manager are
-deleted (`KIT_API.md` §10 step 4 — §10 is in `KIT_API.md`; `RESET.md` has no numbered sections).
+deleted (`KIT_API.md` §10 step 4).
 What replaced them: `client.send(to:modelKey:entryId:op:sentAt:payload:)`
 for the outbox, `client.inbox` (peek/consume/discard/depth) for the receive path, and
 `client.entries` for storage. Merge and audience resolution live in obscura-pix now, once.
@@ -26,7 +35,7 @@ It is **verified, not asserted**: macOS CI run `30138464166` executed
 `TwoDeviceSendTests` (two-device decrypt after a *sender reconnect*, the own-device registry, the
 link-approval approver half) and `AuthorDeviceIdTests` against a real server, and they passed. The
 UNVERIFIED labels on the original commits are historical — CI has since compiled and run them.
-`obscura-proto/PLAN.md` records the acceptance sign-off and four known gaps.
+`obscura-proto/HISTORY.md` records the F-findings this closed and the gaps still open.
 
 The rule that governs this repo:
 
@@ -96,7 +105,7 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
   Pinned by `AuthorDeviceIdTests`. `SPEC.md` §0.10 is the contract.
 - ~~Signal sessions are addressed by `registrationId`; `decrypt` defaults `senderRegId: 1`~~ —
   **FIXED (Phase 2, PR #6).** Sessions key on the device UUID in both directions, taken from
-  `Envelope.sender_device_id`. This was `PLAN.md` F1/F4 and the cause of the old README note about
+  `Envelope.sender_device_id`. This was `HISTORY.md` F1/F4 and the cause of the old README note about
   "session desync under load". Pinned by `TwoDeviceSendTests`.
 - ~~`routeMessage` is non-throwing and swallows persistence errors~~ — **FIXED for the TEXT and
   friend-graph paths (Phase 1 residual, PR #6):** persistence throws, so a failed durable write
@@ -107,8 +116,8 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
   no longer exists. A MODEL_SYNC now takes exactly one durable write — `inbox.put`, which `throws` —
   and `routeMessage` propagates it, so a failed write skips the ack and the server redelivers
   (`SPEC.md` §0.9 rule 3). This was accepted knowingly for the duration of §10 steps 1–3 rather than
-  hardening deletion-bound code (§0.8); the decision and its cost are in
-  [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md), Phase 1 status block (2026-07-24).
+  hardening deletion-bound code (§0.8). The decision and its cost were recorded in `PLAN.md`'s
+  Phase 1 status block — `git show bb9259c:PLAN.md`.
 
 > **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
 > porting target and not a normative implementation. This file used to list its source files as

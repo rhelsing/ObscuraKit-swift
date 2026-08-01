@@ -64,32 +64,54 @@ final class DeviceRevocationFlowTests: XCTestCase {
     /// required to deliver a message, so any authenticated user could do this to anyone.
     ///
     /// This test would have caught the original bug: reaching the assertions at all means no trap.
-    func testAnAnnounceTimestampAboveInt64MaxDoesNotCrashAndDoesNotFreezeTheDeviceList() async throws {
+    func testAnAnnounceTimestampAboveInt64MaxDoesNotCrashTheStore() async throws {
         let friends = try FriendActor()
         try await friends.add("bob-id", "bob", status: .accepted)
 
         // 0x8000_0000_0000_0000 — one past Int64.max, the exact value that trapped.
+        //
+        // Passed RAW, deliberately. An earlier version of this test computed the clamp ITSELF and
+        // handed `updateDevices` the already-safe value — so it exercised nothing, and despite its
+        // own doc comment it would NOT have caught the original bug. The clamp lives in
+        // `ObscuraClient`; this test is about the store surviving a value that reaches it anyway.
         let hostile = UInt64(Int64.max) + 1
-        let clamped = min(hostile, UInt64(Date().timeIntervalSince1970 * 1000) + 60_000)
         try await friends.updateDevices("bob-id", devices: [["deviceId": "bob-dev1"]],
-                                        timestamp: clamped)
+                                        timestamp: hostile)
 
+        // Reaching this line at all is the assertion: a trap is uncatchable, so a crash here is a
+        // dead test process, not a failure message.
         let friend = await friends.getFriend("bob-id")
         XCTAssertEqual(friend?.devices.count, 1)
-        XCTAssertLessThan(friend!.devicesUpdatedAt, UInt64(Int64.max),
-                          "a clamped timestamp must be storable at all")
+        XCTAssertLessThanOrEqual(friend!.devicesUpdatedAt, UInt64(Int64.max),
+                                 "a hostile timestamp must saturate, not trap and not round-trip")
+    }
 
-        // ...and the LWW guard must still be satisfiable. Before the clamp, `devices_updated_at`
-        // held the hostile value and `WHERE devices_updated_at < ?` was false forever, so this
-        // peer's device list could never be updated again — one friend with a broken clock
-        // permanently froze their own fan-out.
-        let later = UInt64(Date().timeIntervalSince1970 * 1000) + 120_000
+    /// The LWW guard stays satisfiable — the quieter half of the same defect.
+    ///
+    /// `WHERE devices_updated_at < ?` means a stored timestamp in the future blocks every later
+    /// announce until wall-clock catches up. Unclamped, a hostile value blocked it FOREVER: one
+    /// friend with a broken clock permanently froze their own fan-out, with no error anywhere.
+    ///
+    /// Timestamps here are explicit and strictly ordered rather than read from `Date()`. The earlier
+    /// version took two `Date()` readings and required a millisecond to elapse between them — it
+    /// passed on one CI run and failed on the next, which is how it got here.
+    func testALaterAnnounceStillWinsAfterAClampedOne() async throws {
+        let friends = try FriendActor()
+        try await friends.add("bob-id", "bob", status: .accepted)
+
+        let clamped = UInt64(Date().timeIntervalSince1970 * 1000) + 60_000
+        try await friends.updateDevices("bob-id", devices: [["deviceId": "bob-dev1"]],
+                                        timestamp: clamped)
+        // Hoisted, like the test below: XCTAssert* take autoclosures, which cannot contain `await`.
+        let afterFirst = await friends.getFriend("bob-id")
+        XCTAssertEqual(afterFirst?.devices.count, 1)
+
         try await friends.updateDevices("bob-id",
                                         devices: [["deviceId": "bob-dev1"], ["deviceId": "bob-dev2"]],
-                                        timestamp: min(later, UInt64(Date().timeIntervalSince1970 * 1000) + 60_000))
-        let after = await friends.getFriend("bob-id")
-        XCTAssertEqual(after?.devices.count, 2,
-                       "a later announce must still win; a poisoned devices_updated_at froze it")
+                                        timestamp: clamped + 1)
+        let afterSecond = await friends.getFriend("bob-id")
+        XCTAssertEqual(afterSecond?.devices.count, 2,
+                       "a strictly-later announce must win; a poisoned devices_updated_at froze it")
     }
 
     // MARK: - Trust on first use

@@ -3,7 +3,7 @@ import XCTest
 
 /// Scenario 10: Story attachments — the **bytes path**, against a real server.
 ///
-/// `obscura-proto/RESET.md` keeps attachment encryption, upload and download while deleting the
+/// `obscura-proto/HISTORY.md` keeps attachment encryption, upload and download while deleting the
 /// `content_reference` *message*: pix's attachments ride inside a `model_sync` entry, so an
 /// attachment is an upload plus an id in an opaque payload. These two tests are the whole of that
 /// claim — an entry naming an uploaded blob reaches the recipient, and the recipient can fetch the

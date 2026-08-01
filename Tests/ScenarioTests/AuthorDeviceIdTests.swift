@@ -1,13 +1,13 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Swift counterpart to Kotlin's `AuthorDeviceIdTests.kt` — `obscura-proto/PLAN.md` Phase 2
+/// Swift counterpart to Kotlin's `AuthorDeviceIdTests.kt` — `obscura-proto/HISTORY.md` Phase 2
 /// acceptance: **`authorDeviceId` is HONEST.**
 ///
 /// F4 background: pre-Phase-2 the `Envelope` carried no sender device, so this kit assumed device 1
 /// on the inbound side and `ReceivedMessage.senderDeviceId` was hardcoded `nil`, while
 /// `routeMessage` passed `sourceUserId` into the `authorDeviceId` slot — a USER id in a field
-/// documented as a DEVICE id. `RESET.md` called that "a security property being asserted falsely".
+/// documented as a DEVICE id. `HISTORY.md` called that "a security property being asserted falsely".
 ///
 /// Phase 2 stamps `Envelope.sender_device_id` server-side from the sender's device-scoped JWT, and
 /// derives attribution from the address of the session that decrypted: a valid MAC proves possession

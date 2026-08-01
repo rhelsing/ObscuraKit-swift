@@ -201,7 +201,7 @@ final class SchemaTests: XCTestCase {
     /// `v2` drops the tables the deleted engine owned, and keeps the one the app owns.
     ///
     /// The second half is the assertion that matters. `model_entries` is `EntryStore`'s table —
-    /// `RESET.md` is explicit that the engine dies and the table does not — and it sits in the same
+    /// `HISTORY.md` is explicit that the engine dies and the table does not — and it sits in the same
     /// `v1` as `associations` and `ttl`, which is exactly why "drop the ORM tables" could not be
     /// done by editing `v1` and letting the tripwire rebuild.
     func testV2DropsTheEngineTablesAndKeepsTheAppsOne() throws {

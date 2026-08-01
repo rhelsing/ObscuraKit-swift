@@ -106,13 +106,6 @@ final class PayloadClassTests: XCTestCase {
             + "(CLAUDE.md). Kit-internal-with-no-handler now throws, which would never ack a LIVE "
             + "flow and wedge the server queue — so it is bucketed unimplemented (drop + ack, "
             + "loudly) until the handler exists. Delete this entry when it does.",
-        "FRIEND_SYNC":
-            "This kit has DELETED both halves of the arm. FriendSync carries no user_id, so the "
-            + "receiver keyed the friend it created on sourceUserId — which the self-guard above it "
-            + "had just proven is our OWN userId, putting the user in their own friends list and "
-            + "therefore into every fan-out. The sender's `userId targetUserId:` parameter was "
-            + "bound and never referenced. Unimplemented rather than kit-internal so an inbound one "
-            + "from Kotlin is dropped and ACKED instead of throwing forever and wedging the queue.",
     ]
 
     func testEveryArmHasTheSameClassAsTheKotlinKit() {
@@ -128,6 +121,10 @@ final class PayloadClassTests: XCTestCase {
             "READ_SYNC": .unimplemented,
             // See `divergesFromKotlin` below.
             "DEVICE_LINK_APPROVAL": .unimplemented,
+            // NOT a divergence: ObscuraKit-Kotlin#58 deleted both halves of this arm too and
+            // classifies it UNIMPLEMENTED. It is deprecated on the wire rather than removed
+            // (`client.proto`), so an older peer's message is still a KNOWN arm — dropped and
+            // acked loudly — instead of an unknown one inboxed as opaque bytes.
             "FRIEND_SYNC": .unimplemented,
             // §4's normative table, not §4.3's deletion plan — the deletion has not happened and a
             // public sender still exists, so dropping these would have the receiver ack away an AES

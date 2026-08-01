@@ -6,7 +6,7 @@ framework; one consumer, no API-stability obligation.
 > ### The reset has landed
 >
 > The normative brief is [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
-> with the inventory in [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) and the app-facing
+> with what was removed and why in [`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md), and the app-facing
 > contract in [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md).
 >
 > **The ORM, CRDT engine, query DSL, audience-routing system and schema parser are gone**

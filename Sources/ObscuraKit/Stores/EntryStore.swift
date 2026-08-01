@@ -29,7 +29,7 @@ public struct StoredEntry: Sendable, Equatable {
 ///
 /// **The table was kept; the engine above it was deleted.** `ORM/ModelStore` read and wrote these
 /// same `model_entries` rows, but it was the bottom of a stack — CRDT merge, TTL, query DSL, schema
-/// parser — that `RESET.md` removes entire. So the store the app keeps could not be that one; it had
+/// parser — that `HISTORY.md` removes entire. So the store the app keeps could not be that one; it had
 /// to be a type that survives the deletion, over the same rows. Hence a separate file with no ORM
 /// imports, rather than making `ModelStore` public.
 ///
@@ -103,7 +103,7 @@ public actor EntryStore {
 
     /// Remove an entry outright.
     ///
-    /// A hard delete, not a tombstone. `RESET.md` establishes that the app never deletes an entry
+    /// A hard delete, not a tombstone. `HISTORY.md` establishes that the app never deletes an entry
     /// today and that the whole tombstone-ordering design was dead on arrival.
     ///
     /// - Note: Kotlin's `EntryStore.delete` soft-deletes, because that table carries a `deleted`
