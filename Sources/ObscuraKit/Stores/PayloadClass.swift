@@ -86,7 +86,7 @@ func classify(_ payload: Obscura_Client_V1_ClientMessage.OneOf_Payload?) -> Payl
     case .modelSignal?:
         return .droppable
 
-    // Legacy. Deleted by `RESET.md`; still routed while it exists.
+    // Legacy. Deleted by `HISTORY.md`; still routed while it exists.
     case .text?:
         return .kitInternal
 

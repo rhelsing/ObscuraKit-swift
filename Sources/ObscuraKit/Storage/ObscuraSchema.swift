@@ -23,7 +23,7 @@ import GRDB
 /// Silent when the schema changes, throwing later at query time, with no way to repair. This is
 /// the Swift half of `obscura-proto/KIT_API.md` P1; the Kotlin half is SQLDelight `.sqm` files.
 ///
-/// **`obscura-proto/PLAN.md` Phase 3 needed the part that never worked.** Adding the inbox table
+/// **`obscura-proto/HISTORY.md` Phase 3 needed the part that never worked.** Adding the inbox table
 /// worked by accident, because the erase-on-schema-change tripwire noticed and rebuilt — *not*
 /// because `IF NOT EXISTS` re-runs, which under `DatabaseMigrator` it does not: an applied
 /// migration never runs again. Removing `associations` and
@@ -242,7 +242,7 @@ public enum ObscuraSchema {
             // ── ORM ──────────────────────────────────────────────────────────────────────
             // `associations` and `ttl` are dropped by `v2`, and `model_entries.signature` with
             // them. `model_entries` itself SURVIVES — it is the app's entry store
-            // (`Stores/EntryStore.swift`), and `RESET.md` is explicit that the engine dies and
+            // (`Stores/EntryStore.swift`), and `HISTORY.md` is explicit that the engine dies and
             // the table does not.
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS model_entries (

@@ -14,7 +14,7 @@ import XCTest
 /// These tests assert only that the **wire message is delivered** — they would pass unchanged if the
 /// handler were deleted, which is to say they pass because it never existed. Do not read a green run
 /// here as "recovery works". Naming the first test for delivery rather than for the feature is
-/// deliberate: `obscura-proto/PLAN.md`'s F-findings are largely about green ticks over behaviour
+/// deliberate: `obscura-proto/HISTORY.md`'s F-findings are largely about green ticks over behaviour
 /// nobody implemented, and this was one of them.
 ///
 /// The gap is a recorded deferral (`obscura-proto/KIT_API.md` §4.2), but **it is not unreachable in

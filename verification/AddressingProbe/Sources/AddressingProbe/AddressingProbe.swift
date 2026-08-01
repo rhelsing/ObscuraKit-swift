@@ -1,6 +1,6 @@
 //
 // AddressingProbe — a libsignal-level reproduction of the ObscuraKit-swift
-// session-addressing split behind PLAN.md F1/F4.
+// session-addressing split behind HISTORY.md F1/F4.
 //
 // It depends ONLY on the vendored LibSignalClient. It does NOT depend on
 // ObscuraKit, GRDB, or SQLCipher. It uses real libsignal sessions and the real

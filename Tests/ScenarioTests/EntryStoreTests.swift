@@ -39,7 +39,7 @@ final class EntryStoreTests: XCTestCase {
     /// because by the time a write reaches this type the app has already decided who wins.
     ///
     /// If someone re-adds last-writer-wins here, this fails — which is the point. Merge living in
-    /// two places is exactly the duplication `RESET.md` exists to remove, and a kit that silently
+    /// two places is exactly the duplication `HISTORY.md` exists to remove, and a kit that silently
     /// overrules the app's decision is worse than one with no opinion.
     func testPutIsBlindAnOlderWriteOverwritesANewerOne() async throws {
         let store = try makeStore()

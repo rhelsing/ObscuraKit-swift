@@ -21,7 +21,7 @@ selected by device UUID with **no** fallback to an arbitrary bundle. This is nor
 
 > **This file used to state the opposite as guidance** — "sessions are keyed as
 > `(userId, registrationId)`. Not `(userId, deviceId)`" — which was true of the code and was exactly
-> the defect (`PLAN.md` F1/F4). `registrationId` travels on one wire surface
+> the defect (`HISTORY.md` F1/F4). `registrationId` travels on one wire surface
 > (`PreKeyBundleResponse`); the device UUID travels on all of them. Swift's specific variant:
 > `decrypt` defaulted `senderRegId: 1` while outbound sessions used the real one, so the two
 > directions filed sessions at different addresses — the cause of the old README's "session desync
@@ -35,7 +35,7 @@ selected by device UUID with **no** fallback to an arbitrary bundle. This is nor
 **The project uses `URLSessionWebSocketTask` (native Foundation).** The previous WebSocketKit/SwiftNIO dependency was removed in March 2026.
 
 **Linux is not a supported build target — but `URLSessionWebSocketTask` is not why.** Investigated
-2026-07-14 (`obscura-proto/PLAN.md` 0.4): the build walls at **GRDB's bundled SQLCipher**, which
+2026-07-14 (`git show bb9259c:PLAN.md` §0.4): the build walls at **GRDB's bundled SQLCipher**, which
 needs `CommonCrypto/CommonCrypto.h` (Apple-only), long before anything WebSocket-related is reached.
 SQLCipher is the at-rest cipher for the message store, the Signal session store is GRDB-backed, and
 the module is monolithic, so no crypto-only slice compiles either. What *does* build on Linux is

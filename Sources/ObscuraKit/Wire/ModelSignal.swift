@@ -9,7 +9,7 @@ import Foundation
 /// for await who in client.observeTyping(modelKey: "directMessage", conversationId: convId).values {}
 /// ```
 ///
-/// **This file lived in `ORM/` and is keep-forever code** (`obscura-proto/RESET.md`). It moved here
+/// **This file lived in `ORM/` and is keep-forever code** (`obscura-proto/HISTORY.md`). It moved here
 /// rather than being deleted with the engine, minus two extensions — `extension TypedModel` and
 /// `extension Model` — which were the ORM's entrance to signals and referenced ORM types. Their
 /// replacement is `ObscuraClient.sendTyping` / `stopTyping` / `observeTyping`, which take the

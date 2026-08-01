@@ -822,7 +822,7 @@ public class ObscuraClient {
     public func processPendingMessages(timeout: TimeInterval) async -> ProcessedCounts {
         logger.log("[push] drain start (timeout=\(Int(timeout))s, connected=\(_connectionState == .connected))")
         if _connectionState != .connected {
-            // F10 (obscura-proto/PLAN.md). A failed connect returns all-zero counts, which is
+            // F10 (obscura-proto/HISTORY.md). A failed connect returns all-zero counts, which is
             // indistinguishable from "connected fine, nothing waiting" — on the PUSH-WAKE path that
             // means: woken by a push, silently report no messages, leave them on the server. This
             // kit at least logged it; ObscuraKit-Kotlin swallowed it entirely, where it showed up as
@@ -1353,7 +1353,7 @@ public class ObscuraClient {
     // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
     //
     // These used to reach the app through `client.model(name).typing(...)`, which was the last
-    // reason the app touched the ORM at all — and `RESET.md` KEEPS signals while deleting the engine
+    // reason the app touched the ORM at all — and `HISTORY.md` KEEPS signals while deleting the engine
     // around them. `ModelSignal.swift` was keep-forever code that happened to live in `ORM/`; these
     // three methods are the door that let it stay after the directory went (it is now `Wire/`).
     //
