@@ -42,7 +42,6 @@ final class SignalAudienceTests: XCTestCase {
         try await ObscuraTestClient.becomeFriends(alice, bob)
         try await ObscuraTestClient.becomeFriends(alice, carol)
 
-
         let convId = [alice.userId!, bob.userId!].sorted().joined(separator: "_")
         await alice.client.sendTyping(modelKey: "directMessage", conversationId: convId)
 
@@ -74,7 +73,6 @@ final class SignalAudienceTests: XCTestCase {
         try await bob.connectWebSocket()
         await rateLimitDelay()
         try await ObscuraTestClient.becomeFriends(alice, bob)
-
 
         // `SPEC.md` §1.2 says fail loud rather than guess an audience. For an ephemeral signal
         // the correct failure is to send nothing: dropping a typing indicator costs nothing,
@@ -114,7 +112,6 @@ final class SignalAudienceTests: XCTestCase {
 
         try await ObscuraTestClient.becomeFriends(alice, bob)
         try await ObscuraTestClient.becomeFriends(alice, carol)
-
 
         let threeParty = [alice.userId!, bob.userId!, carol.userId!].sorted().joined(separator: "_")
         await alice.client.sendTyping(modelKey: "directMessage", conversationId: threeParty)

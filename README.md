@@ -11,10 +11,11 @@ framework; one consumer, no API-stability obligation.
 >
 > **The ORM, CRDT engine, query DSL, audience-routing system and schema parser are gone**
 > (§10 step 4). They existed here *and* in ObscuraKit-Kotlin, duplicated, to serve five flat models
-> in one app that used almost none of them; merge and audience now live in obscura-pix, once. Six
+> in one app that used almost none of them; merge and audience now live in obscura-pix, once. Three
 > defects went with them: hard-coded application field names, a `.friends` broadcast narrowed by a
-> stray `conversationId`, the missing schema-migration mechanism, and — by construction — acking a
-> `MODEL_SYNC` before durably persisting it.
+> stray `conversationId`, and — by construction — acking a `MODEL_SYNC` before durably persisting
+> it. (The missing schema-migration mechanism was fixed separately and earlier, by
+> `Storage/ObscuraSchema.swift`; the reset is what gave it its first real migration to run.)
 >
 > Still live, and not resolved by the reset: **this kit sends `DEVICE_LINK_APPROVAL` but cannot
 > receive one**, and there is no device-announce replay protection. See `CLAUDE.md`.

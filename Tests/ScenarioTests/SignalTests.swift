@@ -45,14 +45,9 @@ final class SignalTests: XCTestCase {
         // Directly test the SignalStore's staleness check
         let store = SignalStore()
 
-        // Create a signal with a timestamp 10 seconds in the past
-        let stalePayload = ModelSignalPayload(
-            model: "directMessage",
-            signal: .typing,
-            data: ["conversationId": "conv1"],
-            authorDeviceId: "device1"
-        )
-        // Manually create a stale version
+        // A signal timestamped 10 seconds in the past. It has to be built as JSON and decoded
+        // rather than constructed: `ModelSignalPayload.init(model:signal:data:authorDeviceId:)`
+        // stamps `Date()` itself, so there is no initialiser that can produce a stale one.
         let staleData = """
         {"model":"directMessage","signal":"typing","data":{"conversationId":"conv1"},"authorDeviceId":"device1","timestamp":\(UInt64(Date().timeIntervalSince1970 * 1000) - 10_000)}
         """.data(using: .utf8)!

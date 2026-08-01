@@ -1264,7 +1264,6 @@ public class ObscuraClient {
         try await sendToAllDevices(friendUserId, msg)
     }
 
-    /// Send a MODEL_SYNC message to a friend. Throws if not friends.
     /// Send an application entry (`obscura-proto/KIT_API.md` §5) — the outbox half of the thin kit,
     /// paired with ``inbox`` on the receive side and ``entries`` for local storage.
     ///
@@ -1272,8 +1271,9 @@ public class ObscuraClient {
     /// listed userId, plus this user's own *other* devices, and makes **no delivery decision of its
     /// own** — no audience resolution, no reading of `payload` to discover who it is for. That is the
     /// whole difference from ``sendModelSync(to:model:entryId:op:data:)``, which sends to exactly one
-    /// friend and refuses a non-friend. Prefer this one; that one is a documented §0.4 follow-up
-    /// (`obscura-proto/KIT_API.md` §4.2), still standing only because tests use it as a one-liner.
+    /// friend and refuses a non-friend. Prefer this one; that one is a §0.4 follow-up recorded in
+    /// `CLAUDE.md`, not in the proto — it is a kit-local wart, not part of the contract — and it
+    /// stands only because `EdgeCaseTests` uses it as a one-liner.
     ///
     /// Two properties §5 asks to be proven rather than assumed, both pinned by Kotlin's
     /// `EntrySendTests` and mirrored here:

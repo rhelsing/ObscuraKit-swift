@@ -24,7 +24,9 @@ import GRDB
 /// the Swift half of `obscura-proto/KIT_API.md` P1; the Kotlin half is SQLDelight `.sqm` files.
 ///
 /// **`obscura-proto/PLAN.md` Phase 3 needed the part that never worked.** Adding the inbox table
-/// worked by accident, because `IF NOT EXISTS` runs on every launch. Removing `associations` and
+/// worked by accident, because the erase-on-schema-change tripwire noticed and rebuilt — *not*
+/// because `IF NOT EXISTS` re-runs, which under `DatabaseMigrator` it does not: an applied
+/// migration never runs again. Removing `associations` and
 /// `ttl` — and dropping `model_entries.signature`, a `NOT NULL` column holding a keyless hash
 /// nothing verifies — is what `v2` does, and is impossible without this file.
 ///
@@ -67,10 +69,13 @@ public enum ObscuraSchema {
         // convenience.
         //
         // The failure mode this trades INTO: edit `v1` now and nothing happens at all — the
-        // migration is already applied, so the edit is silently ignored and the code runs
-        // against a schema it does not describe. That is the quieter failure, but it is also the
-        // one a test can catch, and `SchemaTests` does: `expectedTables` is asserted against the
-        // actual migrated schema.
+        // migration is already applied, so the edit is silently ignored and the code runs against a
+        // schema it does not describe. Nothing can catch that at RUNTIME; the only defence is a test
+        // that notices the source changed. `SchemaTests` has two, and neither is total:
+        // `expectedTables` catches a table added or removed, and `frozenColumns` catches a column
+        // added, removed or retyped in the two tables whose loss is unrecoverable. An index, a
+        // trigger or a default slips past both. That is the residual risk, stated rather than
+        // papered over.
         // ─────────────────────────────────────────────────────────────────────────────────
         migrator.eraseDatabaseOnSchemaChange = false
 
@@ -199,10 +204,12 @@ public enum ObscuraSchema {
             // (ObscuraKit-Kotlin PR #49) rather than co-designed — §10 has Kotlin design first
             // precisely so the two kits stop diverging on behaviour.
             //
-            // Note this lands in `v1` rather than a `v2`, which is the tripwire earning its keep:
-            // with `eraseDatabaseOnSchemaChange` on, GRDB sees `sqlite_master` changed and rebuilds,
-            // so adding a table is an edit here rather than a migration to author. When the tripwire
-            // comes off, this becomes a real `registerMigration("v2")`.
+            // This landed in `v1` rather than a `v2` because the tripwire was on at the time: GRDB
+            // saw `sqlite_master` change and rebuilt, so adding a table was an edit here. **That is
+            // history, not a pattern to copy.** The tripwire is off and `v1` is applied, so an
+            // edit to this statement now reaches no existing database at all — silently. The next
+            // table goes in a new `registerMigration`, and `inbox_rows` correctly did NOT move here
+            // when `v2` was written: moving it would have been the same mistake in reverse.
             //
             // `AUTOINCREMENT` is not decoration: a plain `INTEGER PRIMARY KEY` aliases rowid, and
             // SQLite REUSES rowids after deletion — so a drained-then-refilled inbox would hand out

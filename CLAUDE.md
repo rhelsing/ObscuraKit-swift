@@ -57,6 +57,10 @@ Known live defects in this kit, documented so nobody rediscovers them as "improv
   changes a bridge-facing type on both platforms and is deliberately a separate change.
 - `sendModelSync(to:model:entryId:op:data:)` still gates on friendship and sends to exactly one
   friend. Prefer `send(to:...)`. Its Kotlin twin survives too; both are follow-ups.
+- **`send(to:_ text:)` — the legacy TEXT send — still exists here, and ObscuraKit-Kotlin deleted its
+  equivalent in the same PR that removed the ORM.** Not observable through the bridge (pix sends
+  entries only), so it is a source-level divergence rather than a behavioural one, but it is a
+  divergence and it belongs on this list rather than in someone's memory.
 - ~~`SyncManager` hard-codes application field names~~ / ~~narrows a `.friends` broadcast~~ /
   ~~`RoutingConformanceTests` re-implements the audience mapping~~ — **all deleted with the routing
   engine (Phase 3).** Audience resolution is the app's, and `obscura-pix` vendors the routing
