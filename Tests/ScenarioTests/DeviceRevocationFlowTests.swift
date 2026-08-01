@@ -102,12 +102,15 @@ final class DeviceRevocationFlowTests: XCTestCase {
         let clamped = UInt64(Date().timeIntervalSince1970 * 1000) + 60_000
         try await friends.updateDevices("bob-id", devices: [["deviceId": "bob-dev1"]],
                                         timestamp: clamped)
-        XCTAssertEqual(await friends.getFriend("bob-id")?.devices.count, 1)
+        // Hoisted, like the test below: XCTAssert* take autoclosures, which cannot contain `await`.
+        let afterFirst = await friends.getFriend("bob-id")
+        XCTAssertEqual(afterFirst?.devices.count, 1)
 
         try await friends.updateDevices("bob-id",
                                         devices: [["deviceId": "bob-dev1"], ["deviceId": "bob-dev2"]],
                                         timestamp: clamped + 1)
-        XCTAssertEqual(await friends.getFriend("bob-id")?.devices.count, 2,
+        let afterSecond = await friends.getFriend("bob-id")
+        XCTAssertEqual(afterSecond?.devices.count, 2,
                        "a strictly-later announce must win; a poisoned devices_updated_at froze it")
     }
 
