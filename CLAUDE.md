@@ -1,137 +1,65 @@
 # Claude Code Context
 
-## ⚠️ Read this before changing anything
+## Read this before changing anything
 
-**The reset has landed. Do not re-add what it removed.**
-
-Read these first — they are the brief:
+Read these first:
 
 - [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) — normative, and the
   section that decides every "should the kit do this?" argument.
 - [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md) — the app-facing surface this kit
   implements: the inbox (§3), payload classification (§4), `send` (§5), the entry store (§8.1), and
   §9's rule that the entry store does not grow a query API.
-- [`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) — why the code looks like this. The
-  F-findings that source comments cite by number, and what the reset deleted.
+- [`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) — non-normative
+  migration history.
 
-`PLAN.md` and `RESET.md` were retired on 2026-08-01; `HISTORY.md` keeps the parts still cited.
-Note that `KIT_API.md` is where §10 lives — `HISTORY.md` has no numbered sections.
+The current app-facing surface is
+`client.send(to:modelKey:entryId:op:sentAt:payload:)`, the durable
+`client.inbox`, and opaque `client.entries` storage. Merge, audience resolution,
+schemas, queries, expiry, and notification policy live in `obscura-pix`.
 
-**Where this kit is (2026-07-31): Phase 3 — the reset — has landed. Phase 2 before it.**
-The ORM, CRDT engine, query DSL, audience-routing engine, schema parser and TTL manager are
-deleted (`KIT_API.md` §10 step 4).
-What replaced them: `client.send(to:modelKey:entryId:op:sentAt:payload:)`
-for the outbox, `client.inbox` (peek/consume/discard/depth) for the receive path, and
-`client.entries` for storage. Merge and audience resolution live in obscura-pix now, once.
-`ObscuraSchema` grew a real `v2` migration and the erase-on-schema-change tripwire is OFF —
-**never edit an applied migration; add a new one.**
-
-**Phase 2 is LANDED and PROVEN on `main`.** Phases 1 and 2 shipped
-across the proto, the server and both kits between 07-19 and 07-25. This kit's share — the
-throwing-persist residual, device-UUID session addressing, the F9 own-device registry, honest
-`authorDeviceId`, and the Option B envelope — merged via PRs #6, #8 and #9.
-
-It is **verified, not asserted**: macOS CI run `30138464166` executed
-`TwoDeviceSendTests` (two-device decrypt after a *sender reconnect*, the own-device registry, the
-link-approval approver half) and `AuthorDeviceIdTests` against a real server, and they passed. The
-UNVERIFIED labels on the original commits are historical — CI has since compiled and run them.
-`obscura-proto/HISTORY.md` records the F-findings this closed and the gaps still open.
+`ObscuraSchema` owns additive database migrations. **Never edit an applied
+migration; add a new one.**
 
 The rule that governs this repo:
 
 > **If the kit reads it, it is a field in `client.proto`.
 > If it is not in `client.proto`, the kit MUST NOT read it.**
 
-**Do not re-add an ORM, a CRDT layer, a query builder, an audience/routing engine, or a schema
-parser.** They existed here *and* in ObscuraKit-Kotlin, duplicated, to serve five flat models in one
-app that used almost none of them. `KIT_API.md` §9 names the failure mode to watch for: the entry
-store grows a filter, then an index abstraction, then observation, and the deleted engine has been
-rebuilt under a new name.
+**Do not add an ORM, CRDT layer, query builder, audience/routing engine, or
+schema parser.** Re-check `SPEC.md` §0 and the shipping app before expanding the
+entry store beyond `KIT_API.md` §8.1.
 
-Known live defects in this kit, documented so nobody rediscovers them as "improvements":
+## Current constraints
 
-- **This kit sends `DEVICE_LINK_APPROVAL` but cannot receive one.** `routeMessage` has no
-  `case .deviceLinkApproval`, so a newly-linked device silently discards everything the approval
-  carries: the p2p keypair, the recovery public key, the friends export, and the approver's
-  own-device list. Its registry ends up containing only itself, which means `announceDevices()` from
-  that device can only ever tell a friend about one device.
-  **How it is discarded has changed, and the difference matters when debugging:** it no longer
-  "falls through `default: break`". It is classified `.unimplemented` in `Stores/PayloadClass.swift`,
-  so it is **logged loudly, dropped, and acked** (`RECV UNIMPLEMENTED arm=DEVICE_LINK_APPROVAL`) —
-  it never reaches `routeMessage`'s `default:`, which now throws. Dropping-and-acking is deliberate:
-  throwing on a LIVE flow would leave an envelope that is never acked, redelivering on every
-  reconnect into a server queue that caps at 1000 per device and evicts oldest-first.
-  ObscuraKit-Kotlin routes this to `handleLinkApproval` (`setOwnDevices(approvedDevices)` + stores
-  identity keys), so the two kits genuinely diverge on device linking. Found 2026-07-24 while
-  gathering Phase 2 acceptance evidence: CI showed `getOwnDevices()=1` where Kotlin's equivalent
-  fixture shows 2. The *approver* half works and is pinned by
-  `TwoDeviceSendTests.testLinkApprovalPopulatesTheApproverRegistry`; the approvee half is
-  deliberately not asserted, because asserting broken behaviour locks it in.
-- **No device-announce replay protection.** A DEVICE_ANNOUNCE is now verified against the peer's
-  recovery public key, pinned trust-on-first-use — but a *replay* of a previously valid, correctly
-  signed announce still verifies, because nothing tracks which timestamps have been seen. The LWW
-  guard (`devices_updated_at < ?`) rejects a stale replay by accident, not by design.
-- **`FRIEND_SYNC` is deleted from this kit, both halves.** A second device therefore no longer
-  learns about friends added *after* it was linked; it still receives the whole graph at link time
-  in `DEVICE_LINK_APPROVAL`'s `friends_export`. The arm is classified `.unimplemented` rather than
-  removed from the classification table, so an inbound one from Kotlin is dropped and acked instead
-  of wedging the queue. It went because `FriendSync` carries no `user_id`, so the receiver keyed the
-  friend it created on `sourceUserId` — which its own self-guard had just proven is *our* userId,
-  adding the user to their own friends list and hence to every fan-out.
-- **There is no remote device revocation.** `revokeDevice` was deleted: it signed a filtered device
-  list and its own timestamp, then called `announceDevices()`, which rebuilt the payload from the
-  unfiltered registry and stamped a fresh timestamp, so no recipient could ever verify it. Zero
-  callers, zero tests. Revoking means `api.deleteDevice` from a device you still hold.
-- **`ObscuraError.invalidSchema` / `.directRoutingUnresolved` are deleted here and must be deleted
-  in ObscuraKit-Kotlin and `obscura-pix/src/native/ObscuraModule.ts` too** — they are dead in both
-  kits and exposed to JS through the shared bridge error union.
-- ~~`ProcessedCounts` hard-codes application model names in kit source~~ — **FIXED.** Both kits now
-  return one opaque processed-envelope total, and the drain observes receive activity without
-  consuming the app/test event queue.
-- `sendModelSync(to:model:entryId:op:data:)` still gates on friendship and sends to exactly one
-  friend. Prefer `send(to:...)`. Its Kotlin twin survives too; both are follow-ups.
-- **`send(to:_ text:)` — the legacy TEXT send — still exists here, and ObscuraKit-Kotlin deleted its
-  equivalent in the same PR that removed the ORM.** Not observable through the bridge (pix sends
-  entries only), so it is a source-level divergence rather than a behavioural one, but it is a
-  divergence and it belongs on this list rather than in someone's memory.
-- ~~`SyncManager` hard-codes application field names~~ / ~~narrows a `.friends` broadcast~~ /
-  ~~`RoutingConformanceTests` re-implements the audience mapping~~ — **all deleted with the routing
-  engine (Phase 3).** Audience resolution is the app's, and `obscura-pix` vendors the routing
-  guards.
-- ~~No schema migration mechanism exists~~ — **FIXED.** `Storage/ObscuraSchema.swift` owns every
-  table via `DatabaseMigrator`; `v2` is the first migration that carries data across.
-- ~~`authorDeviceId` is a lie~~ — **FIXED (Phase 2, PR #6).** It is now the device UUID of the
-  session that decrypted, and `ReceivedMessage.senderDeviceId` carries the sender's real device.
-  Pinned by `AuthorDeviceIdTests`. `SPEC.md` §0.10 is the contract.
-- ~~Signal sessions are addressed by `registrationId`; `decrypt` defaults `senderRegId: 1`~~ —
-  **FIXED (Phase 2, PR #6).** Sessions key on the device UUID in both directions, taken from
-  `Envelope.sender_device_id`. This was `HISTORY.md` F1/F4 and the cause of the old README note about
-  "session desync under load". Pinned by `TwoDeviceSendTests`.
-- ~~`routeMessage` is non-throwing and swallows persistence errors~~ — **FIXED for the TEXT and
-  friend-graph paths (Phase 1 residual, PR #6):** persistence throws, so a failed durable write
-  propagates and the ack is skipped (`SPEC.md` §0.9 rule 3). **NOT fixed for MODEL_SYNC — see the
-  next entry, which is still live.**
-- ~~**MODEL_SYNC is acked before it is durably persisted**~~ — **RESOLVED BY CONSTRUCTION (Phase 3).**
-  The five `try? await db.write` sites that swallowed the error were inside `ModelStore.swift`, which
-  no longer exists. A MODEL_SYNC now takes exactly one durable write — `inbox.put`, which `throws` —
-  and `routeMessage` propagates it, so a failed write skips the ack and the server redelivers
-  (`SPEC.md` §0.9 rule 3). This was accepted knowingly for the duration of §10 steps 1–3 rather than
-  hardening deletion-bound code (§0.8). The decision and its cost were recorded in `PLAN.md`'s
-  Phase 1 status block — `git show bb9259c:PLAN.md`.
+- No Notification Service Extension exists. Shared database, key, and session
+  plumbing exists but is not device-verified; the current APNs payload cannot
+  launch an NSE. See `docs/NSE_PREREQUISITES.md`.
+- This kit sends `DEVICE_LINK_APPROVAL` but has no receive handler. The arm is
+  logged, dropped, and acknowledged so it cannot wedge the queue. Kotlin handles
+  it, so linked-device behavior differs by platform.
+- Device announcements use a trust-on-first-use recovery key but have no replay
+  protection. Timestamp ordering rejects stale state but is not a nonce.
+- Linked devices receive the friend graph at link time but do not learn friends
+  added later. `FRIEND_SYNC` is unsupported.
+- There is no remote device revocation. Use `api.deleteDevice` from a device you
+  still hold.
+- `sendModelSync(to:model:entryId:op:data:)` is a legacy single-friend surface.
+  Prefer explicit-audience `send(to:...)`.
+- Legacy TEXT send/receive APIs remain source-level compatibility surfaces.
+- `MODEL_SYNC` has one durable receive write: `inbox.put`. Persistence errors
+  propagate and skip acknowledgement (`SPEC.md` §0.9).
 
-> **Not a reference:** `obscura-client-web` is a **throwaway proof-of-concept**. It is not a
-> porting target and not a normative implementation. This file used to list its source files as
-> "the reference for porting." That instruction is a large part of why this repo looks the way it
-> does. It has been removed — do not reinstate it.
+`obscura-client-web` is a throwaway proof of concept, not a porting target or
+normative implementation.
 
 ## Project Overview
 
 ObscuraKit — the **native iOS platform layer** for the Obscura app (`obscura-pix`). Not a
 general-purpose framework; it has one consumer and owes API stability to no one.
 
-It exists natively for exactly two reasons: libsignal ships only as `libsignal-swift` (no shared
-core), and the push path must decrypt with the app closed (Notification Service Extension — no
-React Native runtime). Everything else belongs in the app.
+It exists natively because libsignal has no supported shared core and
+background push processing cannot depend on a React Native runtime. Everything
+else belongs in the app.
 
 It must agree with ObscuraKit-Kotlin on the **wire** (`conformance/wire.json`) and nothing more.
 
@@ -159,12 +87,6 @@ All smoke/scenario tests run against the live server.
 
 There is no porting reference. This kit is written against the contract in `obscura-proto`
 (`SPEC.md` + `conformance/`), not against another codebase.
-
-> A section here used to enumerate the source files of `obscura-client-web` — a throwaway
-> proof-of-concept — as "the reference for porting", and `docs/AGENT_NOTES.md` pointed at the
-> Kotlin kit as "the feature parity reference". Both instructions told agents to copy designs
-> that were themselves unexamined, which is how an ORM, a CRDT engine and a query DSL ended up
-> duplicated across two kits. Removed deliberately. Do not reinstate.
 
 ## Server API Quick Reference
 

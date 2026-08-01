@@ -35,12 +35,10 @@ final class EntryStoreTests: XCTestCase {
         XCTAssertEqual(all[0].authorDeviceId, "device_a")
     }
 
-    /// **The load-bearing test.** `put` is a blind upsert: an OLDER write replaces a newer one,
+    /// `put` is a blind upsert: an older write replaces a newer one,
     /// because by the time a write reaches this type the app has already decided who wins.
     ///
-    /// If someone re-adds last-writer-wins here, this fails — which is the point. Merge living in
-    /// two places is exactly the duplication `HISTORY.md` exists to remove, and a kit that silently
-    /// overrules the app's decision is worse than one with no opinion.
+    /// Merge policy must not be duplicated here or overrule the app's decision.
     func testPutIsBlindAnOlderWriteOverwritesANewerOne() async throws {
         let store = try makeStore()
         try await store.put(model: "pix", entry: entry("pix_1", data: #"{"v":"new"}"#, sentAt: 9_000))

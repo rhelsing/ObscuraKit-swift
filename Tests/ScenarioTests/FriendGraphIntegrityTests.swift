@@ -1,23 +1,10 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Swift counterpart to Kotlin's `FriendGraphIntegrityTests.kt`.
-///
-/// The friend graph is the ONLY source of display names (SPEC §0.5, §0.10 rule 5), and the Phase 3
-/// kit API puts that name on OS notifications — so a peer's ability to influence its own record is a
-/// lock-screen spoofing surface, not a cosmetic bug.
-///
-/// Both attacks are driven through the attacker's genuine send path; nothing is fabricated at the
-/// wire level. Both FAILED against this kit as it stood on 2026-07-25:
-///
-/// 1. **Self-rename + status downgrade** — `routeMessage`'s `.friendRequest` case called
-///    `friends.add()` unconditionally, and `FriendStore` uses `INSERT OR REPLACE`, so an
-///    already-accepted friend could re-send a `FriendRequest` to rewrite their stored username and
-///    reset their own status to `.pendingReceived` (dropping out of `getAccepted()` and fan-out).
-/// 2. **Unsolicited acceptance** — the `.friendResponse` case called `friends.add(..., .accepted)`
-///    whenever `accepted` was true, without checking we had ever sent a request. Friendship is not
-///    required to deliver a message, so any authenticated stranger could insert themselves as an
-///    accepted friend under a name of their choosing.
+/// The friend graph is the only source of display names (SPEC §0.5, §0.10
+/// rule 5), including notification names. Genuine encrypted messages must not
+/// let an established friend rewrite its own record or a stranger create an
+/// accepted friendship through an unsolicited response.
 final class FriendGraphIntegrityTests: XCTestCase {
 
     func testAcceptedFriendCannotRenameItselfOrResetItsStatus() async throws {

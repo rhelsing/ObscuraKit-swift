@@ -3,12 +3,8 @@ import XCTest
 
 /// Scenario 7: Device Revocation — against actual server.
 ///
-/// Two tests were deleted from here as duplicates of the vacuous pair in
-/// `DeviceRevocationFlowTests`: `testScenario7_4_MessagePurgeByDevice` re-implemented the revocation
-/// itself and then asserted `deleteByAuthorDevice` had deleted, and `testScenario7_5_DeviceWipe`
-/// called `clearAll()` and asserted it had cleared. Neither exercised any kit behaviour — see that
-/// file's type doc for why this matters. There is no remote device revocation in this kit; the
-/// broken `revokeDevice` that these tests never touched has been deleted.
+/// Remote device revocation is not implemented. These scenarios cover the
+/// supported multi-device messaging and local device-state operations.
 final class DeviceRevocationTests: XCTestCase {
 
     // MARK: - 7.1: Three-way message exchange

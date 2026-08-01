@@ -3,27 +3,15 @@ import XCTest
 
 /// Who receives an ephemeral signal.
 ///
-/// `SignalTests` proves a typing indicator *arrives*. Nothing proved it did not arrive somewhere
-/// it shouldn't, and it did: `SyncManager.broadcastSignal` sent every MODEL_SIGNAL to
-/// `friends.getAccepted()` while `contextId` carried the canonical two-party
-/// `"userIdA_userIdB"` conversation id. Every accepted friend therefore learned, in real time,
-/// that you were typing to a *named* third party.
-///
-/// Three participants are required to see it — a two-party test cannot distinguish "sent to the
-/// conversation" from "sent to everyone", which is why the existing suite passed throughout.
+/// Three participants are required: a two-party test cannot distinguish delivery to the named
+/// conversation from a broadcast to every friend.
 ///
 /// **These assert on the wire, not on `SignalStoreRegistry`.** That store is a process-wide
 /// singleton shared by every client in the test process, so "Carol's store holds it" is
 /// indistinguishable from "Bob's store holds it" and would pass either way.
 final class SignalAudienceTests: XCTestCase {
 
-    // No model is registered anywhere in this file. Signals do not need a schema — `modelKey` is an
-    // opaque namespace string, exactly as it is on the inbox and the entry store — which is what
-    // let them survive §10 step 4 when the ORM went.
-    //
-    // That claim was written here while every test in the file still called `client.schema([msgDef])`
-    // on each participant first, so it described an intention rather than the code. The `msgDef`
-    // property and its three call sites are gone; the comment is now true.
+    // Signals need no schema; modelKey is an opaque namespace string.
 
     /// Alice types to Bob. Carol — Alice's friend, but not in that conversation — must hear nothing.
     func testTypingReachesThePeerAndNotAnUninvolvedFriend() async throws {

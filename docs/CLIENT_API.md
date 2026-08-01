@@ -1,6 +1,8 @@
 # Client API — Auth, Connection, Friends, Devices
 
-Auth, social graph, device management. This is the whole client API now — the ORM that used to sit on top of it was deleted (`obscura-proto/KIT_API.md` §10 step 4). Entries reach the app through `client.inbox`, are stored via `client.entries`, and are sent with `client.send(to:modelKey:entryId:op:sentAt:payload:)`.
+Auth, social graph, device management, and opaque entry transport. Entries
+reach the app through `client.inbox`, are stored via `client.entries`, and are
+sent with `client.send(to:modelKey:entryId:op:sentAt:payload:)`.
 
 ## Client Initialization
 
@@ -89,8 +91,7 @@ let isFriend = await client.friends.isFriend(userId)
 
 // Observe (reactive — SwiftUI-ready)
 for await friends in client.friends.observeAccepted().values { ... }
-// Pending requests: read with `getPending()`, or filter `observeAll()` by status.
-// The status-specific observers were deleted — only `observeAccepted()` and `observeAll()` remain.
+// Pending requests: read with getPending(), or filter observeAll() by status.
 for await all in client.friends.observeAll().values { ... }
 ```
 
@@ -132,23 +133,28 @@ For the full device linking ceremony:
 1. New device logs in with `loginAndProvision(username, password)`
 2. New device calls `generateLinkCode()` — displays QR
 3. Existing device scans, calls `validateAndApproveLink(code)`
-4. Existing device sends approval (encrypted) with P2P keys, device list, friend export
-5. Existing device sends SYNC_BLOB with full state
+4. Existing device sends `DEVICE_LINK_APPROVAL`, but Swift currently drops that
+   arm on receive
+5. Existing device sends `SYNC_BLOB`, which imports the friend graph; the Swift
+   exporter currently sends no message history
 6. Existing device broadcasts DEVICE_ANNOUNCE to all friends
-7. New device receives approval + state, is now fully linked
+
+Because Swift does not handle `DEVICE_LINK_APPROVAL`, the new device does not
+import its P2P/recovery keys or the complete own-device list. Linking remains
+partial until that receive path is implemented.
 
 ## Device Revocation
 
-**There is no remote, recovery-key-signed revocation.** `revokeDevice(_:targetDeviceId:)` was
-deleted: it signed a filtered device list plus its own timestamp and then called `announceDevices()`,
-which rebuilds the payload from the *unfiltered* own-device registry and stamps a fresh timestamp, so
-neither signed input matched what went on the wire and no recipient could ever verify it. It had zero
-callers and zero tests. Revoking requires access to a device you still hold:
+**There is no remote, recovery-key-signed revocation.** Revoking requires
+access to a device you still hold:
 
 ```swift
 try await client.api.deleteDevice(deviceId)
-try await client.announceDevices()
 ```
+
+Deletion does not remove the device from the local `DeviceStore`. Calling
+`announceDevices()` immediately afterward would rebroadcast the stale list; no
+public refresh/removal operation currently closes that gap.
 
 ## Sending Messages
 

@@ -92,13 +92,8 @@ public class ObscuraClient {
     public let devices: DeviceActor
     public let gateway: GatewayConnection
 
-    /// The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API, and now the
-    /// only place an inbound MODEL_SYNC lands.
-    ///
-    /// It ran ALONGSIDE the ORM through §10 steps 2–3, so that obscura-pix had somewhere to move to
-    /// before the old surface went away; the cost was that every MODEL_SYNC was persisted twice, once
-    /// as a model entry and once as an inbox row. §10 step 4 ended that — the ORM is gone and the
-    /// double write with it.
+    /// The durable inbox (`obscura-proto/KIT_API.md` §3), and the only place an inbound MODEL_SYNC
+    /// lands.
     public let inbox: InboxStore
 
     /// Raw storage for application entries (`obscura-proto/KIT_API.md` §8.1) — the other half of the
@@ -196,7 +191,6 @@ public class ObscuraClient {
 
     /// Buffered message queue for waitForMessage
     private var messageQueue: [ReceivedMessage] = []
-    // messageWaiters removed — waitForMessage now polls messageQueue directly
     private let processedEnvelopes = ProcessedEnvelopeTracker()
     private let pushDrainCoordinator = PushDrainCoordinator()
 
@@ -245,9 +239,7 @@ public class ObscuraClient {
     private var reconnectAttempts = 0
     private static let reconnectDelayMs: UInt64 = 1_000
     private static let reconnectMaxDelayMs: UInt64 = 30_000
-    /// F10: backoff between the two connect attempts in `processPendingMessages`. Short on purpose —
-    /// the push path runs inside a tight OS budget (an NSE gets ~30s), so a retry costing seconds
-    /// would be worse than no retry at all. Matches ObscuraKit-Kotlin's 250ms.
+    /// Keep the single reconnect retry inside the push path's tight OS time budget.
     private static let pushDrainReconnectRetryNanos: UInt64 = 250_000_000
     private static let pingIntervalSeconds: TimeInterval = 30
 
@@ -517,18 +509,15 @@ public class ObscuraClient {
         // 5. Messenger
         self._messenger = MessengerActor(api: api, store: store, ownUserId: self.userId!)
 
-        // F9: record THIS device in the own-device registry so approveLink / DeviceAnnounce ship a
-        // real device list. Without this the registry stays empty, every DeviceAnnounce is inert,
-        // and a friend's device list is always empty (which is what masks F1 today).
+        // Link approval and DeviceAnnounce require a complete own-device registry.
         await recordOwnDevice(deviceName: "ObscuraKit-device",
                               signalIdentityKey: Data(identity.publicKey.serialize()), registrationId: regId)
 
         self._authState = .authenticated
     }
 
-    /// F9: record THIS device in the own-device registry. deviceUUID == deviceId by the kit's
-    /// convention (see generateLinkCode / validateAndApproveLink). Idempotent (INSERT OR REPLACE).
-    /// Mirrors Kotlin AuthManager.addOwnDevice(OwnDeviceData(...)) on register/loginAndProvision.
+    /// Record this device in the own-device registry. `deviceUUID == deviceId` by convention;
+    /// insertion is idempotent.
     private func recordOwnDevice(deviceName: String, signalIdentityKey: Data, registrationId: UInt32) async {
         guard let did = self.deviceId else { return }
         var device = OwnDevice(deviceUUID: did, deviceId: did, deviceName: deviceName)
@@ -571,7 +560,7 @@ public class ObscuraClient {
         let store = try initializeSignalStore(identity: identity, regId: regId, spkPrivate: spkPrivate, spkSig: spkSig, preKeyRecords: preKeyRecords)
         self._messenger = MessengerActor(api: api, store: store, ownUserId: userId)
 
-        // F9: record THIS device in the own-device registry (see recordOwnDevice / register()).
+        // Keep the own-device registry complete for linking and announcements.
         await recordOwnDevice(deviceName: deviceName,
                               signalIdentityKey: Data(identity.publicKey.serialize()), registrationId: regId)
 
@@ -607,10 +596,9 @@ public class ObscuraClient {
     public func loginSmart(_ username: String, _ password: String) async throws -> LoginScenario {
         let storedIdentity = await devices.getIdentity()
 
-        // Device-first (Android parity): if a local device exists, log in with it
-        // directly — a SINGLE device-scoped session, with no user-scoped login
-        // churned alongside it. The old user-scoped-first order left a competing
-        // user session so refreshes drifted to user-scoped → 403 on the gateway.
+        // Device-first (Android parity): a local device logs in with one
+        // device-scoped session. A competing user-scoped session can make token
+        // refresh drift to the wrong scope and produce a gateway 403.
         if let identity = storedIdentity, !identity.deviceId.isEmpty {
             do {
                 let deviceResult = try await api.loginWithDevice(username, password, deviceId: identity.deviceId)
@@ -712,9 +700,7 @@ public class ObscuraClient {
             coreUsername: username, deviceId: self.deviceId ?? "", deviceUUID: self.deviceId ?? ""
         ))
 
-        // F9: record THIS (as-yet-unapproved) device so it knows itself. The approving device ships
-        // the full account device list, which reconciles this on approval. Mirrors Kotlin
-        // AuthManager.loginAndProvision's addOwnDevice.
+        // Record the pending device locally; approval later reconciles the full account list.
         await recordOwnDevice(deviceName: deviceName,
                               signalIdentityKey: Data(identity.publicKey.serialize()), registrationId: regId)
 
@@ -765,13 +751,8 @@ public class ObscuraClient {
     /// Re-check connection when app returns to foreground.
     /// Matches JS client's visibilitychange handler.
     ///
-    /// **Registered exactly once, and removed on teardown.** It used to be re-registered by every
-    /// `connect()` with the token discarded, so nothing could ever remove it — not `deinit`, not
-    /// `disconnect()`, not `fullLogout()`. After N reconnects a single foreground event fired N
-    /// concurrent `connect()` calls, each of which leaked another socket and added another observer.
-    /// One registration is all there ever was to want: the observer is about the app's lifecycle, not
-    /// about any one connection, and it already re-checks `shouldReconnect` and the connection state
-    /// before doing anything.
+    /// Register exactly once and retain the removal token. The observer is lifecycle-scoped, not
+    /// connection-scoped.
     private func startForegroundObserver() {
         #if os(iOS)
         guard foregroundObserver == nil else { return }
@@ -831,6 +812,9 @@ public class ObscuraClient {
     ///
     /// This observes successful receive-path persistence without consuming `messageQueue`.
     /// The app owns notification classification; the kit treats model keys as opaque.
+    ///
+    /// Returns zero after both connection attempts fail, which is indistinguishable from a
+    /// successful drain that processed no envelopes. Connection failure is logged.
     public func processPendingMessages(timeout: TimeInterval) async -> Int {
         await pushDrainCoordinator.run { [weak self] in
             guard let self else { return 0 }
@@ -842,17 +826,8 @@ public class ObscuraClient {
         let processedAtStart = await processedEnvelopes.snapshot().count
         logger.log("[push] drain start (timeout=\(Int(timeout))s, connected=\(_connectionState == .connected))")
         if _connectionState != .connected {
-            // F10 (obscura-proto/HISTORY.md). A failed connect returns zero, which is
-            // indistinguishable from "connected fine, nothing waiting" — on the PUSH-WAKE path that
-            // means: woken by a push, silently report no messages, leave them on the server. This
-            // kit at least logged it; ObscuraKit-Kotlin swallowed it entirely, where it showed up as
-            // a ~25% flaky PushTests. The connect failure was transient in every observed case
-            // (measured in Kotlin: the retry fired in 3 of 8 runs and recovered every time), so
-            // retry once before giving up.
-            //
-            // The backoff is deliberately short: an NSE has roughly 30 seconds total, so a retry
-            // costing seconds would be worse than no retry. The zero-count return is unchanged —
-            // making it distinguishable from "could not connect" is a Phase 4 API decision.
+            // Retry one transient connection failure and log both attempts. The current Int return
+            // cannot distinguish "no envelopes" from "could not connect".
             do { try await connect() } catch {
                 logger.log("[push] connect failed (attempt 1/2): \(error)")
                 try? await Task.sleep(nanoseconds: Self.pushDrainReconnectRetryNanos)
@@ -942,11 +917,9 @@ public class ObscuraClient {
 
     /// Send a friend request. Stores the target with their username so the UI can display it.
     ///
-    /// - Note: **This no longer FRIEND_SYNCs the change to the user's own other devices**, because
-    ///   the FRIEND_SYNC arm is gone from both halves of this kit (see `routeMessage`). The
-    ///   functional consequence, recorded rather than discovered later: a second device does not
-    ///   learn about friends added *after* it was linked. It still gets the whole friend graph at
-    ///   link time, in `DEVICE_LINK_APPROVAL`'s `friends_export`.
+    /// - Note: A second device does not learn about friends added after it was
+    ///   linked. It receives the friend graph only at link time through
+    ///   `SYNC_BLOB`; `DEVICE_LINK_APPROVAL` is not handled on receive.
     public func befriend(_ targetUserId: String, username targetUsername: String) async throws {
         _ = try requireMessenger()
 
@@ -992,14 +965,7 @@ public class ObscuraClient {
         _ = try await messenger.flushMessages()
     }
 
-    /// Announce device list to all friends.
-    ///
-    /// - Note: it had `isRevocation:` and `signature:` parameters, and `revokeDevice` was their only
-    ///   caller. That method signed `remainingIds` plus its own timestamp and then handed the
-    ///   signature to this one, which rebuilds the payload from the UNFILTERED `getOwnDevices()` and
-    ///   stamps its own timestamp — so both signed inputs differed from what was sent and the
-    ///   signature could never verify. It had zero callers and zero tests; it and the two parameters
-    ///   are deleted rather than repaired (see `git log` for the reasoning).
+    /// Announce the current device list to all friends.
     public func announceDevices() async throws {
         let ownDevices = await devices.getOwnDevices()
         var announce = Obscura_Client_V1_DeviceAnnounce()
@@ -1037,8 +1003,8 @@ public class ObscuraClient {
         await clearSessionsWithUser(targetUserId)
     }
 
-    /// Phase 2: Signal sessions are keyed on the peer's DEVICE UUID at address (deviceUuid, 1), so
-    /// clearing "a user's" sessions means clearing every session with each of that user's devices.
+    /// Signal sessions are keyed on peer device UUID, so clearing a user means clearing each of
+    /// that user's device sessions.
     /// `deleteAllSessions(for:)` matches on the address-name prefix, so passing a device UUID here
     /// deletes exactly that device's session. (Mirrors Kotlin ClientSyncManager.clearSessionsWithUser.)
     private func clearSessionsWithUser(_ userId: String) async {
@@ -1190,9 +1156,8 @@ public class ObscuraClient {
             oneTimePreKeys: otpKeys
         )
 
-        // Clear all old sessions — identity key changed, old sessions are invalid.
-        // Next send will do a fresh PreKey exchange with the new identity. Sessions are keyed on
-        // the DEVICE UUID (Phase 2), so clear per friend device.
+        // The identity key changed, so clear every device-UUID session and force fresh prekey
+        // exchanges on the next send.
         for friend in await friends.getAccepted() {
             await clearSessionsWithUser(friend.userId)
         }
@@ -1268,10 +1233,9 @@ public class ObscuraClient {
     /// **The caller names the recipients** (SPEC §0.4). The kit fans out to every device of every
     /// listed userId, plus this user's own *other* devices, and makes **no delivery decision of its
     /// own** — no audience resolution, no reading of `payload` to discover who it is for. That is the
-    /// whole difference from ``sendModelSync(to:model:entryId:op:data:)``, which sends to exactly one
-    /// friend and refuses a non-friend. Prefer this one; that one is a §0.4 follow-up recorded in
-    /// `CLAUDE.md`, not in the proto — it is a kit-local wart, not part of the contract — and it
-    /// stands only because `EdgeCaseTests` uses it as a one-liner.
+    /// difference from the compatibility
+    /// ``sendModelSync(to:model:entryId:op:data:)`` helper, which resolves one
+    /// friend. New integrations should use this explicit-audience operation.
     ///
     /// Two properties §5 asks to be proven rather than assumed, both pinned by Kotlin's
     /// `EntrySendTests` and mirrored here:
@@ -1353,21 +1317,13 @@ public class ObscuraClient {
 
     // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
     //
-    // These used to reach the app through `client.model(name).typing(...)`, which was the last
-    // reason the app touched the ORM at all — and `HISTORY.md` KEEPS signals while deleting the engine
-    // around them. `ModelSignal.swift` was keep-forever code that happened to live in `ORM/`; these
-    // three methods are the door that let it stay after the directory went (it is now `Wire/`).
-    //
-    // `modelKey` is opaque, exactly as it is on the inbox and the entry store: it names the app's
-    // conversation namespace and the kit neither parses nor validates it. That is what made this a
-    // relocation rather than a new entrance to the engine.
+    // modelKey is an opaque conversation namespace; the kit neither parses nor validates it.
 
     /// Announce that this user is typing in a conversation.
     ///
     /// Throttled to at most once every 2s. Delivered to the conversation's participants only — never
     /// broadcast; the audience comes from the canonical two-party `conversationId`, and a value that
-    /// does not name exactly two participants is DROPPED rather than widened (the leak fixed on
-    /// 2026-07-25).
+    /// does not name exactly two participants is dropped rather than widened.
     public func sendTyping(modelKey: String, conversationId: String) async {
         await sendSignalDirect(modelKey: modelKey, kind: "typing", conversationId: conversationId)
     }
@@ -1568,11 +1524,8 @@ public class ObscuraClient {
         sessionStorage?.save(data)
     }
 
-    /// Restore session from storage and connect.
-    ///
-    /// It used to also re-define models from a `cachedSchema` slot, which is gone with the schema
-    /// parser — the kit no longer knows what an application model *is* (SPEC §0.4), so there is
-    /// nothing to cache and nothing to restore. The app owns its own schema across a cold start.
+    /// Restore kit-owned session state from storage and connect. Application schemas are not part
+    /// of persisted kit state (SPEC §0.4).
     public func restorePersistedSession() async throws {
         guard let storage = sessionStorage, let saved = storage.load(),
               let token = saved["token"] as? String, !token.isEmpty,
@@ -1608,14 +1561,8 @@ public class ObscuraClient {
     // without it — device linking, messaging, sync. The one feature that uses a recovery phrase is
     // `announceRecovery()`, which signs a DEVICE_RECOVERY_ANNOUNCE with it.
     //
-    // **There is no remote device revocation.** `revokeDevice(_:targetDeviceId:)` used to live here
-    // and was deleted: it signed the FILTERED remaining device list plus its own timestamp, then
-    // called `announceDevices()`, which rebuilds the payload from the UNFILTERED `getOwnDevices()`
-    // (nothing ever called `devices.removeOwnDevice`) and stamps a fresh timestamp — so both signed
-    // inputs differed from what actually went on the wire and no recipient could ever verify it. It
-    // had zero callers, zero tests, and was the only reason `announceDevices` took `isRevocation:`
-    // and `signature:` at all. Revoking a device today means deleting it server-side
-    // (`api.deleteDevice`) from a device you still hold.
+    // There is no remote device revocation. Delete a device server-side from a device you still
+    // hold.
     //
     // Device announce signature verification is trust-on-first-use: the peer's recovery public key
     // is pinned from the first DEVICE_ANNOUNCE that carries one and verified against the stored copy
@@ -1634,9 +1581,7 @@ public class ObscuraClient {
 
     /// Generate a recovery phrase and hold it for exactly one ``getRecoveryPhrase()`` read.
     ///
-    /// The derived public key is deliberately NOT cached on the client: it is a pure function of the
-    /// phrase (`RecoveryKeys.getPublicKey(from:)`), and the property that used to hold it was written
-    /// here, cleared in `logout()`, and read by nothing.
+    /// The derived public key is not cached because it is a pure function of the phrase.
     public func generateRecoveryPhrase() -> String {
         let phrase = RecoveryKeys.generatePhrase()
         self._recoveryPhrase = phrase
@@ -1813,11 +1758,8 @@ public class ObscuraClient {
         }
 
         do {
-            // Phase 2 receive-side addressing: the envelope carries the sender's DEVICE UUID
-            // (sender_device_id, stamped server-side from the device-scoped JWT). Signal sessions
-            // are pairwise device-to-device, so this selects the inbound session. Missing/empty is
-            // an ERROR (no candidate-registrationId guessing) — throwing here lands in the catch
-            // below and SKIPS the ack, so the message stays on the server rather than being lost.
+            // The server-stamped sender device UUID selects the pairwise inbound Signal session.
+            // Missing identity is an error, never a registration-id guess, and skips the ack.
             guard raw.senderDeviceID.count == 16 else {
                 throw ObscuraError.provisionFailed(
                     "Envelope from \(sourceUserId) has no sender_device_id (\(raw.senderDeviceID.count) bytes); cannot select an inbound session")
@@ -1827,12 +1769,8 @@ public class ObscuraClient {
             let encMsg = try Obscura_Client_V1_EncryptedMessage(serializedData: raw.message)
             let messageType = encMsg.type == .prekeyMessage ? 1 : 2
 
-            // The rate limiter counts DECRYPT failures and nothing else. It used to be incremented
-            // by the outer catch, which covers `routeMessage` — so ten failed durable WRITES from
-            // one sender inside 60s (disk full, a migration not yet applied, a locked database)
-            // tripped the limiter, and every later envelope from that user was dropped at the top of
-            // this function before decrypt, before persist and before ack. A transient local fault
-            // became a per-sender blackout that outlived it.
+            // Count only decrypt failures. Persistence faults are local and must not rate-limit a
+            // sender after storage becomes available again.
             let plaintext: [UInt8]
             do {
                 plaintext = try await messenger.decrypt(
@@ -1850,7 +1788,7 @@ public class ObscuraClient {
             // routeMessage now throws, so if durable persistence fails the error propagates to the
             // catch below and we SKIP the ack — the message stays on the server for retry rather
             // than being deleted un-persisted. authorDeviceId is the decrypting session's device
-            // UUID (== senderDeviceId, proven by the MAC), never the userId (the F4 lie).
+            // UUID (== senderDeviceId, proven by the MAC), never the userId.
             // `Envelope.id` is the inbox's DEDUPE KEY, so it gets the same length check
             // `sender_device_id` already gets above — and for the same reason: SPEC §0.10 treats
             // everything the relay stamps as untrusted.
@@ -1920,8 +1858,8 @@ public class ObscuraClient {
     /// Called from the envelope loop **before** the ack, and it throws on a failed durable write so
     /// the ack is skipped and the message survives on the server (SPEC §0.9 rule 3).
     ///
-    /// `classify` decides what each arm is *allowed* to do; the switch below then routes it. The old
-    /// `default: break` swallowed seven arms and let the caller ack them, destroying them silently.
+    /// `classify` decides what each arm may do; the switch routes only within
+    /// that policy.
     private func routeMessage(
         _ msg: Obscura_Client_V1_ClientMessage,
         sourceUserId: String,
@@ -1936,21 +1874,13 @@ public class ObscuraClient {
             isNew = try await inboxMessage(
                 msg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
                 envelopeId: envelopeId)
-            // The inbox row IS the delivery, and it has committed — §3.3 rule 1 gates the ack on
-            // exactly that and on nothing else. MODEL_SYNC used to continue into the ORM from here;
-            // that parallel write is gone with the engine, and the one thing below it that was never
-            // the ORM's — clearing typing indicators, because a real message just arrived — is all
-            // that falls through now.
+            // The inbox row is the delivery and has committed. MODEL_SYNC falls through only to
+            // clear ephemeral typing state after a real message arrives.
             if case .modelSync? = msg.payload {} else { return isNew }
 
         case .unimplemented:
-            // Classified in §4 but implemented by neither kit. Today's behaviour (drop, then ack) is
-            // preserved deliberately — §4.2 keys the inbox fallback on absence from the
-            // classification TABLE, not absence from the handler, or the inbox becomes where
-            // unimplemented kit work goes to be forgotten. What changes is that it is no longer
-            // silent. Two of these CAN fire against this kit today: DEVICE_RECOVERY_ANNOUNCE, whose
-            // sender (`announceRecovery`) is live and ungated here, and FRIEND_SYNC, which this kit
-            // no longer sends but a peer kit may.
+            // Diagnose and acknowledge declared unsupported arms so they cannot wedge the queue.
+            // DEVICE_RECOVERY_ANNOUNCE has a live sender in this kit.
             logger.log("RECV UNIMPLEMENTED arm=\(WireCodec.decodeMessageType(msg.payload)) "
                 + "from=\(sourceUserId.prefix(8)) (dropped and acked — see KIT_API.md §4.2)")
             return true
@@ -1961,11 +1891,8 @@ public class ObscuraClient {
 
         switch msg.payload {
         case .friendRequest?:
-            // The payload username is a FIRST-CONTACT bootstrap only (SPEC §0.10 rule 5). This used
-            // to call friends.add() unconditionally, and FriendStore's INSERT OR REPLACE meant an
-            // already-accepted friend could re-send a FriendRequest to rename themselves — the name
-            // the kit puts on notifications — and reset their own status to .pendingReceived,
-            // dropping out of getAccepted() and out of fan-out.
+            // The payload username is a first-contact label only. A known peer cannot use another
+            // request to replace its locally trusted name or friendship status.
             if let existing = await friends.getFriend(sourceUserId) {
                 // Known peer: the name comes from our graph now, never from their payload. Refresh
                 // the device list (that IS ours to learn — the sending device was just added to the
@@ -1985,10 +1912,8 @@ public class ObscuraClient {
             }
 
         case .friendResponse?:
-            // A response is only meaningful as the answer to a request WE sent. This used to call
-            // friends.add(..., .accepted) whenever accepted was true, so any authenticated stranger
-            // — friendship is not required to deliver a message — could insert themselves as an
-            // ACCEPTED friend under a name of their choosing, with no interaction from us.
+            // A response is valid only for a request we sent. Delivery alone must not let an
+            // authenticated stranger insert itself as an accepted friend.
             if msg.friendResponse.accepted {
                 let existing = await friends.getFriend(sourceUserId)
                 if let existing, existing.status == .pendingSent {
@@ -2013,7 +1938,7 @@ public class ObscuraClient {
                 timestamp: clampFutureTimestamp(msg.timestamp),
                 content: msg.text.text,
                 isSent: false,
-                // Honest attribution (F4): the sending device's UUID, proven by the session MAC.
+                // Sending device UUID, proven by the session MAC.
                 authorDeviceId: senderDeviceId
             )
             try await messages.add(sourceUserId, messageData)
@@ -2092,7 +2017,7 @@ public class ObscuraClient {
                     signalRaw: signalName,
                     conversationId: sig.contextID,
                     senderUsername: username,
-                    // Honest attribution (F4): the sending device's UUID, proven by the session MAC.
+                    // Sending device UUID, proven by the session MAC.
                     authorDeviceId: senderDeviceId,
                     timestamp: msg.timestamp
                 )
@@ -2140,30 +2065,16 @@ public class ObscuraClient {
             )
             try await messages.add(ss.recipientUsername, messageData)
 
-        // FRIEND_SYNC has no arm here, and deliberately: see `PayloadClass.classify`. It is
-        // classified `.unimplemented`, so it is dropped and acked loudly above and never reaches
-        // this switch.
-
         case .sessionReset?:
-            // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we hold with
-            // any of this user's devices.
+            // Sessions are keyed on device UUID, so reset every session for this user.
             await clearSessionsWithUser(sourceUserId)
 
         default:
             // A kit-internal arm with no handler must NOT be acked — the ack would destroy the only
             // copy of a message this kit is supposed to own. Kotlin throws here for the same reason.
             //
-            // **This is UNREACHABLE today, and the guard is kept anyway.** Every `.kitInternal` and
-            // `.droppable` arm above has an explicit case, and everything else returned before this
-            // switch: `.inboxed` in the first switch, `.unimplemented` likewise. In particular
-            // `.deviceLinkApproval` is classified `.unimplemented`, NOT `.kitInternal`
-            // (`PayloadClass.swift`), so it never arrives here — the comment that used to sit here
-            // said the opposite and named it as the live case.
-            //
-            // What makes the guard worth keeping is what happens when someone adds an arm to
-            // `classify` as `.kitInternal` and forgets the case below: without this, the arm would
-            // fall out of the switch, get acked, and be destroyed silently. Throwing leaves it on
-            // the server until the handler exists.
+            // This guard catches a future arm classified kitInternal without a matching handler.
+            // Throwing leaves it on the server rather than acknowledging and destroying it.
             throw ObscuraError.provisionFailed(
                 "\(WireCodec.decodeMessageType(msg.payload)) is classified kit-internal but this kit "
                 + "has no handler; refusing to ack it away")
@@ -2177,9 +2088,7 @@ public class ObscuraClient {
     /// and the message stays on the server — which is the whole point of persist-then-ack and the
     /// reason this is not an event stream.
     ///
-    /// This is now the *only* durable write on the receive path for an application entry. Through
-    /// §10 steps 2–3 the caller also continued into the ORM, because the ORM still owned what
-    /// obscura-pix read; step 4 removed the second write and the engine under it.
+    /// This is the only durable receive write for an application entry.
     private func inboxMessage(
         _ msg: Obscura_Client_V1_ClientMessage,
         sourceUserId: String,
@@ -2278,8 +2187,7 @@ public class ObscuraClient {
         payload.content = Data(content.utf8)
         syncMsg.sentSync = payload
 
-        // The only guard that matters: is there another device to sync TO. The `!ownDevices.isEmpty`
-        // check that used to sit above was implied by this one and is gone.
+        // Send only when another own device can receive the sync.
         guard ownDevices.contains(where: { $0.deviceId != self.deviceId }) else { return }
         do {
             try await sendToAllDevices(self.userId!, syncMsg, excludingDeviceId: self.deviceId)
@@ -2441,14 +2349,7 @@ public class ObscuraClient {
         return "\(hex[i..<hex.index(i, offsetBy: 8)])-\(hex[hex.index(i, offsetBy: 8)..<hex.index(i, offsetBy: 12)])-\(hex[hex.index(i, offsetBy: 12)..<hex.index(i, offsetBy: 16)])-\(hex[hex.index(i, offsetBy: 16)..<hex.index(i, offsetBy: 20)])-\(hex[hex.index(i, offsetBy: 20)..<hex.index(i, offsetBy: 32)])"
     }
 
-    /// Errors this kit actually throws. Four cases were deleted because nothing threw them:
-    /// `missingToken`, `noMessage`, and — since §10 step 4 removed the schema parser and the routing
-    /// engine — `invalidSchema` and `directRoutingUnresolved`.
-    ///
-    /// The last two were **also** dead in `ObscuraKit-Kotlin` and are exposed to JS through the
-    /// bridge's error union, so they must be deleted there and in
-    /// `obscura-pix/src/native/ObscuraModule.ts` too. `DIRECT_ROUTING_UNRESOLVED` is raised app-side
-    /// now, by `obscura-pix/src/domain/audience.ts`, which is exactly where SPEC §0.4 puts it.
+    /// Errors surfaced by the current public kit API.
     public enum ObscuraError: Error, LocalizedError {
         case notAuthenticated
         case provisionFailed(String)

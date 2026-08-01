@@ -3,27 +3,22 @@
 The **native iOS platform layer** for the Obscura app (`obscura-pix`). Not a general-purpose
 framework; one consumer, no API-stability obligation.
 
-> ### The reset has landed
->
-> The normative brief is [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
-> with what was removed and why in [`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md), and the app-facing
-> contract in [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md).
->
-> **The ORM, CRDT engine, query DSL, audience-routing system and schema parser are gone**
-> (`obscura-proto/KIT_API.md` §10 step 4). They existed here *and* in ObscuraKit-Kotlin, duplicated, to serve five flat models
-> in one app that used almost none of them; merge and audience now live in obscura-pix, once. Three
-> defects went with them: hard-coded application field names, a `.friends` broadcast narrowed by a
-> stray `conversationId`, and — by construction — acking a `MODEL_SYNC` before durably persisting
-> it. (The missing schema-migration mechanism was fixed separately and earlier, by
-> `Storage/ObscuraSchema.swift`; the reset is what gave it its first real migration to run.)
->
-> Still live, and not resolved by the reset: **this kit sends `DEVICE_LINK_APPROVAL` but cannot
-> receive one**, and there is no device-announce replay protection. See `CLAUDE.md`.
+The normative brief is
+[`obscura-proto/SPEC.md`](../obscura-proto/SPEC.md), with the app-facing
+contract in [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md). Merge,
+audience resolution, schemas, queries, expiry, and notification policy belong
+in `obscura-pix`; do not add those layers to this kit.
+
+Current platform gaps include receiving `DEVICE_LINK_APPROVAL` and replay
+protection for device announcements. See `CLAUDE.md`. No Notification Service
+Extension exists; shared storage/session plumbing and the remaining transport,
+concurrency, migration, and device-verification work are documented in
+[`docs/NSE_PREREQUISITES.md`](docs/NSE_PREREQUISITES.md).
 
 **Why a native kit exists at all:** libsignal ships only as `libsignal-swift` (no supported
-shared core), and the push path must decrypt with the app closed — on iOS, inside a Notification
-Service Extension, which cannot run a React Native runtime. Those two facts justify native code.
-Everything else belongs in the app.
+shared core), and background push processing cannot depend on a React Native
+runtime. Those constraints justify native code; everything else belongs in the
+app.
 
 ## What it does
 
@@ -97,17 +92,18 @@ try await existingClient.validateAndApproveLink(code)
 
 ## What works
 
-8 unit tests (`Tests/UnitTests`, offline — the wire conformance vectors) and 209 scenario tests
-(`Tests/ScenarioTests`, most against a live server; CI runs a native one). Both jobs must pass on
-macOS: Linux cannot build this package at all, because GRDB's bundled SQLCipher needs
+The offline unit suite covers wire conformance; scenario tests exercise a
+server. Both jobs run on macOS because GRDB's bundled SQLCipher requires
 `CommonCrypto` (see `docs/PITFALLS.md`).
 
-**"Cross-platform interop proven" was claimed here and was not true as written.** The two kits agree on the *wire* (`conformance/wire.json`), and after the reset they agree on far more of their *behavior* — the hard-coded field names and the narrowed `friends` broadcast that made this kit diverge were deleted with the routing engine. Behavioral parity is now a much smaller claim, but it is still a claim, not a proof: nothing runs the two kits against each other.
+The two kits prove the shared wire mappings with
+`conformance/wire.json`. No test runs the two implementations directly against
+each other, so broader behavioral interoperability is not claimed.
 
 - Register, login, friend handshake, encrypted messaging
 - Entries: send to a caller-named audience, receive into a durable inbox, store and read back
 - Persist-then-ack: a failed durable write skips the ack, so the server redelivers (SPEC §0.9)
-- Dedupe: `envelope_id UNIQUE` + `INSERT OR IGNORE`, because redelivery is guaranteed, not rare
+- Dedupe while pending: `envelope_id UNIQUE` + `INSERT OR IGNORE`
 - Offline/reconnect: the server queues, and the inbox absorbs the duplicates that produces
 - Attachments: encrypt, upload, download, cache — the bytes path, kept
 - Device linking: QR/code generation, validation, approval flow
@@ -119,17 +115,11 @@ macOS: Linux cannot build this package at all, because GRDB's bundled SQLCipher 
 ## What doesn't work yet
 
 - Group-targeted sync has no server test
-- Entries never expire on either platform — TTL went with the engine and has not been rebuilt
-- The old `MessageActor` still exists, with `getMessages` reachable only from tests
-- No remote device revocation — the broken `revokeDevice` was deleted rather than repaired; use
-  `api.deleteDevice` from a device you still hold
+- Entry expiry is not implemented on either platform
+- `MessageActor` is a compatibility surface; `getMessages` is reachable only from tests
+- No remote device revocation; use `api.deleteDevice` from a device you still hold
 - No FRIEND_SYNC — a second device learns about friends at link time only, not afterwards
-- The demo apps under `App/` still call the deleted ORM API and no longer compile
-- ~~Session desync happens occasionally under load~~ — **diagnosed and FIXED** (Phase 2, PR #6,
-  merged 2026-07-25). `MessengerActor.decrypt` defaulted `senderRegId: 1` while outbound sessions
-  used the real one, so the two directions filed sessions at different addresses. Sessions now key on
-  the device UUID (`obscura-proto/SPEC.md` §0.10), verified by `TwoDeviceSendTests` and
-  `AuthorDeviceIdTests` on macOS CI against a real server.
+- The demo apps under `App/` target APIs that are not part of the current kit
 
 ## Build & Test
 
@@ -143,9 +133,8 @@ Requires macOS 13+, Xcode 16+. `dev.sh` sets `LIBRARY_PATH` for the vendored lib
 
 ## iOS App
 
-Demo app at `App/`. **It does not currently build:** it was written against `client.register(Story.self)`
-and the query DSL, which the reset deleted, and the real consumer of this kit is `obscura-pix`. Port
-it or delete it — do not treat it as a working sample.
+The app under `App/` is not a working sample; it targets APIs outside the
+current kit contract. The shipping consumer is `obscura-pix`.
 
 ```bash
 # Build libsignal for iOS simulator first:

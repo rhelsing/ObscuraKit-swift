@@ -85,19 +85,16 @@ SwiftUI View: .task { for await msgs in client.messages.observeMessages(id).valu
               ──── GRDB ValueObservation fires automatically, view re-renders
 ```
 
-> **Sessions key on the DEVICE UUID, never on `registrationId`.** Both diagrams above used to show
-> `encrypt(userId, plaintext, registrationId)` and a `registrationId`-keyed session map. That was the
-> F1 defect Phase 2 fixed (`obscura-proto/SPEC.md` §0.10): the real signatures are
-> `encrypt(deviceUuid:_:)` and `decrypt(senderUserId:senderDeviceUuid:content:messageType:)`, and
-> `MessengerActor`'s `deviceMap` keeps a `registrationId` slot that is **diagnostic only**.
-> `docs/PITFALLS.md` and `README.md` both warn against reintroducing it; this file was still
-> describing it.
+> **Sessions key on the device UUID, never `registrationId`**
+> (`obscura-proto/SPEC.md` §0.10). `MessengerActor.deviceMap` retains
+> `registrationId` only as diagnostic protocol metadata.
 
 ## Key Invariant — for kit-owned state
 
 Friends, devices and messages are kit-owned and push to the view. **Application entries are not:**
 a MODEL_SYNC becomes a row in `client.inbox`, and the app drains it (`peek` → merge → write →
-`consume`). The kit does not observe application data, because it no longer stores any
+`consume`). The receive path does not promote inbox rows automatically; the app
+explicitly stores merged opaque entries through `client.entries`
 (`obscura-proto/KIT_API.md` §3).
 
 **For everything the kit does own: the view never asks for data. Data comes to the view.**

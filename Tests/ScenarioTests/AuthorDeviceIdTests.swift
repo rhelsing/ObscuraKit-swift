@@ -1,15 +1,7 @@
 import XCTest
 @testable import ObscuraKit
 
-/// Swift counterpart to Kotlin's `AuthorDeviceIdTests.kt` — `obscura-proto/HISTORY.md` Phase 2
-/// acceptance: **`authorDeviceId` is HONEST.**
-///
-/// F4 background: pre-Phase-2 the `Envelope` carried no sender device, so this kit assumed device 1
-/// on the inbound side and `ReceivedMessage.senderDeviceId` was hardcoded `nil`, while
-/// `routeMessage` passed `sourceUserId` into the `authorDeviceId` slot — a USER id in a field
-/// documented as a DEVICE id. `HISTORY.md` called that "a security property being asserted falsely".
-///
-/// Phase 2 stamps `Envelope.sender_device_id` server-side from the sender's device-scoped JWT, and
+/// `Envelope.sender_device_id` is stamped server-side from the sender's device-scoped JWT, and
 /// derives attribution from the address of the session that decrypted: a valid MAC proves possession
 /// of that session's chain key, which only the sender's device holds (`SPEC.md` §0.10 rule 4).
 ///
@@ -31,13 +23,12 @@ final class AuthorDeviceIdTests: XCTestCase {
         XCTAssertEqual(received.text, "attribute me correctly")
         XCTAssertEqual(received.sourceUserId, bobUserId, "sourceUserId is Bob's USER id")
 
-        // The wake-up carries the sender's real DEVICE UUID — not nil (the old hardcoded value),
-        // and not the user id (the F4 lie).
+        // The wake-up carries the sender's real device UUID, not the user id.
         let senderDeviceId = try XCTUnwrap(received.senderDeviceId,
-            "senderDeviceId must be populated — it was hardcoded nil before Phase 2")
+            "senderDeviceId must be populated")
         XCTAssertEqual(senderDeviceId, bobDeviceId, "senderDeviceId must be Bob's REAL device UUID")
         XCTAssertNotEqual(senderDeviceId, bobUserId,
-            "senderDeviceId must NOT be the user id — that was the F4 lie")
+            "senderDeviceId must not be the user id")
 
         try await Task.sleep(nanoseconds: 500_000_000)
 

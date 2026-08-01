@@ -121,14 +121,10 @@ final class PayloadClassTests: XCTestCase {
             "READ_SYNC": .unimplemented,
             // See `divergesFromKotlin` below.
             "DEVICE_LINK_APPROVAL": .unimplemented,
-            // NOT a divergence: ObscuraKit-Kotlin#58 deleted both halves of this arm too and
-            // classifies it UNIMPLEMENTED. It is deprecated on the wire rather than removed
-            // (`client.proto`), so an older peer's message is still a KNOWN arm — dropped and
-            // acked loudly — instead of an unknown one inboxed as opaque bytes.
+            // Deprecated on the wire but still a known arm, so it is diagnosed,
+            // dropped, and acked rather than inboxed as unknown bytes.
             "FRIEND_SYNC": .unimplemented,
-            // §4's normative table, not §4.3's deletion plan — the deletion has not happened and a
-            // public sender still exists, so dropping these would have the receiver ack away an AES
-            // key that was just shipped over Signal.
+            // Attachment references carry app-owned key material.
             "CONTENT_REFERENCE": .inboxed, "CHUNKED_CONTENT_REFERENCE": .inboxed,
         ]
 

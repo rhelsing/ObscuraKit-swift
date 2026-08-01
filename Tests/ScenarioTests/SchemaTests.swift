@@ -4,20 +4,9 @@ import GRDB
 
 /// The schema of record.
 ///
-/// Before `ObscuraSchema` there was no migration mechanism in this kit at all, and nineteen
-/// `CREATE TABLE IF NOT EXISTS` statements lived in six private `createTables` functions. The
-/// failure that produced — editing a `CREATE TABLE IF NOT EXISTS` and having SQLite silently
-/// ignore it on an existing database — is not something a test can catch after the fact, because
-/// by then the column is simply absent. So these tests guard the thing that *is* checkable: that
-/// every store's tables are registered in the one place, and that migrating gets you there.
-///
-/// **Data survival IS tested now, and that is new.** While `eraseDatabaseOnSchemaChange` was on, a
-/// schema change wiped the database by design, so a test asserting data survival would have asserted
-/// the opposite of the policy. `v2` turned the tripwire off and became the first migration that has
-/// to carry data across, so `testV2PreservesEntryDataWhileDroppingTheDeadColumn` is exactly the
-/// fixture that used to be forbidden.
-///
-/// With the tripwire off, editing an already-applied migration is **silently ignored at runtime** —
+/// Every store table is registered through `ObscuraSchema`, and migrations must
+/// preserve existing data. Editing an already-applied migration is silently
+/// ignored at runtime:
 /// the migration has already run, so the edit reaches no existing database. Nothing can detect that
 /// at runtime; the only defence is a test that notices the *source* changed. Two do, and it is worth
 /// being precise about which failure each one catches, because an overstated safety net is worse
@@ -120,21 +109,18 @@ final class SchemaTests: XCTestCase {
         XCTAssertEqual(try tableNames(in: db), ObscuraSchema.expectedTables)
     }
 
-    /// A database created before `ObscuraSchema` existed has the tables but no `grdb_migrations`
+    /// A database without GRDB migration bookkeeping has tables but no `grdb_migrations`
     /// row, so `v1` is unapplied and runs against tables that are already present. Without
     /// `IF NOT EXISTS` in the migration that is a crash on launch rather than a no-op. (The
-    /// erase-on-schema-change tripwire never saved this case either, back when it was on: it only
-    /// compared schemas once at least one migration had been applied, and here none has.)
+    /// migration row.
     ///
     /// The fixture includes `model_entries` **with `signature NOT NULL` and a row in it**, copied
-    /// from the pre-migrator `ModelStore.createTables`. Without that, `v1` creates the table itself
-    /// and `v2` rebuilds something `v1` just made — which exercises none of the risk. The real case
-    /// is `v2`'s `INSERT … SELECT` running against a table this file never created, and that is
-    /// what could have named a column the old world did not have.
+    /// from the pre-migrator schema. This makes `v2` exercise `INSERT … SELECT`
+    /// against an adopted table rather than one `v1` just created.
     func testAdoptsALegacyDatabaseThatPredatesTheMigrator() throws {
         let db = try DatabaseQueue()
 
-        // Stand in for the old world: tables created directly, no migration bookkeeping.
+        // Tables created directly, without migration bookkeeping.
         try db.write { db in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS model_entries (
@@ -170,8 +156,7 @@ final class SchemaTests: XCTestCase {
         XCTAssertNoThrow(try ObscuraSchema.migrate(db), "v1 must be a no-op over pre-existing tables")
         XCTAssertEqual(try tableNames(in: db), ObscuraSchema.expectedTables)
 
-        // v2 rebuilt a table it did not create. The row has to come through, and the column the old
-        // world required has to be gone.
+        // v2 rebuilds an adopted table; preserve the row and remove `signature`.
         let row = try XCTUnwrap(try db.read { db in
             try Row.fetchOne(db, sql: "SELECT * FROM model_entries WHERE id = 'legacy'")
         }, "a row from before the migrator existed must survive v2")
@@ -180,9 +165,7 @@ final class SchemaTests: XCTestCase {
         XCTAssertFalse(row.hasColumn("signature"))
     }
 
-    /// `GRDBSignalStore` was deleted with this change — zero references outside its own file, and
-    /// nothing ever constructed it, so its five tables were never created in production either.
-    /// `PersistentSignalStore`'s `signal_*` tables are the live Signal protocol state.
+    /// Only `PersistentSignalStore`'s `signal_*` tables are live Signal state.
     func testTheDeadSignalStoreTablesAreNotResurrected() throws {
         let db = try DatabaseQueue()
         try ObscuraSchema.migrate(db)
@@ -196,32 +179,23 @@ final class SchemaTests: XCTestCase {
         }
     }
 
-    // MARK: - v2 — the ORM comes out
+    // MARK: - v2 entry-storage migration
 
-    /// `v2` drops the tables the deleted engine owned, and keeps the one the app owns.
-    ///
-    /// The second half is the assertion that matters. `model_entries` is `EntryStore`'s table —
-    /// `HISTORY.md` is explicit that the engine dies and the table does not — and it sits in the same
-    /// `v1` as `associations` and `ttl`, which is exactly why "drop the ORM tables" could not be
-    /// done by editing `v1` and letting the tripwire rebuild.
-    func testV2DropsTheEngineTablesAndKeepsTheAppsOne() throws {
+    /// `v2` keeps app entry and inbox storage and removes unused policy tables.
+    func testV2KeepsEntryAndInboxStorage() throws {
         let db = try DatabaseQueue()
         try ObscuraSchema.migrate(db)
         let tables = try tableNames(in: db)
 
-        XCTAssertFalse(tables.contains("associations"), "relationships died with the engine")
-        XCTAssertFalse(tables.contains("ttl"), "expiry died with TTLManager")
-        XCTAssertTrue(tables.contains("model_entries"), "the app's entry store must survive")
-        XCTAssertTrue(tables.contains("inbox_rows"), "the inbox shares this database and must survive")
+        XCTAssertFalse(tables.contains("associations"), "relationship policy is not kit storage")
+        XCTAssertFalse(tables.contains("ttl"), "expiry policy is not kit storage")
+        XCTAssertTrue(tables.contains("model_entries"), "the app entry store must remain")
+        XCTAssertTrue(tables.contains("inbox_rows"), "the inbox must remain")
     }
 
     /// Rows written under `v1` survive `v2`, and the dead `signature` column does not.
     ///
-    /// This is the test the old policy could not have: it runs `v1` alone, writes a row the way the
-    /// pre-deletion kit did — including a `signature` value, since the column was `NOT NULL` — then
-    /// runs `v2` and reads the row back. Had `v2` been expressed as an edit to `v1` under the
-    /// tripwire, the fixture row would be gone and so would every undrained `inbox_rows` entry
-    /// beside it.
+    /// Runs `v1`, writes its required shape, applies `v2`, and reads the row back.
     func testV2PreservesEntryDataWhileDroppingTheDeadColumn() throws {
         let db = try DatabaseQueue()
 

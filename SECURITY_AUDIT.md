@@ -1,5 +1,11 @@
 # ObscuraKit Swift — Security Audit
 
+> **Archived, non-normative snapshot (2026-03-28).** This audit describes an
+> earlier architecture. Its line references, finding counts, and status labels
+> are not current, and the ORM/TTL layers discussed below have since been
+> removed. Use `README.md`, `CLAUDE.md`, the pinned protocol contract, and the
+> current code for present behavior and security status.
+
 **Date:** 2026-03-28
 **Last updated:** 2026-03-28 (Phase 1 + 1b + 2a + 2b fixes applied, modernization: CryptoKit + URLSession)
 **Scope:** Full codebase — crypto, network, storage, facade, dependencies, config

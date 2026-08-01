@@ -1,17 +1,15 @@
 # Obscura iOS App
 
-> ### ⚠️ This app does not currently build, and the instructions below are stale.
+> ### This app is not a working sample
 >
-> It was written against `client.register(Story.self)`, `stories.create(...)` and the query DSL —
-> the ORM that `obscura-proto/KIT_API.md` §10 step 4 deleted. Porting it means rewriting its premise,
-> not fixing call sites: there is no longer a kit-side model object to observe, because the kit no
-> longer stores application data. An app on the current API sends with
+> It targets APIs outside the current kit contract. Porting requires moving
+> application state ownership into the app, not only changing call sites. A
+> current app sends with
 > `client.send(to:modelKey:entryId:payload:)` and reads by draining `client.inbox` into its own
 > store.
 >
-> The real consumer of this kit is **`obscura-pix`**, which is on the current API and covered by
-> CI. `App/` is not built by CI and has not been touched since 2026-06-29. Treat it as a historical
-> sample pending a decision to port or delete it, not as a working demo.
+> The shipping consumer is **`obscura-pix`**. `App/` is not built by CI; do not
+> use it as integration guidance.
 >
 > The libsignal FFI instructions below are still accurate and still useful — that part is
 > independent of the kit's API.
@@ -106,7 +104,7 @@ xcrun simctl launch booted ryanhelsing.obscura-base
 
 `xcodebuild` writes the new binary to DerivedData. `simctl launch` picks it up automatically — no install needed.
 
-If you accidentally reinstall and lose the session, just register a new user. The old user's data is still in the DB but the Keychain session is gone.
+If you reinstall and lose the session, register a new user. The previous account's data remains in the database, but its Keychain session is gone.
 
 ## Troubleshooting
 

@@ -3,17 +3,9 @@ import XCTest
 
 /// Scenario 10: Story attachments — the **bytes path**, against a real server.
 ///
-/// `obscura-proto/HISTORY.md` keeps attachment encryption, upload and download while deleting the
-/// `content_reference` *message*: pix's attachments ride inside a `model_sync` entry, so an
-/// attachment is an upload plus an id in an opaque payload. These two tests are the whole of that
-/// claim — an entry naming an uploaded blob reaches the recipient, and the recipient can fetch the
-/// bytes it names.
-///
-/// Two former cases here (`10.1`, `10.5`) built a `ModelEntry` and pushed it through `GSet`, then
-/// asserted that the dictionary they had just written came back. That is a storage round trip, not
-/// a story: it is `EntryStoreTests.testPutThenAllReturnsWhatWasWritten` and
-/// `testUnicodeAndNestedPayloadsSurviveUnchanged`, over the store that still exists. They went with
-/// the engine rather than being ported to assert the same thing twice.
+/// Pix carries an uploaded attachment id inside an opaque MODEL_SYNC payload.
+/// These tests prove that the entry reaches the recipient and that the
+/// recipient can fetch the encrypted bytes it names.
 final class StoryAttachmentTests: XCTestCase {
 
     /// A story entry naming an uploaded attachment reaches the recipient's inbox with the
@@ -21,7 +13,7 @@ final class StoryAttachmentTests: XCTestCase {
     ///
     /// The payload is opaque to the kit (SPEC §0.4) — `mediaRef` is an application field, and the
     /// assertion below reads it back out of the *stored bytes* rather than from any kit-parsed
-    /// structure, because there is no longer anything in the kit that would parse it.
+    /// structure, because the kit does not parse it.
     func testAStoryEntryCarriesItsAttachmentIdToTheRecipientsInbox() async throws {
         let (alice, bob) = try await ObscuraTestClient.registerPairAndBecomeFriends()
 

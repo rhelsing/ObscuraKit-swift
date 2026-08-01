@@ -2,16 +2,13 @@ import XCTest
 import GRDB
 @testable import ObscuraKit
 
-/// Peer-supplied `uint64` timestamps, and the uncatchable crashes they used to cause.
+/// Peer-supplied `uint64` timestamps must be clamped before SQLite binding.
 ///
 /// GRDB binds `UInt64` through the **non-failable** `Int64(self)`
 /// (`GRDB/Core/Support/StandardLibrary/StandardLibrary.swift`), so any value above `Int64.max`
 /// TRAPS on the way into SQLite. A Swift trap is not an error — `processEnvelope`'s `do/catch`
-/// cannot contain it — so a single message killed the process. Friendship is not required to deliver
-/// a message, so this was a remote kill available to any authenticated user.
-///
-/// The same bug class was found and fixed once, in `Wire/ModelSignal.swift`, which still carries the
-/// paragraph explaining it. The sweep stopped at that one call site; these are the rest.
+/// cannot contain it. Friendship is not required for delivery, so every inbound
+/// timestamp path must clamp before conversion.
 ///
 /// Each test's real assertion is that it **completes**. A trap does not fail an XCTest case, it kills
 /// the test process, so reaching the `XCTAssert` at all is the result being checked.

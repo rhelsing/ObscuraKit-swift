@@ -115,11 +115,6 @@ public actor DeviceActor {
         }) ?? []
     }
 
-    // `removeOwnDevice` lived here and had exactly one would-be caller: the `revokeDevice` that
-    // never called it, which is precisely why revocation announced an unfiltered device list. Both
-    // are deleted; a device is removed from the account server-side (`api.deleteDevice`) and this
-    // registry is rebuilt from the account's device list on the next link approval.
-
     public func clearAll() async {
         try? await db.write { db in
             try db.execute(sql: "DELETE FROM device_identity")

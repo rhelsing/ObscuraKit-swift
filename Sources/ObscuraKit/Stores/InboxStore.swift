@@ -53,22 +53,17 @@ public struct InboxRecord: Sendable, Equatable {
 /// The kit is a durable, authenticated inbox for **opaque payloads**: it stores bytes it cannot read,
 /// addressed to and from identities it can prove. This actor is that store.
 ///
-/// Ported from `ObscuraKit-Kotlin`'s `InboxDomain.kt` (PR #49), which is where the shape was designed
-/// and proven against a real server. §10 orders it that way on purpose.
-///
 /// ## Why an inbox and not an event stream
 ///
-/// The reset takes application data away from the kit. If the thin kit instead handed each payload
-/// to the app — an event, a callback, a bridge emit — and then acked, the ordering becomes:
+/// Handing a payload to the app and then acknowledging it would make an asynchronous event the only
+/// copy:
 ///
 /// ```
 /// decrypt → emit to app → ACK (server DELETEs) → ...app writes to its store, maybe, later
 /// ```
 ///
-/// That is the Phase 1 data-loss bug rebuilt across a process boundary, in both kits at once, on a
-/// path where the app may not be running. The React Native bridge is asynchronous and lossy under
-/// backpressure, and the iOS push path has no JS runtime at all. **So the kit must persist before it
-/// acks, and therefore needs somewhere durable to put bytes it does not understand.**
+/// The bridge may be backpressured and the app may not be running. The kit therefore persists bytes
+/// it does not understand before acknowledging the server copy.
 ///
 /// ## Four methods, and there is no fifth
 ///
