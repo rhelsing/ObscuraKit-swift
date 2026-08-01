@@ -30,8 +30,8 @@ struct ObscuraAppMain: App {
 // Mirrors the role of Android's ObscuraApp: it owns the bridge between push
 // callbacks (which fire on AppDelegate, with no SwiftUI context) and the kit
 // client (owned by AppState). It remembers a token that arrives before login and
-// runs the silent-push drain + notify path. The kit NEVER posts OS notifications —
-// it only hands back ProcessedCounts; PushNotifier turns those into user text.
+// runs the silent-push drain. Notification policy must come from an app-owned
+// event/inbox consumer, never from the kit's opaque processed-envelope total.
 
 @MainActor
 final class PushCoordinator {
@@ -79,47 +79,8 @@ final class PushCoordinator {
             return
         }
         note("silent push — draining")
-        let counts = await client.processPendingMessages(timeout: 10)
-        note("drain done: pix=\(counts.pixCount) msg=\(counts.messageCount) other=\(counts.otherCount)")
-        PushNotifier.post(counts)
-    }
-}
-
-// MARK: - Push Notifier
-//
-// The single place drained counts become user-visible text. Generic by design —
-// content is E2E encrypted, so the notification only ever says "N new pix/messages".
-
-enum PushNotifier {
-    static func post(_ counts: ProcessedCounts) {
-        let total = counts.pixCount + counts.messageCount
-        guard total > 0 else { return }
-
-        let text: String
-        if counts.pixCount > 0 && counts.messageCount > 0 {
-            text = "\(total) new \(plural(total, "item"))"
-        } else if counts.pixCount > 0 {
-            text = "\(counts.pixCount) new \(plural(counts.pixCount, "pix"))"
-        } else {
-            text = "\(counts.messageCount) new \(plural(counts.messageCount, "message"))"
-        }
-
-        let content = UNMutableNotificationContent()
-        content.title = "Obscura"
-        content.body = text
-        content.sound = .default
-        let req = UNNotificationRequest(
-            identifier: "obscura_messages",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(req)
-        NSLog("[ObscuraApp] PushNotifier: posted \"\(text)\"")
-    }
-
-    // "pix" is invariant in the plural; pluralize the rest.
-    private static func plural(_ n: Int, _ word: String) -> String {
-        (word == "pix" || n == 1) ? word : word + "s"
+        let processed = await client.processPendingMessages(timeout: 10)
+        note("drain done: processed=\(processed)")
     }
 }
 
@@ -128,7 +89,7 @@ enum PushNotifier {
 // Owns the OS push lifecycle. With Firebase present it hands the APNs token to FCM
 // and registers the FCM token; without it (e.g. local simctl-push testing) it
 // registers the raw APNs token directly. Either way the silent-push handler drains
-// via the kit and posts a generic notification.
+// via the kit; app-owned notification classification is not implemented in this demo.
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
@@ -155,9 +116,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
         #if DEBUG
         // Simulator stand-in for a real silent push. The iOS Simulator does not deliver
-        // background/content-available pushes, so this runs the IDENTICAL
-        // PushCoordinator.handleSilentPush() path (drain + classify + notify) that real
-        // FCM triggers on a device. Mirrors Android's debug TestPushReceiver.
+        // background/content-available pushes, so this runs the same drain path that real
+        // FCM triggers on a device.
         //   scripts/testpush.sh fire
         if ProcessInfo.processInfo.environment["OBSCURA_TEST_PUSH"] == "1" {
             NSLog("[ObscuraApp] OBSCURA_TEST_PUSH set — simulating silent push wake")

@@ -41,30 +41,39 @@ public struct ReceivedMessage: Sendable {
     public let model: String?
 }
 
-/// Result of `processPendingMessages(timeout:)` — counts of envelopes drained, keyed by model.
-/// The bridge uses these to pick generic notification text. `otherCount` is debug-only; the
-/// bridge ignores it.
-///
-/// - Warning: This type hard-codes the application's model names (`"pix"`, `"directMessage"`)
-///   in `classifyForPushCounts`, which the kit boundary forbids — a kit must treat a model name
-///   as an opaque key (obscura-proto `SPEC.md` §0.4). The fix is counts keyed on the opaque model
-///   name, with notification copy supplied by the app; it is a follow-up because it changes the
-///   bridge contract on both platforms at once, and it is deliberately NOT bundled with the ORM
-///   deletion, which changes no bridge-facing type.
-///
-///   A previous version of this warning claimed Kotlin had already "moved to a generic
-///   `modelCounts` map", making the two kits divergent. **That was false when written and is false
-///   now** — `ObscuraKit-Kotlin`'s `ProcessedCounts` still carries the same three Ints and the same
-///   two hard-coded names. Both kits are wrong in the same way, which is the only good news here.
-public struct ProcessedCounts: Sendable {
-    public let pixCount: Int
-    public let messageCount: Int
-    public let otherCount: Int
+private actor ProcessedEnvelopeTracker {
+    private var count: UInt64 = 0
+    private var lastProcessedAt = Date.distantPast
 
-    public init(pixCount: Int = 0, messageCount: Int = 0, otherCount: Int = 0) {
-        self.pixCount = pixCount
-        self.messageCount = messageCount
-        self.otherCount = otherCount
+    func snapshot() -> (count: UInt64, lastProcessedAt: Date) {
+        (count, lastProcessedAt)
+    }
+
+    func record() {
+        lastProcessedAt = Date()
+        count += 1
+    }
+}
+
+private actor PushDrainCoordinator {
+    private var nextID: UInt64 = 0
+    private var inFlight: (id: UInt64, task: Task<Int, Never>)?
+
+    func run(_ operation: @escaping () async -> Int) async -> Int {
+        if let existing = inFlight {
+            return await existing.task.value
+        }
+
+        nextID += 1
+        let id = nextID
+        let task = Task { await operation() }
+        inFlight = (id, task)
+
+        let result = await task.value
+        if inFlight?.id == id {
+            inFlight = nil
+        }
+        return result
     }
 }
 
@@ -188,6 +197,8 @@ public class ObscuraClient {
     /// Buffered message queue for waitForMessage
     private var messageQueue: [ReceivedMessage] = []
     // messageWaiters removed — waitForMessage now polls messageQueue directly
+    private let processedEnvelopes = ProcessedEnvelopeTracker()
+    private let pushDrainCoordinator = PushDrainCoordinator()
 
     /// Events stream — every received message after routing (multi-observer)
     private var eventContinuations: [AsyncStream<ReceivedMessage>.Continuation] = []
@@ -814,15 +825,24 @@ public class ObscuraClient {
     }
 
     /// Drain queued envelopes after a silent push wake. Connects if needed, waits up to `timeout`
-    /// seconds (returning early when the queue stays empty for 500ms), categorizes by model,
-    /// and returns counts. Does NOT disconnect afterwards — the OS will freeze the app when done.
+    /// seconds (returning early when the receive path stays idle for 500ms), and returns the
+    /// number of successfully processed envelopes. Does NOT disconnect afterwards — the OS will freeze
+    /// the app when done.
     ///
-    /// The bridge layer uses the returned counts to post a generic local notification
-    /// ("New pix" / "New message"). Kit must NEVER post OS notifications itself.
-    public func processPendingMessages(timeout: TimeInterval) async -> ProcessedCounts {
+    /// This observes successful receive-path persistence without consuming `messageQueue`.
+    /// The app owns notification classification; the kit treats model keys as opaque.
+    public func processPendingMessages(timeout: TimeInterval) async -> Int {
+        await pushDrainCoordinator.run { [weak self] in
+            guard let self else { return 0 }
+            return await self.performPendingMessageDrain(timeout: timeout)
+        }
+    }
+
+    private func performPendingMessageDrain(timeout: TimeInterval) async -> Int {
+        let processedAtStart = await processedEnvelopes.snapshot().count
         logger.log("[push] drain start (timeout=\(Int(timeout))s, connected=\(_connectionState == .connected))")
         if _connectionState != .connected {
-            // F10 (obscura-proto/HISTORY.md). A failed connect returns all-zero counts, which is
+            // F10 (obscura-proto/HISTORY.md). A failed connect returns zero, which is
             // indistinguishable from "connected fine, nothing waiting" — on the PUSH-WAKE path that
             // means: woken by a push, silently report no messages, leave them on the server. This
             // kit at least logged it; ObscuraKit-Kotlin swallowed it entirely, where it showed up as
@@ -838,51 +858,32 @@ public class ObscuraClient {
                 try? await Task.sleep(nanoseconds: Self.pushDrainReconnectRetryNanos)
                 do { try await connect() } catch {
                     logger.log("[push] drain ABORTED — could not connect after 2 attempts: \(error)")
-                    return ProcessedCounts()
+                    return 0
                 }
             }
         }
 
-        var pix = 0
-        var message = 0
-        var other = 0
-        var drained = 0
         let deadline = Date().addingTimeInterval(timeout)
         let idleThreshold: TimeInterval = 0.5
-        var lastEnvelopeAt = Date()
+        var lastActivityAt = Date()
 
         while Date() < deadline {
-            if !messageQueue.isEmpty {
-                let received = messageQueue.removeFirst()
-                classifyForPushCounts(received, pix: &pix, message: &message, other: &other)
-                drained += 1
-                logger.log("[push] drained #\(drained) type=\(received.type) → pix=\(pix) msg=\(message) other=\(other)")
-                lastEnvelopeAt = Date()
-            } else if Date().timeIntervalSince(lastEnvelopeAt) > idleThreshold {
+            let observedAt = await processedEnvelopes.snapshot().lastProcessedAt
+            if observedAt > lastActivityAt {
+                lastActivityAt = observedAt
+            }
+            if Date().timeIntervalSince(lastActivityAt) > idleThreshold {
                 break
             } else {
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
         }
 
-        logger.log("[push] drain done: pix=\(pix) msg=\(message) other=\(other)")
-        return ProcessedCounts(pixCount: pix, messageCount: message, otherCount: other)
-    }
-
-    private func classifyForPushCounts(
-        _ msg: ReceivedMessage, pix: inout Int, message: inout Int, other: inout Int
-    ) {
-        // MODEL_SYNC (type 30) carries the model name straight off the proto — no schema needed,
-        // which is why the push path never depended on the engine that was deleted. Legacy
-        // TEXT/CONTENT_REFERENCE paths go to `other`; the app sends neither.
-        if msg.type == "MODEL_SYNC", let clientMsg = try? Obscura_Client_V1_ClientMessage(serializedBytes: msg.rawBytes) {
-            switch clientMsg.modelSync.model {
-            case "pix":            pix += 1; return
-            case "directMessage":  message += 1; return
-            default:               break
-            }
-        }
-        other += 1
+        let processedAtEnd = await processedEnvelopes.snapshot().count
+        let processed = processedAtEnd >= processedAtStart ? processedAtEnd - processedAtStart : 0
+        let result = Int(min(processed, UInt64(Int.max)))
+        logger.log("[push] drain done: processed=\(result)")
+        return result
     }
 
     /// Schedule auto-reconnect with exponential backoff.
@@ -1862,10 +1863,11 @@ public class ObscuraClient {
                 throw ObscuraError.provisionFailed(
                     "Envelope id is \(raw.id.count) bytes, expected 16; cannot use it as a dedupe key")
             }
-            try await routeMessage(
+            let isNew = try await routeMessage(
                 clientMsg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
                 envelopeId: bytesToUuid(raw.id)
             )
+            await processedEnvelopes.record()
 
             // Emit to event subscribers
             let received = ReceivedMessage(
@@ -1891,7 +1893,9 @@ public class ObscuraClient {
                     return nil
                 }()
             )
-            emit(received)
+            if isNew {
+                emit(received)
+            }
 
             // Check prekey count (non-blocking, fire-and-forget)
             checkAndReplenishPreKeys()
@@ -1923,19 +1927,21 @@ public class ObscuraClient {
         sourceUserId: String,
         senderDeviceId: String,
         envelopeId: String
-    ) async throws {
+    ) async throws -> Bool {
         NSLog("[ObscuraKit] routeMessage payload=%@ from=%@", WireCodec.decodeMessageType(msg.payload), String(sourceUserId.prefix(8)))
 
+        var isNew = true
         switch classify(msg.payload) {
         case .inboxed:
-            try await inboxMessage(msg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
-                                   envelopeId: envelopeId)
+            isNew = try await inboxMessage(
+                msg, sourceUserId: sourceUserId, senderDeviceId: senderDeviceId,
+                envelopeId: envelopeId)
             // The inbox row IS the delivery, and it has committed — §3.3 rule 1 gates the ack on
             // exactly that and on nothing else. MODEL_SYNC used to continue into the ORM from here;
             // that parallel write is gone with the engine, and the one thing below it that was never
             // the ORM's — clearing typing indicators, because a real message just arrived — is all
             // that falls through now.
-            if case .modelSync? = msg.payload {} else { return }
+            if case .modelSync? = msg.payload {} else { return isNew }
 
         case .unimplemented:
             // Classified in §4 but implemented by neither kit. Today's behaviour (drop, then ack) is
@@ -1947,7 +1953,7 @@ public class ObscuraClient {
             // no longer sends but a peer kit may.
             logger.log("RECV UNIMPLEMENTED arm=\(WireCodec.decodeMessageType(msg.payload)) "
                 + "from=\(sourceUserId.prefix(8)) (dropped and acked — see KIT_API.md §4.2)")
-            return
+            return true
 
         case .kitInternal, .droppable:
             break // fall through to the handlers below
@@ -2162,6 +2168,7 @@ public class ObscuraClient {
                 "\(WireCodec.decodeMessageType(msg.payload)) is classified kit-internal but this kit "
                 + "has no handler; refusing to ack it away")
         }
+        return isNew
     }
 
     /// Write an inboxed payload to the durable inbox.
@@ -2178,7 +2185,7 @@ public class ObscuraClient {
         sourceUserId: String,
         senderDeviceId: String,
         envelopeId: String
-    ) async throws {
+    ) async throws -> Bool {
         var isModelSync = false
         if case .modelSync? = msg.payload { isModelSync = true }
         let sync = msg.modelSync
@@ -2220,6 +2227,7 @@ public class ObscuraClient {
             logger.log("RECV DUPLICATE envelope=\(envelopeId.prefix(12)) "
                 + "kind=\(WireCodec.decodeMessageType(msg.payload)) (already inboxed)")
         }
+        return inserted
     }
 
     /// SPEC §2.4: a peer-supplied timestamp is clamped before it is stored, not after.
