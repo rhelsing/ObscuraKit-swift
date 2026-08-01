@@ -140,7 +140,16 @@ public actor FriendActor {
     }
 
     public func updateDevices(_ userId: String, devices: [[String: String]], timestamp: UInt64? = nil) async throws {
-        let ts = timestamp ?? UInt64(Date().timeIntervalSince1970 * 1000)
+        // Saturating, not `Int64(_:)`: that TRAPS above `Int64.max`, and a trap is uncatchable — it
+        // kills the process rather than surfacing as a throw. `ObscuraClient` clamps the wire value
+        // before it gets here, but this store is PUBLIC and the bind is the last line of defence.
+        // `InboxStore.peek` saturates for the same reason at the other end of the same problem.
+        //
+        // Saturating at `Int64.max` deliberately does NOT resurrect the freeze this once caused: the
+        // caller's clamp is what keeps `devices_updated_at` near now, and the LWW guard below is what
+        // needs it. This only guarantees the bind cannot kill the app if a clamp is ever missed.
+        let rawTs = timestamp ?? UInt64(Date().timeIntervalSince1970 * 1000)
+        let ts = Int64(clamping: rawTs)
         let devicesJson = (try? JSONSerialization.data(withJSONObject: devices)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
 
         try await db.write { db in
